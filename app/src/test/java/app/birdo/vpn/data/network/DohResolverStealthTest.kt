@@ -138,17 +138,64 @@ class DohResolverStealthTest {
         assertTrue(cache.isEmpty())
     }
 
+    /** The production map, which forgetRememberedAnswers / forgetSystemAnswers act on. */
+    @Suppress("UNCHECKED_CAST")
+    private fun liveCache(): MutableMap<String, DohResolver.Remembered> {
+        val field = DohResolver::class.java.getDeclaredField("remembered").apply { isAccessible = true }
+        return field.get(DohResolver) as MutableMap<String, DohResolver.Remembered>
+    }
+
     /** Sign-out: what was remembered for one account's session is gone for the next. */
     @Test
     fun `forgetting drops every remembered answer`() {
-        val field = DohResolver::class.java.getDeclaredField("remembered").apply { isAccessible = true }
-        @Suppress("UNCHECKED_CAST")
-        val live = field.get(DohResolver) as MutableMap<String, DohResolver.Remembered>
-        live["api.birdo.app"] = DohResolver.Remembered(systemAnswer, now)
+        val live = liveCache()
+        live["api.birdo.app"] = DohResolver.Remembered(systemAnswer, now, fromSystem = true)
+        live["other.birdo.app"] = DohResolver.Remembered(dohAnswer, now)
         try {
             DohResolver.forgetRememberedAnswers()
             assertTrue(live.isEmpty())
             assertLookupFails { resolve(dohFails, stealth = true, cache = live) }
+            assertEquals(0, systemCalls)
+        } finally {
+            live.clear()
+        }
+    }
+
+    @Test
+    fun `a system answer is remembered as one and a DoH answer is not`() {
+        val cache = mutableMapOf<String, DohResolver.Remembered>()
+        resolve(dohFails, stealth = false, cache = cache)
+        assertTrue(cache.getValue("api.birdo.app").fromSystem)
+        resolve(dohWorks, stealth = false, cache = cache)
+        assertFalse(cache.getValue("api.birdo.app").fromSystem)
+    }
+
+    /**
+     * Review of #622: the answer the network's resolver gave before a Stealth
+     * session began is that session's only. When Stealth ends it is dropped;
+     * the next session's connect looks the host up again. A DoH answer, which
+     * disclosed nothing, stays.
+     */
+    @Test
+    fun `stealth ending forgets the pre-stealth system answer and keeps DoH answers`() {
+        val live = liveCache()
+        try {
+            // Connect-time lookup (Stealth not active yet), DoH blocked.
+            assertSame(systemAnswer, resolve(dohFails, stealth = false, cache = live))
+            // A DoH answer for another host from earlier.
+            assertEquals(dohAnswer, resolve(dohWorks, stealth = false, cache = live, host = "other.birdo.app"))
+            // During Stealth: reused, no new system query.
+            assertSame(systemAnswer, resolve(dohFails, stealth = true, cache = live))
+            assertEquals(1, systemCalls)
+
+            DohResolver.forgetSystemAnswers()
+
+            assertFalse(live.containsKey("api.birdo.app"))
+            assertTrue(live.containsKey("other.birdo.app"))
+            // A later Stealth session that made no lookup of its own has nothing to reuse.
+            assertLookupFails { resolve(dohFails, stealth = true, cache = live) }
+            assertEquals(dohAnswer, resolve(dohFails, stealth = true, cache = live, host = "other.birdo.app"))
+            assertEquals("a NEW system-resolver query was made during Stealth", 1, systemCalls)
         } finally {
             live.clear()
         }
@@ -168,6 +215,60 @@ class DohResolverStealthTest {
     fun `a working DoH answers in both modes without the system resolver`() {
         assertEquals(dohAnswer, resolve(dohWorks, stealth = true))
         assertEquals(dohAnswer, resolve(dohWorks, stealth = false))
+        assertEquals(0, systemCalls)
+    }
+
+    // Outside Stealth, what main's resolve() did, case by case: the hostname
+    // reaches both resolvers as given, the system resolver's own failure is
+    // what the caller sees, a pin rejection still falls back, and an empty
+    // DoH answer is returned as it is.
+
+    @Test
+    fun `outside stealth both resolvers get the hostname exactly as given`() {
+        val asked = mutableListOf<String>()
+        DohResolver.resolveWith(
+            "API.Birdo.app",
+            { asked += "doh:$it"; throw IOException("DoH blocked") },
+            { asked += "system:$it"; systemAnswer },
+            { false },
+            mutableMapOf(),
+            { now },
+        )
+        assertEquals(listOf("doh:API.Birdo.app", "system:API.Birdo.app"), asked)
+    }
+
+    @Test
+    fun `outside stealth the system resolver's failure reaches the caller unchanged`() {
+        val failure = UnknownHostException("no such host")
+        try {
+            DohResolver.resolveWith("api.birdo.app", dohFails, { throw failure }, { false }, mutableMapOf(), { now })
+            fail("the system resolver's failure must propagate")
+        } catch (e: UnknownHostException) {
+            assertSame(failure, e)
+        }
+    }
+
+    @Test
+    fun `outside stealth a DoH pin rejection still falls back to the system resolver`() {
+        val pinRejected: (String) -> List<InetAddress> = {
+            throw javax.net.ssl.SSLPeerUnverifiedException("Certificate pinning failure")
+        }
+        assertSame(systemAnswer, resolve(pinRejected, stealth = false))
+        assertEquals(1, systemCalls)
+    }
+
+    @Test
+    fun `stealth with a DoH pin rejection fails and never asks the system resolver`() {
+        val pinRejected: (String) -> List<InetAddress> = {
+            throw javax.net.ssl.SSLPeerUnverifiedException("Certificate pinning failure")
+        }
+        assertLookupFails { resolve(pinRejected, stealth = true) }
+        assertEquals(0, systemCalls)
+    }
+
+    @Test
+    fun `outside stealth an empty DoH answer is returned as it is`() {
+        assertTrue(resolve({ emptyList() }, stealth = false).isEmpty())
         assertEquals(0, systemCalls)
     }
 
@@ -214,6 +315,26 @@ class DohResolverStealthTest {
             "resolveWith must use the injected system resolver, not Dns.SYSTEM directly",
             body.substringBefore("val dns: okhttp3.Dns").contains("okhttp3.Dns.SYSTEM.lookup("),
         )
+    }
+
+    /**
+     * The service has one writer of the Stealth flag, and its true-to-false
+     * edge drops the system answers. A direct `_stealthActiveFlow.value =`
+     * write would end a session without forgetting them.
+     */
+    @Test
+    fun `the end of a stealth session forgets the system answers`() {
+        val svc = source("app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt")
+        assertEquals(
+            "write the Stealth flag through setStealthActive only",
+            0,
+            Regex("""_stealthActiveFlow\.(value\s*=|update|compareAndSet|tryEmit|emit)""").findAll(svc).count(),
+        )
+        assertEquals(1, Regex("""_stealthActiveFlow\.getAndUpdate""").findAll(svc).count())
+        val setter = svc.substringAfter("private fun setStealthActive(active: Boolean) {").substringBefore("\n    }")
+        assertTrue(setter.contains("val was = _stealthActiveFlow.getAndUpdate { active }"))
+        assertTrue(setter.contains("if (was && !active) DohResolver.forgetSystemAnswers()"))
+        assertTrue(Regex("""setStealthActive\(false\)""").findAll(svc).count() >= 4)
     }
 
     /** Every sign-out path (log out, deletion, a dead session) clears the tokens through clearAll. */

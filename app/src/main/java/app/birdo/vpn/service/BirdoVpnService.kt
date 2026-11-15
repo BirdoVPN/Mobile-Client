@@ -26,6 +26,7 @@ import androidx.core.os.HandlerCompat
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.network.BypassSockets
+import app.birdo.vpn.data.network.DohResolver
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.utils.FaultReporter
@@ -46,6 +47,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import androidx.glance.appwidget.updateAll
 import java.net.InetAddress
@@ -1994,7 +1996,7 @@ class BirdoVpnService : VpnService() {
                 if (xrayStarted) {
                     val xrayPort = XrayManager.getLocalPort()
                     stealthEndpointOverride = "127.0.0.1:$xrayPort"
-                    _stealthActiveFlow.value = true
+                    setStealthActive(true)
                     Log.i(TAG, "Xray Reality active — WireGuard will connect via 127.0.0.1:$xrayPort")
                 } else {
                     // XrayManager reports WHY it failed; this counts the users
@@ -2004,12 +2006,12 @@ class BirdoVpnService : VpnService() {
                         "connect_refused_stealth_start_failed",
                         "Refused to connect: the Xray stealth tunnel failed to start and a direct fallback would downgrade protection",
                     )
-                    _stealthActiveFlow.value = false
+                    setStealthActive(false)
                     failSetup(gen, SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED)
                     return
                 }
             } else {
-                _stealthActiveFlow.value = false
+                setStealthActive(false)
             }
 
             // ── Phase 2: Quantum Protection (BirdoPQ v1) ──────
@@ -2963,6 +2965,18 @@ class BirdoVpnService : VpnService() {
     }
 
     /**
+     * The one writer of [stealthActive] (MR-953 F5, review of #622).
+     *
+     * A Stealth session's END drops the system-resolver answer DohResolver
+     * kept from before it began: that answer was obtained for this session,
+     * and the next session's connect looks the host up again.
+     */
+    private fun setStealthActive(active: Boolean) {
+        val was = _stealthActiveFlow.getAndUpdate { active }
+        if (was && !active) DohResolver.forgetSystemAnswers()
+    }
+
+    /**
      * Publish the verified-connected state. Called only after a WireGuard
      * handshake has been observed on [handle] (or on a build that cannot be
      * probed at all), so every "Protected" surface it lights up is backed by a
@@ -3040,7 +3054,7 @@ class BirdoVpnService : VpnService() {
         _connectedServerFlow.value = null
         _connectedSinceFlow.value = 0L
         _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
-        _stealthActiveFlow.value = false; _quantumActiveFlow.value = false
+        setStealthActive(false); _quantumActiveFlow.value = false
         updateWidgetState(false, null)
         if (reason == null && shouldPostDisconnectedNotice(userInitiated, appPrefs.notificationsEnabled)) {
             notifManager.postDisconnectedNotification()
@@ -3136,7 +3150,7 @@ class BirdoVpnService : VpnService() {
         _connectedServerFlow.value = null
         _connectedSinceFlow.value = 0L
         _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
-        _stealthActiveFlow.value = false; _quantumActiveFlow.value = false
+        setStealthActive(false); _quantumActiveFlow.value = false
         // Report Disconnected so VpnManager's bounded wait proceeds to the /connect
         // + ACTION_START rebuild. The blocking interface (killSwitchActive) stays up.
         updateState(VpnState.Disconnected)

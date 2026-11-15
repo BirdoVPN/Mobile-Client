@@ -55,8 +55,9 @@ import java.util.concurrent.TimeUnit
  *    at: `dns.birdo.app` does not exist (NXDOMAIN as of 2026-08-20), and a DoH
  *    endpoint on api.birdo.app cannot bootstrap the lookup of api.birdo.app.
  *
- * The system resolver remains the final, unconditional fallback so DNS trouble
- * degrades the app rather than bricking it.
+ * The system resolver remains the final fallback so DNS trouble degrades the
+ * app rather than bricking it, except while Stealth runs (MR-953 F5, see
+ * [resolveWith]).
  */
 object DohResolver {
 
@@ -152,8 +153,11 @@ object DohResolver {
         )
         .build()
 
-    /** An answer kept for Stealth, and when it was obtained (monotonic clock). */
-    internal class Remembered(val addresses: List<InetAddress>, val atMs: Long)
+    /**
+     * An answer kept for Stealth, when it was obtained (monotonic clock), and
+     * whether the network's own resolver gave it ([fromSystem]) rather than DoH.
+     */
+    internal class Remembered(val addresses: List<InetAddress>, val atMs: Long, val fromSystem: Boolean = false)
 
     /**
      * How long a remembered answer may be reused while Stealth runs. Long
@@ -169,14 +173,26 @@ object DohResolver {
      * Read only while Stealth is active and DoH has just failed
      * ([resolveWith]). Reusing an answer the device already has asks nobody
      * anything, where a new system-resolver query would name the API host to
-     * the network. In memory only, bounded by [REMEMBER_TTL_MS], and dropped
-     * on sign-out ([forgetRememberedAnswers]).
+     * the network. In memory only, bounded by [REMEMBER_TTL_MS], dropped on
+     * sign-out ([forgetRememberedAnswers]), and a system answer is also dropped
+     * when the Stealth session it was obtained for ends ([forgetSystemAnswers]).
      */
     private val remembered = ConcurrentHashMap<String, Remembered>()
 
     /** Sign-out, account deletion, a dead session: nothing remembered outlives the account. */
     fun forgetRememberedAnswers() {
         remembered.clear()
+    }
+
+    /**
+     * A Stealth session ended (BirdoVpnService.setStealthActive). The answers
+     * the network's resolver gave were obtained for THAT session, before it
+     * began; the next session's connect looks the host up again, so no
+     * system answer is reused beyond the session it was asked for. DoH
+     * answers stay (bounded by [REMEMBER_TTL_MS]): they disclosed nothing.
+     */
+    fun forgetSystemAnswers() {
+        remembered.entries.removeAll { it.value.fromSystem }
     }
 
     /**
@@ -224,13 +240,18 @@ object DohResolver {
      * blocks DoH: the lookup made to connect is reused for the heartbeat, so
      * the server does not reap the key after five minutes of silence and the
      * session does not cycle. A poisoned answer is covered by the API's
-     * certificate pinning.
+     * certificate pinning. A system answer lives for one Stealth session: it
+     * is dropped when that session ends ([forgetSystemAnswers]), on sign-out,
+     * and after [ttlMs].
      *
      * WHAT THIS DOES NOT COVER: Stealth is only "active" once Xray is up
      * (BirdoVpnService), and stops being so the moment a session is torn
      * down. The lookups made to connect, and to re-dial after a drop, happen
      * outside that window, and on a network that blocks DoH they still go to
-     * the network's resolver.
+     * the network's resolver. And when a session's connect made no lookup at
+     * all (OkHttp reused a pooled connection), that session has no system
+     * answer to reuse: on a network that blocks DoH its lookups fail once the
+     * pooled connection is gone, until the re-dial looks the host up again.
      *
      * [stealthActive] is read only after DoH has failed.
      */
@@ -320,8 +341,10 @@ object DohResolver {
             )
         }
         // Reached only with Stealth NOT active, so this answer may be reused
-        // by a Stealth session that starts later (see [remembered]).
-        return system(hostname).also { if (it.isNotEmpty()) remembered[key] = Remembered(it, nowMs()) }
+        // by the Stealth session that starts next (see [remembered]).
+        return system(hostname).also {
+            if (it.isNotEmpty()) remembered[key] = Remembered(it, nowMs(), fromSystem = true)
+        }
     }
 
     /**
