@@ -4,6 +4,7 @@ import app.birdo.vpn.R
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.testing.StringsXml
+import com.android.billingclient.api.AccountIdentifiers
 import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingResult
 import com.android.billingclient.api.Purchase
@@ -40,11 +41,16 @@ class PlayBillingManagerTimeoutTest {
         GooglePlayLinkResponse(linked = true, plan = "OPERATIVE", state = "ACTIVE"),
     )
 
-    private fun purchase(token: String, acknowledged: Boolean = true): Purchase = mockk {
-        every { purchaseToken } returns token
-        every { products } returns listOf(BirdoPlayProduct.OPERATIVE.productId)
-        every { purchaseState } returns Purchase.PurchaseState.PURCHASED
-        every { isAcknowledged } returns acknowledged
+    private fun purchase(token: String, acknowledged: Boolean = true): Purchase {
+        // Bound, as a purchase this app launched is (F-967-02 is not this suite's subject).
+        val ids = mockk<AccountIdentifiers> { every { obfuscatedAccountId } returns "acct-$token" }
+        return mockk {
+            every { purchaseToken } returns token
+            every { products } returns listOf(BirdoPlayProduct.OPERATIVE.productId)
+            every { purchaseState } returns Purchase.PurchaseState.PURCHASED
+            every { isAcknowledged } returns acknowledged
+            every { accountIdentifiers } returns ids
+        }
     }
 
     private class Rig(val manager: PlayBillingManager, val queries: IntArray, val links: IntArray)
@@ -72,7 +78,7 @@ class PlayBillingManagerTimeoutTest {
             }
         }
         val repository = mockk<BirdoRepository> {
-            coEvery { linkGooglePurchase(any()) } coAnswers { links[0]++; accepted }
+            coEvery { linkGooglePurchase(any(), any()) } coAnswers { links[0]++; accepted }
         }
         val tokens = mockk<TokenManager> { every { isLoggedIn() } returns true }
         val manager = PlayBillingManager(

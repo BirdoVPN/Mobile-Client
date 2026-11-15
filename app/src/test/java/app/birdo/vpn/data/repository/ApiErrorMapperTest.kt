@@ -287,6 +287,43 @@ class ApiErrorMapperTest {
         assertEquals(FailureReason.INVALID_CREDENTIALS, forbidden.reason)
     }
 
+    /** MR-179 (birdo-web deletion-step-up.ts): classified by `error`, never by the message. */
+    @Test
+    fun `deletion maps the step-up refusals by their error code`() {
+        val number = delete(
+            403,
+            """{"statusCode":403,"error":"account_number_required","message":"Enter your 24-digit account number to delete your account. If your app cannot ask for this, update the app, or delete your account on the website.","stepUp":["account_number"]}""",
+        )
+        assertEquals(FailureReason.ACCOUNT_NUMBER_REQUIRED, number.reason)
+        assertEquals(text("delete_dialog_account_number_required"), number.message)
+
+        val wrongNumber = delete(403, """{"statusCode":403,"error":"account_number_invalid","message":"x"}""")
+        assertEquals(FailureReason.ACCOUNT_NUMBER_INVALID, wrongNumber.reason)
+        assertEquals(text("delete_dialog_account_number_invalid"), wrongNumber.message)
+
+        val mail = delete(403, """{"statusCode":403,"error":"email_code_required","message":"x","stepUp":["email_code"]}""")
+        assertEquals(FailureReason.EMAIL_CODE_REQUIRED, mail.reason)
+        assertEquals(text("delete_dialog_email_code_required"), mail.message)
+
+        val wrongMail = delete(403, """{"statusCode":403,"error":"email_code_invalid","message":"x"}""")
+        assertEquals(FailureReason.EMAIL_CODE_INVALID, wrongMail.reason)
+        assertEquals(text("delete_dialog_email_code_invalid"), wrongMail.message)
+    }
+
+    @Test
+    fun `deletion step-up lockout and outage keep their canonical copy`() {
+        val locked = delete(429, """{"statusCode":429,"error":"too_many_attempts","message":"Too many attempts. Please wait 15 minutes and try again."}""")
+        assertEquals(FailureReason.RATE_LIMITED, locked.reason)
+        assertEquals(text("error_rate_limited"), locked.message)
+
+        val down = delete(503, """{"statusCode":503,"error":"step_up_unavailable","message":"We could not check your code just now."}""")
+        assertEquals(FailureReason.SERVER_UNAVAILABLE, down.reason)
+
+        // Apple re-sign-in is iOS only; Android shows the server's own sentence.
+        val apple = delete(403, """{"statusCode":403,"error":"apple_reauth_required","message":"Sign in with Apple again to delete your account."}""")
+        assertEquals(FailureReason.REFUSED, apple.reason)
+    }
+
     @Test
     fun `the envelope parser reads the error field`() {
         assertEquals(
@@ -342,6 +379,21 @@ class ApiErrorMapperTest {
         // The code with no usable message falls back to the old mapping.
         val bare = countryBody.replace(Regex("\"message\":\"[^\"]*\""), "\"message\":\"Forbidden\"")
         assertEquals(text("error_anon_register_failed"), register(403, bare).message)
+    }
+
+    private val unverifiedBody = """{"statusCode":403,"message":"Please verify your email address before signing in.","details":{"code":"email_not_verified"}}"""
+
+    @Test
+    fun `an unverified e-mail sign-in is told by details code, with the server sentence or the app's own`() {
+        val e = register(403, unverifiedBody, ErrorContext.SIGN_IN)
+        assertEquals("Please verify your email address before signing in.", e.message)
+        assertEquals(FailureReason.REFUSED, e.reason)
+        // No usable sentence: the app's own words, never the generic sign-in failure.
+        val bare = unverifiedBody.replace(Regex("\"message\":\"[^\"]*\""), "\"message\":\"Forbidden\"")
+        assertEquals(text("error_email_not_verified"), register(403, bare, ErrorContext.SIGN_IN).message)
+        // Another status, another route, or another code is not this refusal.
+        assertEquals(general(403, unverifiedBody).message, mapper.fromResponse(403, unverifiedBody, ErrorContext.GENERAL, R.string.error_load_servers).message)
+        assertTrue(register(401, unverifiedBody, ErrorContext.SIGN_IN).message != e.message)
     }
 
     @Test

@@ -26,11 +26,17 @@ import kotlinx.serialization.Serializable
  *
  * 2. POST payments/store/google/link
  *      auth: JwtAuthGuard (Bearer), rate limit 20/60s
- *      body: { "purchaseToken": "<opaque, 8..4096 chars>" }
+ *      body: { "purchaseToken": "<opaque, 8..4096 chars>",
+ *              "origin"?: "restore"|"auto" }               (F-967-02, below)
  *      200 : { "linked": true, "plan": "OPERATIVE"|"SOVEREIGN"|"RECON",
  *              "state": "<string>", "expiresAt": "<ISO-8601>"|null,
- *              "duplicateBilling"?: { ... } }
+ *              "duplicateBilling"?: { ... },
+ *              "entitled"?: boolean,                         (F-967-05)
+ *              "needsRestore"?: boolean }                    (F-967-02)
  *      4xx/5xx: the GlobalExceptionFilter envelope, below.
+ *      A server older than `origin` answers it with an UNCODED 400: its
+ *      ValidationPipe runs forbidNonWhitelisted. BirdoRepository.linkGooglePurchase
+ *      then presents the token once more without it (see [StoreLinkOrigin]).
  *
  * 3. Error envelope (GlobalExceptionFilter). `details` is the ONLY key the
  *    filter copies through from a thrown HttpException; a top-level `code` is
@@ -70,10 +76,36 @@ data class GooglePurchaseIntentResponse(
     @SerialName("obfuscatedAccountId") val obfuscatedAccountId: String,
 )
 
+/**
+ * Why the client is presenting a purchase token (F-967-02, owner 2026-11-13:
+ * "Restore tap only").
+ *
+ * A purchase with no obfuscatedAccountId names no Birdo account (a Play promo
+ * code, a resubscribe in the Play Store, a purchase made before the intent was
+ * minted). The server binds such a token to whichever session presents it
+ * first, for good, so presenting it silently on sign-in or resume could hand a
+ * paid subscription to a freshly minted anonymous account. Only the explicit
+ * Restore Purchases tap may present one; PurchaseIngestor enforces that, and
+ * [wire] tells the server which kind of request it is looking at.
+ */
+enum class StoreLinkOrigin(val wire: String) {
+    /** The user tapped Restore Purchases. The only origin that presents an unbound purchase. */
+    RESTORE("restore"),
+
+    /** Everything else: launch, resume and sign-in sweeps, the purchase listener, the already-owned reconcile. */
+    AUTO("auto"),
+}
+
 /** Request body of [GoogleStoreRoutes.LINK]. */
 @Serializable
 data class GooglePlayLinkRequest(
     @SerialName("purchaseToken") val purchaseToken: String,
+    /**
+     * [StoreLinkOrigin.wire]. Null only on the one re-send to a server that
+     * predates the field; the wire encoder does not encode defaults, so null
+     * leaves the key out entirely and the body is exactly the old one.
+     */
+    @SerialName("origin") val origin: String? = null,
 ) {
     /** Never prints [purchaseToken], like the shared API models (MR-1870). */
     override fun toString(): String = "GooglePlayLinkRequest(purchaseToken=[REDACTED])"
@@ -114,6 +146,19 @@ data class GooglePlayLinkResponse(
     val state: String = "",
     val expiresAt: String? = null,
     val duplicateBilling: DuplicateBillingNotice? = null,
+    /**
+     * F-967-05: whether the token grants access right now. `false` for an
+     * expired or cancelled-pending token, which the server still links. Null
+     * from a server that predates the field, which keeps the old reading: a
+     * 200 means granted.
+     */
+    val entitled: Boolean? = null,
+    /**
+     * F-967-02: the server will not bind this unbound token from an automatic
+     * request; only a Restore tap may. Null (or false) from a server that
+     * predates the field.
+     */
+    val needsRestore: Boolean? = null,
 )
 
 /**

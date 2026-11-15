@@ -135,6 +135,31 @@ struct RegistrationRefusedError: Error, LocalizedError, Equatable, Sendable {
     }
 }
 
+/// MR-2210: a sign-in refused because the e-mail address was never verified:
+/// HTTP 403 `{ statusCode, message, details: { code: "email_not_verified" } }`.
+/// Told by `details.code` on a 403, never by wording. The server's sentence is
+/// shown when it is presentable; otherwise the app's own. No other 403 is
+/// classified here (a bare 403 stays whatever it was).
+struct EmailNotVerifiedError: Error, LocalizedError, Equatable, Sendable {
+    static let code = "email_not_verified"
+    static let fallbackMessage = "Please verify your email address first. Open birdo.app/verify-email to get a new link."
+
+    let message: String
+
+    var errorDescription: String? { message }
+
+    static func classify(status: Int, body: Data) -> EmailNotVerifiedError? {
+        guard status == 403,
+              let root = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              let details = root["details"] as? [String: Any],
+              (details["code"] as? String) == code else { return nil }
+        if let m = root["message"] as? String, ConnectRefusedError.isPresentable(m, maxLength: 200) {
+            return EmailNotVerifiedError(message: m.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return EmailNotVerifiedError(message: fallbackMessage)
+    }
+}
+
 /// The `{ success, message }` envelope both connect routes use for
 /// user-actionable refusals returned with a 2xx status, plus, for a refused
 /// `rebuild: true` connect, the reason (`LiveRebuildWire.rebuildRefusedField`),
