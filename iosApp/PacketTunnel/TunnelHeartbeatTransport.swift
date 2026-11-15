@@ -117,6 +117,13 @@ private final class InterfaceExchange: @unchecked Sendable {
         sec_protocol_options_set_tls_server_name(options, host)
         sec_protocol_options_add_tls_application_protocol(options, "http/1.1")
         sec_protocol_options_set_min_tls_protocol_version(options, .TLSv12)
+        // Review of #621 hardening: App Transport Security's cipher suites
+        // only (forward-secret suites on TLS 1.2), and no session resumption,
+        // so every connection is a full handshake whose chain the verify block
+        // below sees. Both exist since iOS 13 / macOS 10.15 at the latest,
+        // well under this path's iOS 18 / macOS 15 floor.
+        sec_protocol_options_append_tls_ciphersuite_group(options, .ats)
+        sec_protocol_options_set_tls_resumption_enabled(options, false)
         // A verify block REPLACES the default evaluation; HeartbeatPins.isTrusted
         // runs the standard one for `host` itself before checking the pins.
         sec_protocol_options_set_verify_block(options, { _, secTrust, complete in

@@ -149,6 +149,18 @@ final class TunnelRouteContractGuardTests: XCTestCase {
                        "nil TLS parameters leave the minimum version to the system default")
     }
 
+    /// The iOS 18 / macOS 15 path: ATS cipher suites only, and no TLS session
+    /// resumption, so the verify block (the pin check) runs on every connection.
+    func testTheInterfacePathUsesATSCiphersAndNoResumption() throws {
+        let transport = try code("PacketTunnel/TunnelHeartbeatTransport.swift")
+        let modern = try XCTUnwrap(transport.components(separatedBy: "private final class InterfaceExchange").last)
+        XCTAssertTrue(modern.contains("sec_protocol_options_append_tls_ciphersuite_group(options, .ats)"))
+        XCTAssertTrue(modern.contains("sec_protocol_options_set_tls_resumption_enabled(options, false)"))
+        let verify = try XCTUnwrap(modern.range(of: "sec_protocol_options_set_verify_block"))
+        let noResume = try XCTUnwrap(modern.range(of: "sec_protocol_options_set_tls_resumption_enabled"))
+        XCTAssertLessThan(noResume.lowerBound, verify.lowerBound, "set on the same options, before the connection")
+    }
+
     /// The request's own timeout reaches the exchange (HeartbeatExchangeTests
     /// runs the rule and the completion): a 5 s dead-tunnel probe must not
     /// wait the beat's 20 s while the tunnel holds every packet.
