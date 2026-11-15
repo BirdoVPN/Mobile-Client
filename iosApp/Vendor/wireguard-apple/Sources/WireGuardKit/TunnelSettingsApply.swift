@@ -14,9 +14,15 @@ import Foundation
 ///
 /// Now the settings are asked for at most `attempts` times, each waiting
 /// `timeout` seconds; no answer at all fails the start (or update, or resume)
-/// with `TunnelSettingsApplyTimedOut`. The first answer from ANY attempt
-/// decides: a late answer to the first request still counts during the second
-/// wait.
+/// with `TunnelSettingsApplyTimedOut`.
+///
+/// Which answer decides:
+///   - a SUCCESS from any request is final: a late success to the first
+///     request still counts during the second wait;
+///   - an ERROR is final only from the LATEST request. An error that arrives
+///     late from an earlier, timed-out request (the system cancelling it
+///     because the re-ask superseded it, say) is not the answer to the request
+///     now in flight, and must not fail a start that request then completes.
 ///
 /// Also fixed on the way: upstream signalled its NSCondition without holding
 /// the lock and waited without a predicate, so an answer that arrived before
@@ -48,7 +54,12 @@ enum TunnelSettingsApply {
         let answer = Answer()
         let total = max(1, attempts)
         for attempt in 1...total {
-            issue { error in answer.deliver(error) }
+            // An error that landed between the last wait and here came from
+            // what was then the latest request: it is final, nothing is re-asked.
+            if let outcome = answer.begin(attempt) {
+                return outcome
+            }
+            issue { error in answer.deliver(error, from: attempt) }
             if let outcome = answer.wait(until: Date().addingTimeInterval(timeout)) {
                 return outcome
             }
@@ -61,30 +72,44 @@ enum TunnelSettingsApply {
         return TunnelSettingsApplyTimedOut(attempts: total, timeout: timeout)
     }
 
-    /// The first answer, guarded by its own condition.
+    /// The deciding answer (see the type's comment), guarded by its own
+    /// condition.
     private final class Answer {
         private let condition = NSCondition()
-        private var answered = false
+        private var latest = 0
+        private var decided = false
         private var error: Error?
 
-        func deliver(_ error: Error?) {
+        /// Request `attempt` is about to be made. Returns the outcome when one
+        /// is already final.
+        func begin(_ attempt: Int) -> Error?? {
             condition.lock()
             defer { condition.unlock() }
-            guard !answered else { return }
-            answered = true
+            if decided { return .some(error) }
+            latest = attempt
+            return nil
+        }
+
+        func deliver(_ error: Error?, from attempt: Int) {
+            condition.lock()
+            defer { condition.unlock() }
+            guard !decided else { return }
+            // An earlier request's error is not final; its success is.
+            if error != nil && attempt != latest { return }
+            decided = true
             self.error = error
             condition.broadcast()
         }
 
-        /// `.some(nil)` = applied, `.some(error)` = refused, `nil` = still no
-        /// answer at `deadline`.
+        /// `.some(nil)` = applied, `.some(error)` = refused, `nil` = still
+        /// undecided at `deadline`.
         func wait(until deadline: Date) -> Error?? {
             condition.lock()
             defer { condition.unlock() }
-            while !answered {
+            while !decided {
                 if !condition.wait(until: deadline) { break }
             }
-            return answered ? .some(error) : nil
+            return decided ? .some(error) : nil
         }
     }
 }

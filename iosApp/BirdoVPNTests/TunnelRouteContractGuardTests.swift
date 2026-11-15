@@ -97,4 +97,17 @@ final class TunnelRouteContractGuardTests: XCTestCase {
         XCTAssertTrue(provider.contains("SecTrustEvaluateWithError(trust, &trustError)"),
                       "standard validation must run before the pin match")
     }
+
+    /// TLS 1.2 is the floor on BOTH ways in. The iOS 17 / macOS 14 path used
+    /// to pass no TLS parameters at all, i.e. the system's default floor.
+    func testBothPathsRefuseTLSBelow12() throws {
+        let transport = try code("PacketTunnel/TunnelHeartbeatTransport.swift")
+        XCTAssertTrue(transport.contains("sec_protocol_options_set_min_tls_protocol_version(options, .TLSv12)"))
+        XCTAssertTrue(transport.contains("tls.minimumSSLProtocolVersion = Self.minimumTLSVersion"))
+        // kTLSProtocol12 == 8 in Security's SSLProtocol.
+        XCTAssertTrue(transport.contains("private static let minimumTLSVersion = 8"))
+        XCTAssertTrue(transport.contains("tlsParameters: tls, delegate: self"))
+        XCTAssertFalse(transport.contains("tlsParameters: nil"),
+                       "nil TLS parameters leave the minimum version to the system default")
+    }
 }

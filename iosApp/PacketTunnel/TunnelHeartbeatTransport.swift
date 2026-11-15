@@ -255,6 +255,12 @@ private final class InterfaceExchange: @unchecked Sendable {
 // where this path stops being used.
 
 private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticationDelegate, @unchecked Sendable {
+    /// `kTLSProtocol12` of Security's `SSLProtocol` (SecProtocolTypes.h), the
+    /// unit `NWTLSParameters.minimumSSLProtocolVersion` is written in. Spelled
+    /// as its value: the enum itself has been deprecated since iOS 13, and
+    /// naming it would add a deprecation warning to every build.
+    private static let minimumTLSVersion = 8
+
     private weak var provider: NEPacketTunnelProvider?
     private let host: String
     private let port: UInt16
@@ -287,8 +293,12 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
             return
         }
         let endpoint = __NWHostEndpoint(hostname: host, port: String(port))
+        // TLS 1.2 at least, as on the iOS 18 path (`.TLSv12` above). With nil
+        // parameters the floor was whatever the system default allowed.
+        let tls = __NWTLSParameters()
+        tls.minimumSSLProtocolVersion = Self.minimumTLSVersion
         let connection = provider.__createTCPConnectionThroughTunnel(to: endpoint, enableTLS: true,
-                                                                   tlsParameters: nil, delegate: self)
+                                                                   tlsParameters: tls, delegate: self)
         let observation = connection.observe(\.state, options: [.initial, .new]) { [weak self] observed, _ in
             guard let self else { return }
             let state = observed.state

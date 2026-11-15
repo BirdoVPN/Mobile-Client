@@ -77,6 +77,72 @@ final class TunnelSettingsApplyTests: XCTestCase {
         XCTAssertEqual(requests, 2)
     }
 
+    // MARK: - Which answer is final (review of #621)
+
+    /// The first request times out and is asked again; its completion then
+    /// arrives late WITH AN ERROR (the system cancelling the superseded
+    /// request, say), and the re-ask succeeds. The settings are applied: the
+    /// stale error must not fail the start. Before, the first answer of any
+    /// request won, so this returned the error.
+    func testALateErrorFromTheFirstRequestDoesNotOverrideTheReAsksSuccess() {
+        var handoffs: [Handoff] = []
+        let failure = TunnelSettingsApply.run(attempts: 2, timeout: 1, log: { _ in },
+                                              issue: { done in
+                                                  handoffs.append(Handoff(done))
+                                                  guard handoffs.count == 2 else { return }
+                                                  let first = handoffs[0], second = handoffs[1]
+                                                  DispatchQueue.global().async {
+                                                      first.deliver(Refused())
+                                                      second.deliver(nil)
+                                                  }
+                                              })
+        XCTAssertNil(failure, "an earlier request's late error overrode the latest request's success")
+        XCTAssertEqual(handoffs.count, 2)
+    }
+
+    /// With only that stale error and no answer to the re-ask, the outcome is
+    /// the timeout: the error was not about the request in flight.
+    func testAnEarlierRequestsLateErrorAloneIsStillATimeout() {
+        var handoffs: [Handoff] = []
+        let failure = TunnelSettingsApply.run(attempts: 2, timeout: 0.2, log: { _ in },
+                                              issue: { done in
+                                                  handoffs.append(Handoff(done))
+                                                  guard handoffs.count == 2 else { return }
+                                                  let first = handoffs[0]
+                                                  DispatchQueue.global().async { first.deliver(Refused()) }
+                                              })
+        XCTAssertEqual(failure as? TunnelSettingsApplyTimedOut,
+                       TunnelSettingsApplyTimedOut(attempts: 2, timeout: 0.2))
+    }
+
+    /// The LATEST request's error is final.
+    func testTheLatestRequestsErrorIsFinal() {
+        var requests = 0
+        let failure = TunnelSettingsApply.run(attempts: 2, timeout: 0.05, log: { _ in },
+                                              issue: { done in
+                                                  requests += 1
+                                                  if requests == 2 { done(Refused()) }
+                                              })
+        XCTAssertEqual(failure as? Refused, Refused())
+        XCTAssertEqual(requests, 2)
+    }
+
+    /// A success is final from ANY request, even when the latest then errors.
+    func testAnEarlierRequestsLateSuccessIsFinal() {
+        var handoffs: [Handoff] = []
+        let failure = TunnelSettingsApply.run(attempts: 2, timeout: 1, log: { _ in },
+                                              issue: { done in
+                                                  handoffs.append(Handoff(done))
+                                                  guard handoffs.count == 2 else { return }
+                                                  let first = handoffs[0], second = handoffs[1]
+                                                  DispatchQueue.global().async {
+                                                      first.deliver(nil)
+                                                      second.deliver(Refused())
+                                                  }
+                                              })
+        XCTAssertNil(failure)
+    }
+
     /// Upstream signalled without the lock and waited without a predicate, so
     /// an answer that landed before the wait began was lost and read as a
     /// timeout. Harmless while a timeout meant "proceed", fatal once it fails
