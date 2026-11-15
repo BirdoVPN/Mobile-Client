@@ -35,8 +35,7 @@ final class ScaledFontGuardTests: XCTestCase {
             let range = NSRange(text.startIndex..., in: text)
             for re in regexes {
                 for m in re.matches(in: text, range: range) {
-                    let line = text.prefix(m.range.location).filter { $0 == "
-" }.count + 1
+                    let line = text.prefix(m.range.location).filter { $0 == "\n" }.count + 1
                     offenders.append("\(file.lastPathComponent):\(line)")
                 }
             }
