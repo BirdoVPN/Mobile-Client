@@ -1449,4 +1449,139 @@ class BirdoVpnServiceLifecycleTest {
         assertFalse(BirdoVpnService.stealthActive)
         waitFor("the probe verdict") { BirdoVpnService.currentState == VpnState.Connected }
     }
+
+    // ── MR-953 F5 (review of #622): every way out of Stealth ends it ─────
+    //
+    // The Stealth flag outlived failed and abandoned setups: only stopTunnel
+    // and switchTeardown reset it. A Stealth connect that timed out on a
+    // network blocking DoH left it true with no Xray running, and DohResolver
+    // then failed closed for the life of the process, sign-in included. Each
+    // test below starts from a running Stealth session and takes one exit.
+
+    private fun stealthFlag(): kotlinx.coroutines.flow.MutableStateFlow<Boolean> {
+        val f = BirdoVpnService::class.java.getDeclaredField("_stealthActiveFlow")
+        f.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        return f.get(null) as kotlinx.coroutines.flow.MutableStateFlow<Boolean>
+    }
+
+    private fun invokePrivate(name: String, types: Array<Class<*>>, vararg args: Any?): Any? =
+        BirdoVpnService::class.java.getDeclaredMethod(name, *types).apply { isAccessible = true }.invoke(service, *args)
+
+    private fun publish(state: VpnState) {
+        BirdoVpnService.Companion::class.java.getDeclaredMethod("updateState", VpnState::class.java)
+            .apply { isAccessible = true }
+            .invoke(BirdoVpnService.Companion, state)
+    }
+
+    private fun currentGen(): Long = (field("transitionGen") as AtomicLong).get()
+
+    /** Xray is up and Stealth is on when [exit] runs; Stealth must be over after it. */
+    private fun assertExitEndsStealth(exit: String, run: () -> Unit) {
+        mockkObject(XrayManager)
+        every { XrayManager.stop() } just Runs
+        stealthFlag().value = true
+        run()
+        waitFor("$exit to end Stealth") { !BirdoVpnService.stealthActive }
+        verify(atLeast = 1) { XrayManager.stop() }
+    }
+
+    @Test
+    fun `a stealth connect that times out ends stealth`() {
+        assertExitEndsStealth("the connect timeout") {
+            publish(VpnState.StealthConnecting)
+            invokePrivate("onConnectTimeout", emptyArray())
+        }
+    }
+
+    @Test
+    fun `a failed stealth setup ends stealth`() {
+        assertExitEndsStealth("failSetup") {
+            invokePrivate(
+                "failSetup",
+                arrayOf(Long::class.javaPrimitiveType!!, String::class.java, FailureKind::class.java),
+                currentGen(),
+                SessionCopy.STEALTH_FAILED,
+                FailureKind.STEALTH_FAILED,
+            )
+        }
+    }
+
+    @Test
+    fun `a stealth setup a newer transition superseded ends stealth`() {
+        assertExitEndsStealth("supersededAt") {
+            val stale = currentGen()
+            (field("transitionGen") as AtomicLong).incrementAndGet()
+            val abandoned = invokePrivate(
+                "supersededAt",
+                arrayOf(Long::class.javaPrimitiveType!!, String::class.java),
+                stale,
+                "test",
+            )
+            assertEquals(true, abandoned)
+        }
+    }
+
+    @Test
+    fun `xray exiting on its own ends stealth`() {
+        assertExitEndsStealth("onXrayExited") {
+            setField("tunnelHandle", 7)
+            invokePrivate("onXrayExited", arrayOf(Long::class.javaPrimitiveType!!), currentGen())
+        }
+    }
+
+    @Test
+    fun `releasing a give-up's block ends stealth`() {
+        assertExitEndsStealth("handleReleaseBlock") {
+            invokePrivate("handleReleaseBlock", emptyArray())
+        }
+    }
+
+    @Test
+    fun `onDestroy ends stealth`() {
+        assertExitEndsStealth("onDestroy") { service.onDestroy() }
+    }
+
+    @Test
+    fun `a stop ends stealth`() {
+        assertExitEndsStealth("stopTunnel") {
+            invokePrivate(
+                "stopTunnel",
+                arrayOf(VpnState.Error::class.java, Boolean::class.javaPrimitiveType!!),
+                null,
+                false,
+            )
+        }
+    }
+
+    @Test
+    fun `a switch teardown ends stealth`() {
+        assertExitEndsStealth("switchTeardown") {
+            invokePrivate("switchTeardown", arrayOf(Intent::class.java), intentWith(BirdoVpnService.ACTION_SWITCH_TEARDOWN))
+        }
+    }
+
+    /**
+     * The rest of the exits (the transport probe's no-handshake failure, an
+     * interrupted setup) reach the reset the same way: Xray is stopped in
+     * exactly one function, and that function ends Stealth. A second Xray
+     * stop somewhere else would be a way out that skips the reset.
+     */
+    @Test
+    fun `stopping xray ends stealth, and xray is stopped nowhere else`() {
+        assertExitEndsStealth("cleanupStealthAndQuantum") {
+            invokePrivate("cleanupStealthAndQuantum", emptyArray())
+        }
+        var dir = java.io.File("").absoluteFile
+        while (!java.io.File(dir, "settings.gradle.kts").isFile) dir = dir.parentFile ?: error("repo root not found")
+        val main = java.io.File(dir, "app/src/main/java")
+        val stops = main.walkTopDown().filter { it.isFile && it.extension == "kt" }.flatMap { file ->
+            val text = file.readText().replace("\r\n", "\n")
+            Regex("""XrayManager\.stop\(""").findAll(text).map { m ->
+                val fn = text.substring(0, m.range.first).substringAfterLast("private fun ").substringBefore("(")
+                "${file.name}:$fn"
+            }
+        }.toList()
+        assertEquals(listOf("BirdoVpnService.kt:cleanupStealthAndQuantum"), stops)
+    }
 }

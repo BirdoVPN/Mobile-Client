@@ -778,7 +778,10 @@ class BirdoVpnService : VpnService() {
         }
     }
 
-    private val connectTimeoutRunnable = Runnable {
+    private val connectTimeoutRunnable = Runnable { onConnectTimeout() }
+
+    /** The connect watchdog fired: no verified tunnel within [CONNECT_TIMEOUT_MS]. */
+    private fun onConnectTimeout() {
         val gen = transitionGen.get()
         serial {
             if (!isCurrent(gen) || !currentState.isConnectingPhase) return@serial
@@ -3288,9 +3291,23 @@ class BirdoVpnService : VpnService() {
         } catch (_: Exception) { /* already unregistered */ }
     }
 
-    /** Stop Xray Reality and BirdoPQ, zeroing all PQ key material. */
+    /**
+     * Stop Xray Reality and BirdoPQ, zeroing all PQ key material, and end
+     * Stealth.
+     *
+     * MR-953 F5 (review of #622): this is the one place Xray is stopped, and
+     * every teardown and every failed or abandoned setup comes through it
+     * (stopTunnel, switchTeardown, failSetup, supersededAt, the connect
+     * timeout, onXrayExited, the transport probe's failure, an interrupted
+     * setup, handleReleaseBlock, onDestroy). The flag used to be reset only
+     * by the first two, so a Stealth connect that timed out left it true with
+     * no Xray running, and DohResolver failed closed for the life of the
+     * process: sign-in and a plain connect included, on a network that
+     * blocks DoH.
+     */
     private fun cleanupStealthAndQuantum() {
         try { XrayManager.stop() } catch (e: Exception) { Log.w(TAG, "Error stopping Xray", e) }
+        setStealthActive(false)
         // Names THIS session's pair only: a stale generation's teardown must not
         // wipe the pair a newer dial uploaded (MR-703).
         try { BirdoPqManager.stop(sessionPqKey) } catch (e: Exception) { Log.w(TAG, "Error stopping BirdoPQ", e) }

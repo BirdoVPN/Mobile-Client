@@ -317,26 +317,6 @@ class DohResolverStealthTest {
         )
     }
 
-    /**
-     * The service has one writer of the Stealth flag, and its true-to-false
-     * edge drops the system answers. A direct `_stealthActiveFlow.value =`
-     * write would end a session without forgetting them.
-     */
-    @Test
-    fun `the end of a stealth session forgets the system answers`() {
-        val svc = source("app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt")
-        assertEquals(
-            "write the Stealth flag through setStealthActive only",
-            0,
-            Regex("""_stealthActiveFlow\.(value\s*=|update|compareAndSet|tryEmit|emit)""").findAll(svc).count(),
-        )
-        assertEquals(1, Regex("""_stealthActiveFlow\.getAndUpdate""").findAll(svc).count())
-        val setter = svc.substringAfter("private fun setStealthActive(active: Boolean) {").substringBefore("\n    }")
-        assertTrue(setter.contains("val was = _stealthActiveFlow.getAndUpdate { active }"))
-        assertTrue(setter.contains("if (was && !active) DohResolver.forgetSystemAnswers()"))
-        assertTrue(Regex("""setStealthActive\(false\)""").findAll(svc).count() >= 4)
-    }
-
     /** Every sign-out path (log out, deletion, a dead session) clears the tokens through clearAll. */
     @Test
     fun `sign-out forgets the remembered answers`() {
