@@ -397,19 +397,56 @@ class DohResolverStealthTest {
         return File(dir, path).readText().replace("\r\n", "\n")
     }
 
-    /** The production path wires the live Stealth flag, a monotonic clock, and the system resolver as the fallback. */
+    /**
+     * The production path, argument by argument (review of #622: the old
+     * guard passed with `doh = Dns.SYSTEM::lookup` or `remembered =
+     * mutableMapOf()`). DoH is the Cloudflare client, the map is the one the
+     * forget functions clear, the flag is the live one, the clock monotonic.
+     */
     @Test
-    fun `resolve is wired to the live stealth flag`() {
+    fun `resolve is wired to Cloudflare DoH, the shared map, the live flag and the allow-list`() {
         val src = source("app/src/main/java/app/birdo/vpn/data/network/DohResolver.kt")
-        val resolve = src.substringAfter("fun resolve(hostname: String)").substringBefore("internal fun resolveWith(")
-        assertTrue(resolve.contains("stealthActive = { BirdoVpnService.stealthActive }"))
-        assertTrue(resolve.contains("system = okhttp3.Dns.SYSTEM::lookup"))
-        assertTrue(resolve.contains("nowMs = { SystemClock.elapsedRealtime() }"))
-        val body = src.substringAfter("internal fun resolveWith(")
-        assertFalse(
-            "resolveWith must use the injected system resolver, not Dns.SYSTEM directly",
-            body.substringBefore("val dns: okhttp3.Dns").contains("okhttp3.Dns.SYSTEM.lookup("),
+        val call = src.substringAfter("fun resolve(hostname: String): List<InetAddress> = resolveWith(")
+        assertTrue("resolve no longer delegates to resolveWith", call.length < src.length)
+        val args = call.substringBefore("\n    )").lines()
+            .map { it.trim().removeSuffix(",") }
+            .filter { it.isNotEmpty() }
+            .associate { it.substringBefore(" = ") to it.substringAfter(" = ") }
+        assertEquals(
+            mapOf(
+                "hostname" to "hostname",
+                "doh" to "cloudflare::lookup",
+                "system" to "okhttp3.Dns.SYSTEM::lookup",
+                "stealthActive" to "{ BirdoVpnService.stealthActive }",
+                "remembered" to "remembered",
+                "nowMs" to "{ SystemClock.elapsedRealtime() }",
+                "rememberedHosts" to "REMEMBERED_HOSTS",
+            ),
+            args,
         )
+
+        // `cloudflare` is the pinned Cloudflare DoH client…
+        val cloudflare = src.substringAfter("private val cloudflare: DnsOverHttps = DnsOverHttps.Builder()")
+            .substringBefore(".build()")
+        assertTrue(cloudflare.contains(".client(bootstrapClient)"))
+        assertTrue(cloudflare.contains(""".url("https://cloudflare-dns.com/dns-query".toHttpUrl())"""))
+
+        // …and `remembered` is the one map, the one sign-out and a user stop clear.
+        assertEquals(
+            1,
+            Regex("""private val remembered = ConcurrentHashMap<String, Remembered>\(\)""").findAll(src).count(),
+        )
+        assertTrue(src.substringAfter("fun forgetRememberedAnswers() {").substringBefore("\n    }").contains("remembered.clear()"))
+        assertTrue(
+            src.substringAfter("fun forgetSystemAnswers() {").substringBefore("\n    }")
+                .contains("remembered.entries.removeAll { it.value.fromSystem }"),
+        )
+
+        // resolveWith uses only what it is handed.
+        val body = src.substringAfter("internal fun resolveWith(").substringBefore("val dns: okhttp3.Dns")
+        for (direct in listOf("okhttp3.Dns.SYSTEM.lookup(", "cloudflare.lookup(", "BirdoVpnService.stealthActive", "SystemClock.")) {
+            assertFalse("resolveWith reaches for $direct instead of its parameter", body.contains(direct))
+        }
     }
 
     /** Every sign-out path (log out, deletion, a dead session) clears the tokens through clearAll. */
