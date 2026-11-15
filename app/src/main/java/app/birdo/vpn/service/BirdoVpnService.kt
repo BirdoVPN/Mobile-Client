@@ -47,7 +47,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import androidx.glance.appwidget.updateAll
 import java.net.InetAddress
@@ -3011,14 +3010,14 @@ class BirdoVpnService : VpnService() {
      * Only a tunnel the app's own traffic rides ([publishConnected]) or a stop
      * the user asked for ([stopTunnel]) releases it.
      *
-     * Its END drops the system-resolver answer DohResolver kept from before
-     * it began: that answer was obtained for this session, and the next
-     * session's connect looks the host up again.
+     * Its end leaves the system-resolver answer DohResolver kept from before
+     * Stealth began: a switch or a re-dial is the same session the user
+     * started, and its /connect usually reuses a pooled connection with no
+     * lookup of its own. A stop the user asked for forgets it ([stopTunnel]).
      */
     private fun setStealthActive(active: Boolean) {
         if (active) appPrefs.crashReportsHeldForStealth = true
-        val was = _stealthActiveFlow.getAndUpdate { active }
-        if (was && !active) DohResolver.forgetSystemAnswers()
+        _stealthActiveFlow.value = active
     }
 
     /**
@@ -3109,6 +3108,10 @@ class BirdoVpnService : VpnService() {
         // for a Stealth session may go. Any other end (a crash, Xray exiting,
         // a re-dial, an error stop) keeps them held (setStealthActive).
         if (userInitiated && appPrefs.crashReportsHeldForStealth) appPrefs.crashReportsHeldForStealth = false
+        // MR-953 F5 (review of #622, item 2): the system-resolver answer kept
+        // for Stealth ends with the session the user ends. A switch, a
+        // re-dial or an error stop keeps it for the session that follows.
+        if (userInitiated) DohResolver.forgetSystemAnswers()
         updateWidgetState(false, null)
         if (reason == null && shouldPostDisconnectedNotice(userInitiated, appPrefs.notificationsEnabled)) {
             notifManager.postDisconnectedNotification()

@@ -115,7 +115,7 @@ class CrashReportingStealthGateTest {
         assertTrue(setter.contains("if (active) appPrefs.crashReportsHeldForStealth = true"))
         assertTrue(
             "the hold must be set before the flag, so no send slips between them",
-            setter.indexOf("crashReportsHeldForStealth = true") < setter.indexOf("_stealthActiveFlow.getAndUpdate"),
+            setter.indexOf("crashReportsHeldForStealth = true") < setter.indexOf("_stealthActiveFlow.value = active"),
         )
 
         val connected = svc.substringAfter("private fun publishConnected(handle: Int) {").substringBefore("\n    }")

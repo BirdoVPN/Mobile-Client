@@ -108,8 +108,8 @@ Compiled to:
   app and cannot be routed into the tunnel it carries. During Stealth the app
   sends no new query to the network's own DNS resolver: if DNS-over-HTTPS
   fails, it reuses the address it already has (one the network's resolver gave
-  before the session began is kept for that session only, at most a day), or
-  the lookup fails. The lookups made to connect and to reconnect happen before
+  before Stealth began is kept through server switches and reconnects until
+  you disconnect or sign out, at most a day), or the lookup fails. The lookups made to connect and to reconnect happen before
   Stealth is active, and on a network that blocks DNS-over-HTTPS they still
   use the network's resolver. Opted-in crash reports from a Stealth session
   wait on the device, even across a crash, until the app is inside a tunnel

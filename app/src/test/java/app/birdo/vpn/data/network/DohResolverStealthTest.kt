@@ -150,7 +150,7 @@ class DohResolverStealthTest {
     fun `forgetting drops every remembered answer`() {
         val live = liveCache()
         live["api.birdo.app"] = DohResolver.Remembered(systemAnswer, now, fromSystem = true)
-        live["other.birdo.app"] = DohResolver.Remembered(dohAnswer, now)
+        live["birdo.app"] = DohResolver.Remembered(dohAnswer, now)
         try {
             DohResolver.forgetRememberedAnswers()
             assertTrue(live.isEmpty())
@@ -171,19 +171,19 @@ class DohResolverStealthTest {
     }
 
     /**
-     * Review of #622: the answer the network's resolver gave before a Stealth
-     * session began is that session's only. When Stealth ends it is dropped;
-     * the next session's connect looks the host up again. A DoH answer, which
-     * disclosed nothing, stays.
+     * A user stop (BirdoVpnService.stopTunnel) forgets the answer the
+     * network's resolver gave before Stealth began; BirdoVpnServiceLifecycleTest
+     * shows a switch or a re-dial does not. A DoH answer, which disclosed
+     * nothing, stays.
      */
     @Test
-    fun `stealth ending forgets the pre-stealth system answer and keeps DoH answers`() {
+    fun `forgetting system answers drops them and keeps DoH answers`() {
         val live = liveCache()
         try {
             // Connect-time lookup (Stealth not active yet), DoH blocked.
             assertSame(systemAnswer, resolve(dohFails, stealth = false, cache = live))
-            // A DoH answer for another host from earlier.
-            assertEquals(dohAnswer, resolve(dohWorks, stealth = false, cache = live, host = "other.birdo.app"))
+            // A DoH answer for the web host from earlier.
+            assertEquals(dohAnswer, resolve(dohWorks, stealth = false, cache = live, host = "birdo.app"))
             // During Stealth: reused, no new system query.
             assertSame(systemAnswer, resolve(dohFails, stealth = true, cache = live))
             assertEquals(1, systemCalls)
@@ -191,10 +191,10 @@ class DohResolverStealthTest {
             DohResolver.forgetSystemAnswers()
 
             assertFalse(live.containsKey("api.birdo.app"))
-            assertTrue(live.containsKey("other.birdo.app"))
+            assertTrue(live.containsKey("birdo.app"))
             // A later Stealth session that made no lookup of its own has nothing to reuse.
             assertLookupFails { resolve(dohFails, stealth = true, cache = live) }
-            assertEquals(dohAnswer, resolve(dohFails, stealth = true, cache = live, host = "other.birdo.app"))
+            assertEquals(dohAnswer, resolve(dohFails, stealth = true, cache = live, host = "birdo.app"))
             assertEquals("a NEW system-resolver query was made during Stealth", 1, systemCalls)
         } finally {
             live.clear()

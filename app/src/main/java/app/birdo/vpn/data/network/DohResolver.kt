@@ -175,7 +175,7 @@ object DohResolver {
      * anything, where a new system-resolver query would name the API host to
      * the network. In memory only, bounded by [REMEMBER_TTL_MS], dropped on
      * sign-out ([forgetRememberedAnswers]), and a system answer is also dropped
-     * when the Stealth session it was obtained for ends ([forgetSystemAnswers]).
+     * when the user ends a session ([forgetSystemAnswers]).
      */
     private val remembered = ConcurrentHashMap<String, Remembered>()
 
@@ -185,11 +185,14 @@ object DohResolver {
     }
 
     /**
-     * A Stealth session ended (BirdoVpnService.setStealthActive). The answers
-     * the network's resolver gave were obtained for THAT session, before it
-     * began; the next session's connect looks the host up again, so no
-     * system answer is reused beyond the session it was asked for. DoH
-     * answers stay (bounded by [REMEMBER_TTL_MS]): they disclosed nothing.
+     * The user ended a session (BirdoVpnService.stopTunnel). The answers the
+     * network's resolver gave were obtained for that session, before Stealth
+     * began, and are not reused beyond it. A server switch, a re-dial or an
+     * error stop is NOT an end: the re-dial's /connect usually reuses a
+     * pooled connection and makes no lookup of its own, so forgetting there
+     * left the next Stealth session with nothing to reuse (review of #622,
+     * item 2). DoH answers stay (bounded by [REMEMBER_TTL_MS]): they
+     * disclosed nothing.
      */
     fun forgetSystemAnswers() {
         remembered.entries.removeAll { it.value.fromSystem }
@@ -240,18 +243,19 @@ object DohResolver {
      * blocks DoH: the lookup made to connect is reused for the heartbeat, so
      * the server does not reap the key after five minutes of silence and the
      * session does not cycle. A poisoned answer is covered by the API's
-     * certificate pinning. A system answer lives for one Stealth session: it
-     * is dropped when that session ends ([forgetSystemAnswers]), on sign-out,
-     * and after [ttlMs].
+     * certificate pinning. A system answer lasts until the user ends a
+     * session ([forgetSystemAnswers]; a switch or a re-dial keeps it), the
+     * user signs out, or [ttlMs] passes.
      *
      * WHAT THIS DOES NOT COVER: Stealth is only "active" once Xray is up
      * (BirdoVpnService), and stops being so the moment a session is torn
      * down. The lookups made to connect, and to re-dial after a drop, happen
      * outside that window, and on a network that blocks DoH they still go to
-     * the network's resolver. And when a session's connect made no lookup at
-     * all (OkHttp reused a pooled connection), that session has no system
-     * answer to reuse: on a network that blocks DoH its lookups fail once the
-     * pooled connection is gone, until the re-dial looks the host up again.
+     * the network's resolver. And when the first connect after a user stop
+     * made no lookup at all (OkHttp reused a pooled connection), that session
+     * has no system answer to reuse: on a network that blocks DoH its lookups
+     * fail once the pooled connection is gone, until a re-dial looks the host
+     * up again.
      *
      * [stealthActive] is read only after DoH has failed.
      */

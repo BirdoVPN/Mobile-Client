@@ -1562,6 +1562,73 @@ class BirdoVpnServiceLifecycleTest {
     }
 
     /**
+     * Review of #622, item 2. A server switch or a re-dial is the same
+     * Stealth session the user started, and the re-dial's /connect usually
+     * reuses the bypass client's pooled connection, so it makes no lookup of
+     * its own. The system answer from before Stealth must survive it, or the
+     * next network change leaves every heartbeat without an address: reaped
+     * after five minutes, then a cycle. An error stop keeps it too. Only a
+     * stop the user asked for forgets it.
+     */
+    @Test
+    fun `a switch, a re-dial and an error stop keep the pre-stealth answer, a user stop forgets it`() {
+        val cacheField = app.birdo.vpn.data.network.DohResolver::class.java.getDeclaredField("remembered")
+        cacheField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val live = cacheField.get(app.birdo.vpn.data.network.DohResolver)
+            as MutableMap<String, app.birdo.vpn.data.network.DohResolver.Remembered>
+        val answer = listOf(java.net.InetAddress.getByAddress("api.birdo.app", byteArrayOf(198.toByte(), 51, 100, 7)))
+        var systemCalls = 0
+        // The heartbeat's lookup once the pooled connection is gone: DoH blocked.
+        val beat = {
+            app.birdo.vpn.data.network.DohResolver.resolveWith(
+                "api.birdo.app",
+                { throw java.io.IOException("DoH blocked") },
+                { systemCalls++; answer },
+                { BirdoVpnService.stealthActive },
+                live,
+                { 2_000L },
+            )
+        }
+        val stop = { userInitiated: Boolean ->
+            invokePrivate(
+                "stopTunnel",
+                arrayOf(VpnState.Error::class.java, Boolean::class.javaPrimitiveType!!),
+                null,
+                userInitiated,
+            )
+        }
+        mockkObject(XrayManager)
+        every { XrayManager.stop() } just Runs
+        try {
+            // The connect-time lookup, before Stealth began.
+            live["api.birdo.app"] = app.birdo.vpn.data.network.DohResolver.Remembered(answer, 1_000L, fromSystem = true)
+
+            stealthFlag().value = true
+            invokePrivate("switchTeardown", arrayOf(Intent::class.java), intentWith(BirdoVpnService.ACTION_SWITCH_TEARDOWN))
+            assertFalse(BirdoVpnService.stealthActive)
+            // The re-dial is Stealth again and made no lookup.
+            stealthFlag().value = true
+            assertEquals(answer, beat())
+
+            stop(false)
+            stealthFlag().value = true
+            assertEquals("an error stop forgot the answer", answer, beat())
+
+            stop(true)
+            stealthFlag().value = true
+            try {
+                beat()
+                org.junit.Assert.fail("a user stop must forget the system answer")
+            } catch (_: java.net.UnknownHostException) {
+            }
+            assertEquals("a NEW system-resolver query was made during Stealth", 0, systemCalls)
+        } finally {
+            live.clear()
+        }
+    }
+
+    /**
      * The rest of the exits (the transport probe's no-handshake failure, an
      * interrupted setup) reach the reset the same way: Xray is stopped in
      * exactly one function, and that function ends Stealth. A second Xray
