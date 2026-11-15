@@ -266,8 +266,8 @@ object WireGuardConfigBuilder {
      * filtering one included — so with it on, BirdoShield does nothing: the
      * server must not be told it is on, and its row must not read ON.
      */
-    fun shieldInEffect(dnsFilteringEnabled: Boolean, customDnsEnabled: Boolean): Boolean =
-        dnsFilteringEnabled && !customDnsEnabled
+    fun shieldInEffect(dnsFilteringEnabled: Boolean, customDnsEnabled: Boolean, fleetGateOn: Boolean): Boolean =
+        dnsFilteringEnabled && !customDnsEnabled && fleetGateOn
 
     /**
      * A1-025: whether to warn that Android's strict Private DNS overrides the

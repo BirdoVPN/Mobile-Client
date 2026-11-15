@@ -358,11 +358,14 @@ class VpnManagerTest {
     // The review of #403 removed both `dnsFiltering = prefs.dnsFilteringEnabled`
     // lines and the suite stayed green: the repository and serializer tests see
     // the flag once it is a parameter, but nothing proved the PREF reaches the
-    // parameter. These four are that proof, one per dial path per state.
+    // parameter. These are that proof, per dial path, per pref state and per
+    // fleet-gate state.
 
     @Test
     fun `connect sends dnsFiltering when the BirdoShield pref is on`() = runTest {
         every { prefs.dnsFilteringEnabled } returns true
+        // The last config fetch reported the fleet gate on.
+        every { prefs.dnsFilteringGateOn } returns true
         coEvery {
             repository.connectVpn(
                 serverNodeId = "srv-1", deviceName = any(), stealthMode = any(),
@@ -386,6 +389,36 @@ class VpnManagerTest {
     @Test
     fun `connect leaves dnsFiltering off when the BirdoShield pref is off`() = runTest {
         every { prefs.dnsFilteringEnabled } returns false
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val result = vpnManager.connect("srv-1")
+
+        assertTrue(result is ApiResult.Success)
+        coVerify(exactly = 1) {
+            repository.connectVpn(
+                serverNodeId = "srv-1", deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = false,
+            )
+        }
+        coVerify(exactly = 0) {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = true,
+            )
+        }
+    }
+
+    /**
+     * The fleet gate (owner 2026-11-13): a pref set while BirdoShield was on is
+     * not sent while the last-known gate is off, or not known yet (a fresh
+     * install, a fetch that never answered: the stored default is false).
+     */
+    @Test
+    fun `connect does not send dnsFiltering while the fleet gate is off`() = runTest {
+        every { prefs.dnsFilteringEnabled } returns true
+        every { prefs.dnsFilteringGateOn } returns false
         coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
 
         val result = vpnManager.connect("srv-1")
@@ -515,6 +548,7 @@ class VpnManagerTest {
     @Test
     fun `connectMultiHop sends dnsFiltering when the BirdoShield pref is on`() = runTest {
         every { prefs.dnsFilteringEnabled } returns true
+        every { prefs.dnsFilteringGateOn } returns true
         coEvery {
             repository.connectMultiHop(
                 entryNodeId = "de-1", exitNodeId = "nl-1", deviceName = any(), stealthMode = any(),
@@ -538,6 +572,33 @@ class VpnManagerTest {
     @Test
     fun `connectMultiHop leaves dnsFiltering off when the BirdoShield pref is off`() = runTest {
         every { prefs.dnsFilteringEnabled } returns false
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Success(makeMultiHopResponse())
+
+        val result = vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertTrue(result is ApiResult.Success)
+        coVerify(exactly = 1) {
+            repository.connectMultiHop(
+                entryNodeId = "de-1", exitNodeId = "nl-1", deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = false,
+            )
+        }
+        coVerify(exactly = 0) {
+            repository.connectMultiHop(
+                entryNodeId = any(), exitNodeId = any(), deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = true,
+            )
+        }
+    }
+
+    @Test
+    fun `connectMultiHop does not send dnsFiltering while the fleet gate is off`() = runTest {
+        every { prefs.dnsFilteringEnabled } returns true
+        every { prefs.dnsFilteringGateOn } returns false
         coEvery {
             repository.connectMultiHop(any(), any(), any(), any(), any(), any())
         } returns ApiResult.Success(makeMultiHopResponse())
@@ -1773,6 +1834,71 @@ class VpnManagerTest {
         coVerify { repository.disconnectVpn("mh-key") }
     }
 
+    // ── MR-703: a dial's PQ pair is the service's only once START carries it ──
+
+    private fun uploadsPqKey(key: String) {
+        every { prefs.quantumProtectionEnabled } returns true
+        mockkObject(BirdoPqManager)
+        coEvery { BirdoPqManager.getClientPublicKeyB64(context) } returns key
+    }
+
+    /** The service never got this dial (no START), so nothing else would wipe its pair. */
+    @Test
+    fun `a Disconnect while connecting wipes the pair the dial uploaded`() = runTest {
+        uploadsPqKey("pq-key-A")
+        val gate = CompletableDeferred<ApiResult<ConnectResponse>>()
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(),
+            )
+        } coAnswers { gate.await() }
+
+        launch { vpnManager.connect("srv-1") }
+        runCurrent()
+        verify(exactly = 0) { BirdoPqManager.discardPending(any()) }
+        vpnManager.disconnect()
+        gate.complete(ApiResult.Success(makeConnectResponse()))
+        runCurrent()
+
+        assertFalse(BirdoVpnService.ACTION_START in dispatchedActions)
+        verify(exactly = 1) { BirdoPqManager.discardPending("pq-key-A") }
+    }
+
+    @Test
+    fun `a multi-hop dial the server refuses wipes the pair it uploaded`() = runTest {
+        uploadsPqKey("pq-key-M")
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Error("Server unavailable", 503)
+
+        vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertFalse(BirdoVpnService.ACTION_START in dispatchedActions)
+        verify(exactly = 1) { BirdoPqManager.discardPending("pq-key-M") }
+        quiesce()
+    }
+
+    /** The START names the pair; from there the service decapsulates or wipes it, not the dial. */
+    @Test
+    fun `a dial that hands its pair to the service names it in START and does not wipe it`() = runTest {
+        uploadsPqKey("pq-key-A")
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(),
+            )
+        } returns ApiResult.Success(makeConnectResponse())
+
+        vpnManager.connect("srv-1")
+
+        assertTrue(BirdoVpnService.ACTION_START in dispatchedActions)
+        assertEquals("pq-key-A", stringExtras[BirdoVpnService.EXTRA_PQ_UPLOADED_KEY])
+        verify(exactly = 0) { BirdoPqManager.discardPending(any()) }
+    }
+
     @Test
     fun `the notification's Disconnect supersedes a single-hop dial in flight`() = runTest {
         val gate = CompletableDeferred<ApiResult<ConnectResponse>>()
@@ -2902,6 +3028,8 @@ class VpnManagerTest {
     @Test
     fun `with Custom DNS on, the server is not told BirdoShield is on`() = runTest {
         every { prefs.dnsFilteringEnabled } returns true
+        // The gate is on, so Custom DNS alone is what withholds the flag.
+        every { prefs.dnsFilteringGateOn } returns true
         every { prefs.customDnsEnabled } returns true
         coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
             ApiResult.Success(makeConnectResponse())

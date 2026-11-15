@@ -158,7 +158,9 @@ enum HostKeychainItem: String, CaseIterable, Sendable {
     case deviceId = "device_id"
     case anonymousId = "anonymous_id"
     case signInMethod = "sign_in_method"
-    /// BirdoPQ's static ML-KEM-1024 keypair, stored as `pk || sk`.
+    /// LEGACY (MR-703 / MR-1742): the static ML-KEM-1024 keypair, `pk || sk`, that
+    /// builds before per-connect keys kept here. Nothing writes it any more;
+    /// `BirdoPQManager` only deletes it. The case stays so the delete can name it.
     case pqKeypair = "birdo_pq_v1_keypair"
 
     /// The keychain service. The PQ keypair keeps its own, so a PQ-only purge
