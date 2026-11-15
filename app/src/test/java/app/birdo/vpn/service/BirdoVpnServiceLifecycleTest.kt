@@ -1629,6 +1629,39 @@ class BirdoVpnServiceLifecycleTest {
     }
 
     /**
+     * Review of #622: the Stealth flag is written only by setStealthActive,
+     * which sets the persisted crash-report hold BEFORE the flag. A direct
+     * write anywhere else would start a Stealth session the hold does not
+     * cover. Every use of `_stealthActiveFlow` is accounted for by name: its
+     * declaration, the public getter, and the function each other use is in.
+     */
+    @Test
+    fun `the stealth flag is written only inside setStealthActive`() {
+        var dir = java.io.File("").absoluteFile
+        while (!java.io.File(dir, "settings.gradle.kts").isFile) dir = dir.parentFile ?: error("repo root not found")
+        // Code only: KDoc and comment lines are dropped, so a comment naming
+        // the flow is not taken for a use.
+        val code = java.io.File(dir, "app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt").readText()
+            .replace("\r\n", "\n")
+            .lines()
+            .filterNot { line -> line.trimStart().let { it.startsWith("//") || it.startsWith("/*") || it.startsWith("*") } }
+            .joinToString("\n")
+        val uses = Regex("""\b_stealthActiveFlow\b""").findAll(code).map { m ->
+            val lineStart = code.lastIndexOf('\n', m.range.first) + 1
+            val lineEnd = code.indexOf('\n', m.range.first).let { if (it < 0) code.length else it }
+            when (code.substring(lineStart, lineEnd).trim()) {
+                "private val _stealthActiveFlow = MutableStateFlow(false)" -> "declaration"
+                "val stealthActive: Boolean get() = _stealthActiveFlow.value" -> "getter"
+                else -> "inside " + (
+                    Regex("""\bfun\s+(\w+)\s*\(""").findAll(code.substring(0, m.range.first)).lastOrNull()
+                        ?.groupValues?.get(1) ?: "?"
+                    )
+            }
+        }.toList()
+        assertEquals(listOf("declaration", "getter", "inside setStealthActive"), uses)
+    }
+
+    /**
      * The rest of the exits (the transport probe's no-handshake failure, an
      * interrupted setup) reach the reset the same way: Xray is stopped in
      * exactly one function, and that function ends Stealth. A second Xray
