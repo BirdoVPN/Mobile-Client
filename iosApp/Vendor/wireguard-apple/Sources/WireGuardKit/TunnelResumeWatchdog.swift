@@ -100,6 +100,20 @@ final class TunnelResumeWatchdog: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + delays[failures - 1], execute: item)
     }
 
+    /// One timed retry, decided. It resumes only while the adapter is still
+    /// paused (`paused` is the paused tunnel's settings, nil when it is not
+    /// paused) AND the path is satisfied; otherwise the next path event owns
+    /// the resume and nothing is counted against the tunnel. `resume` runs at
+    /// most once and says whether the backend is running again.
+    ///
+    /// The adapter's `retryResume` only supplies its state to this, so the
+    /// rule runs in TunnelResumeWatchdogTests without WireGuardKit.
+    static func retry<Settings>(paused: Settings?, pathSatisfied: Bool,
+                                resume: (Settings) -> Bool) -> Attempt {
+        guard let paused, pathSatisfied else { return .notNeeded }
+        return resume(paused) ? .resumed : .failed
+    }
+
     /// The tunnel resumed, was stopped, or went offline: forget the failures
     /// and drop any pending retry.
     func reset() {

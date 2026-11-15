@@ -481,12 +481,17 @@ public class WireGuardAdapter {
     /// pauses, so this is always `.notNeeded` there).
     private func retryResume() -> TunnelResumeWatchdog.Attempt {
         #if os(iOS)
-        guard case .temporaryShutdown(let settingsGenerator) = self.state,
-              self.networkMonitor?.currentPath.status.isSatisfiable == true else {
-            return .notNeeded
+        // The decision is TunnelResumeWatchdog.retry's (run by TunnelResumeWatchdogTests); this
+        // only supplies the adapter's state.
+        var paused: PacketTunnelSettingsGenerator?
+        if case .temporaryShutdown(let settingsGenerator) = self.state {
+            paused = settingsGenerator
         }
-        self.logHandler(.verbose, "Retrying the resume after a failed attempt.")
-        return self.resumeBackend(with: settingsGenerator) ? .resumed : .failed
+        let satisfied = self.networkMonitor?.currentPath.status.isSatisfiable == true
+        return TunnelResumeWatchdog.retry(paused: paused, pathSatisfied: satisfied) { settingsGenerator in
+            self.logHandler(.verbose, "Retrying the resume after a failed attempt.")
+            return self.resumeBackend(with: settingsGenerator)
+        }
         #else
         return .notNeeded
         #endif

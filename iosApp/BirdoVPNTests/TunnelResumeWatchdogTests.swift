@@ -132,4 +132,83 @@ final class TunnelResumeWatchdogTests: XCTestCase {
     func testTheProductionScheduleIsTwoRetries() {
         XCTAssertEqual(TunnelResumeWatchdog.defaultDelays, [5, 10])
     }
+
+    // MARK: - The retry's guard (the adapter's retryResume, re-review of #621)
+
+    /// Paused on a satisfied path: the same paused settings are resumed, once,
+    /// and the answer is what the resume says.
+    func testARetryWhilePausedOnASatisfiedPathResumesThePausedTunnel() {
+        var resumed: [String] = []
+        XCTAssertEqual(TunnelResumeWatchdog.retry(paused: "settings-1", pathSatisfied: true) { settings in
+            resumed.append(settings)
+            return true
+        }, .resumed)
+        XCTAssertEqual(TunnelResumeWatchdog.retry(paused: "settings-2", pathSatisfied: true) { settings in
+            resumed.append(settings)
+            return false
+        }, .failed)
+        XCTAssertEqual(resumed, ["settings-1", "settings-2"])
+    }
+
+    /// No longer paused (resumed by a path event, or stopped): nothing to do,
+    /// and nothing is counted against the tunnel.
+    func testARetryWhenNotPausedTouchesNothing() {
+        var calls = 0
+        let attempt = TunnelResumeWatchdog.retry(paused: String?.none, pathSatisfied: true) { _ in
+            calls += 1
+            return true
+        }
+        XCTAssertEqual(attempt, .notNeeded)
+        XCTAssertEqual(calls, 0)
+    }
+
+    /// Paused but offline: the next satisfied path event owns the resume; a
+    /// retry now would only fail and use up the budget.
+    func testARetryOnAnUnsatisfiedPathTouchesNothing() {
+        var calls = 0
+        let attempt = TunnelResumeWatchdog.retry(paused: "settings", pathSatisfied: false) { _ in
+            calls += 1
+            return true
+        }
+        XCTAssertEqual(attempt, .notNeeded)
+        XCTAssertEqual(calls, 0)
+    }
+
+    /// The guard and the timer together: a retry that finds the tunnel no
+    /// longer paused stands the watchdog down for good, with no report.
+    func testTheGuardStandsTheWatchdogDownWhenThePauseIsOver() {
+        /// The adapter's side, confined to `queue` like the adapter's state.
+        final class Adapter: @unchecked Sendable {
+            let queue = DispatchQueue(label: "TunnelResumeWatchdogTests.guard")
+            var paused: String? = "settings"
+            var attempts = 0
+            var resumes = 0
+            var exhausted = 0
+            private(set) var watchdog: TunnelResumeWatchdog!
+
+            init() {
+                watchdog = TunnelResumeWatchdog(
+                    queue: queue, delays: [0.05, 0.05],
+                    attempt: { [unowned self] in
+                        self.attempts += 1
+                        return TunnelResumeWatchdog.retry(paused: self.paused, pathSatisfied: true) { _ in
+                            self.resumes += 1
+                            // This resume fails, and a path event then resumes
+                            // the tunnel before the next timed retry.
+                            self.paused = nil
+                            return false
+                        }
+                    },
+                    onExhausted: { [unowned self] in self.exhausted += 1 })
+            }
+        }
+        let adapter = Adapter()
+        adapter.queue.sync { adapter.watchdog.pathResumeFailed() }
+        Thread.sleep(forTimeInterval: 0.5)   // both timed retries are due by 0.1 s
+        adapter.queue.sync {
+            XCTAssertEqual(adapter.attempts, 2, "the second timed retry ran")
+            XCTAssertEqual(adapter.resumes, 1, "no resume once the pause was over")
+            XCTAssertEqual(adapter.exhausted, 0, "a tunnel that resumed is not reported")
+        }
+    }
 }

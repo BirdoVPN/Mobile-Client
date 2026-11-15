@@ -53,8 +53,18 @@ final class TunnelRouteContractGuardTests: XCTestCase {
         XCTAssertTrue(adapter.contains("self.resumeWatchdog.pathResumeFailed()"),
                       "a failed resume must start the retry timer")
         XCTAssertTrue(adapter.contains("if self.resumeBackend(with: settingsGenerator) {"))
-        XCTAssertTrue(adapter.contains("return self.resumeBackend(with: settingsGenerator) ? .resumed : .failed"),
+        // The timer retries the same resume, under TunnelResumeWatchdog.retry's guard
+        // (paused AND a satisfied path), which TunnelResumeWatchdogTests runs.
+        let retry = try XCTUnwrap(adapter.components(separatedBy: "private func retryResume()").last)
+        XCTAssertTrue(retry.contains("return TunnelResumeWatchdog.retry(paused: paused, pathSatisfied: satisfied) {"))
+        XCTAssertTrue(retry.contains("if case .temporaryShutdown(let settingsGenerator) = self.state {"))
+        XCTAssertTrue(retry.contains("let satisfied = self.networkMonitor?.currentPath.status.isSatisfiable == true"))
+        XCTAssertTrue(retry.contains("return self.resumeBackend(with: settingsGenerator)"),
                       "the timer must retry the same resume")
+        // stop() resets the watchdog: no retry may outlive the tunnel.
+        let stop = try XCTUnwrap(adapter.components(separatedBy: "public func stop(completionHandler:").last)
+        let stopBody = try XCTUnwrap(stop.components(separatedBy: "public func update(").first)
+        XCTAssertTrue(stopBody.contains("self.resumeWatchdog.reset()"))
         XCTAssertTrue(adapter.contains("self?.onResumeExhausted?()"), "exhaustion must reach the provider")
         XCTAssertEqual(adapter.components(separatedBy: "self.resumeWatchdog.reset()").count - 1, 3,
                        "reset on stop, on going offline, and on a resume that worked")

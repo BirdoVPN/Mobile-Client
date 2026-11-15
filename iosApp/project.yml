@@ -83,6 +83,8 @@ packages:
     #   6. PacketTunnelSettingsGenerator gives a tunnel with no IPv6 address a
     #      placeholder ULA when IPv6 is routed into it, so ::/0 is installed into
     #      the tunnel instead of being left to the OS (F3, TunnelIPv6Blackhole.swift).
+    #      The generator itself is tested by the package's own test target
+    #      (Tests/WireGuardKitTests, `swift test` in apple-ci.yml's macOS job).
     path: Vendor/wireguard-apple
 
 targets:
