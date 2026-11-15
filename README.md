@@ -105,15 +105,21 @@ Compiled to:
   whose answer would otherwise be lost with the tunnel the server ends.
   Exception: during a Stealth Mode session the app's own traffic stays outside
   the tunnel, as it did before, because Xray runs as a child process of the
-  app and cannot be routed into the tunnel it carries. During Stealth the app
-  sends no new query to the network's own DNS resolver: if DNS-over-HTTPS
-  fails, it reuses the address it already has (one the network's resolver gave
-  before Stealth began is kept through server switches and reconnects until
-  you disconnect or sign out, at most a day), or the lookup fails. The lookups made to connect and to reconnect happen before
-  Stealth is active, and on a network that blocks DNS-over-HTTPS they still
-  use the network's resolver. Opted-in crash reports from a Stealth session
-  wait on the device, even across a crash, until the app is inside a tunnel
-  without Stealth or you end the session yourself.
+  app and cannot be routed into the tunnel it carries. During Stealth the app's
+  own API lookups send no new query to the network's own DNS resolver: if
+  DNS-over-HTTPS fails, they reuse the address the app already has (one the
+  network's resolver gave before Stealth began is kept through server
+  switches and reconnects until you disconnect or sign out, at most a day),
+  or the lookup fails. The lookups made to connect and to reconnect happen
+  before Stealth is active, and on a network that blocks DNS-over-HTTPS they
+  still use the network's resolver. Opted-in crash reports from a Stealth
+  session wait on the device, even across a crash, until the app is inside a
+  tunnel without Stealth or you end the session yourself. Those two, the
+  app's own API lookups and its crash reports, are all that is covered. Not
+  yet covered: in the Google Play build, Google's Play Billing library brings
+  Google's logging uploader (transport-runtime), which looks up its own
+  `firebaselogging` host under googleapis.com with the network's resolver,
+  during Stealth too. A follow-up deals with it.
 - **Biometric Lock** -- Fingerprint / Face ID app lock
 - **Quick Settings Tile** -- Toggle VPN from the notification shade (Android)
 - **Home Screen Widget** -- Glanceable status with one-tap connect (Android,
