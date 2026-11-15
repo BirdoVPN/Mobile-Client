@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import androidx.annotation.VisibleForTesting
+import app.birdo.vpn.data.network.DohResolver
 import app.birdo.vpn.security.AesGcmSealer
 import app.birdo.vpn.security.AndroidKeystoreKeySource
 import app.birdo.vpn.security.InMemorySecureStore
@@ -243,6 +244,10 @@ class TokenManager @VisibleForTesting internal constructor(
 
     fun clearAll() {
         store.clear()
+        // MR-953 F5: the API host answers DohResolver keeps for Stealth are
+        // session state too. Every sign-out path (log out, account deletion,
+        // a dead session) ends here.
+        DohResolver.forgetRememberedAnswers()
     }
 
     fun isLoggedIn(): Boolean {
