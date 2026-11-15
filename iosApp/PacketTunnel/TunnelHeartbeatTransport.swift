@@ -38,31 +38,27 @@ import Security
 /// host first, then at least one certificate in the chain must match a pin.
 /// The HTTP/1.1 bytes are HeartbeatHTTP's.
 final class TunnelHeartbeatTransport: @unchecked Sendable {
-    enum TransportError: Error, Equatable {
-        /// No way into the tunnel right now. The beat was not sent anywhere.
-        case tunnelUnavailable
-        case invalidRequest
-        case connectionFailed
-        /// The certificate chain failed validation or matched no pin.
-        case untrusted
-        case timedOut
-        case badResponse
-        case cancelled
-    }
+    /// HeartbeatExchange.swift, Foundation-only so the unit tests can see it.
+    typealias TransportError = HeartbeatTransportError
 
     private weak var provider: NEPacketTunnelProvider?
     private let timeout: TimeInterval
     private let queue = DispatchQueue(label: "app.birdo.vpn.tunnel.heartbeat-transport")
 
-    /// - Parameter timeout: the whole exchange, connect to last byte. 20 s, the
-    ///   old URLSession's per-request timeout.
-    init(provider: NEPacketTunnelProvider, timeout: TimeInterval = 20) {
+    /// - Parameter timeout: the longest any exchange may take, connect to last
+    ///   byte. 20 s, the old URLSession's per-request timeout.
+    init(provider: NEPacketTunnelProvider, timeout: TimeInterval = HeartbeatExchangeTimeout.cap) {
         self.provider = provider
         self.timeout = timeout
     }
 
     /// One request through the tunnel. Returns the body and an HTTPURLResponse
     /// carrying the status code, the shape `URLSession.data(for:)` returned.
+    ///
+    /// The request's own `timeoutInterval` is honoured when it is shorter than
+    /// the transport's (`HeartbeatExchangeTimeout.seconds`): the beat leaves it
+    /// at URLRequest's 60 s default and gets 20 s, a dead-tunnel probe asks
+    /// for 5 s and gets 5 s.
     func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
         guard let url = request.url?.absoluteURL, let host = url.host, !host.isEmpty,
               let port = UInt16(exactly: url.port ?? 443),
@@ -71,7 +67,8 @@ final class TunnelHeartbeatTransport: @unchecked Sendable {
         }
         guard let provider else { throw TransportError.tunnelUnavailable }
 
-        let completion = ExchangeCompletion()
+        let completion = HeartbeatExchangeCompletion()
+        let deadline = HeartbeatExchangeTimeout.seconds(for: request, cap: timeout)
         let start: @Sendable () -> Void
         let stop: @Sendable () -> Void
         if #available(iOS 18.0, macOS 15.0, *) {
@@ -88,7 +85,7 @@ final class TunnelHeartbeatTransport: @unchecked Sendable {
             start = { exchange.start() }
             stop = { exchange.stop() }
         }
-        let response = try await completion.run(timeout: timeout, queue: queue, start: start, stop: stop)
+        let response = try await completion.run(timeout: deadline, queue: queue, start: start, stop: stop)
         guard let http = HTTPURLResponse(url: url, statusCode: response.statusCode,
                                          httpVersion: "HTTP/1.1", headerFields: nil) else {
             throw TransportError.badResponse
@@ -97,53 +94,8 @@ final class TunnelHeartbeatTransport: @unchecked Sendable {
     }
 }
 
-// MARK: - One exchange, completed exactly once
-
-/// Resumes the caller exactly once, with whichever comes first: the response,
-/// a failure, the timeout or task cancellation; then stops the connection.
-private final class ExchangeCompletion: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<HeartbeatHTTP.Response, Error>?
-    private var finished = false
-    private var stop: (@Sendable () -> Void)?
-
-    func run(timeout: TimeInterval, queue: DispatchQueue,
-             start: @escaping @Sendable () -> Void,
-             stop: @escaping @Sendable () -> Void) async throws -> HeartbeatHTTP.Response {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<HeartbeatHTTP.Response, Error>) in
-                lock.lock()
-                if finished {
-                    lock.unlock()
-                    cont.resume(throwing: TunnelHeartbeatTransport.TransportError.cancelled)
-                    return
-                }
-                continuation = cont
-                self.stop = stop
-                lock.unlock()
-                queue.asyncAfter(deadline: .now() + timeout) { [self] in
-                    finish(.failure(TunnelHeartbeatTransport.TransportError.timedOut))
-                }
-                queue.async { start() }
-            }
-        } onCancel: {
-            finish(.failure(TunnelHeartbeatTransport.TransportError.cancelled))
-        }
-    }
-
-    func finish(_ result: Result<HeartbeatHTTP.Response, Error>) {
-        lock.lock()
-        guard !finished else { lock.unlock(); return }
-        finished = true
-        let cont = continuation
-        let stop = self.stop
-        continuation = nil
-        self.stop = nil
-        lock.unlock()
-        stop?()
-        cont?.resume(with: result)
-    }
-}
+// One exchange is completed exactly once by HeartbeatExchangeCompletion
+// (HeartbeatExchange.swift).
 
 // MARK: - iOS 18 / macOS 15: Network.framework on the tunnel's interface
 
@@ -152,11 +104,11 @@ private final class InterfaceExchange: @unchecked Sendable {
     private let connection: NWConnection
     private let request: Data
     private let queue: DispatchQueue
-    private let completion: ExchangeCompletion
+    private let completion: HeartbeatExchangeCompletion
     private var buffer = Data()   // touched only on `queue`
 
     init(host: String, port: UInt16, interface: NWInterface, request: Data,
-         queue: DispatchQueue, completion: ExchangeCompletion) {
+         queue: DispatchQueue, completion: HeartbeatExchangeCompletion) {
         let tls = NWProtocolTLS.Options()
         let options = tls.securityProtocolOptions
         sec_protocol_options_set_tls_server_name(options, host)
@@ -266,7 +218,7 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
     private let port: UInt16
     private let request: Data
     private let queue: DispatchQueue
-    private let completion: ExchangeCompletion
+    private let completion: HeartbeatExchangeCompletion
     private let lock = NSLock()
     private var connection: __NWTCPConnection?
     private var observation: NSKeyValueObservation?
@@ -277,7 +229,7 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
     private var buffer = Data()   // touched only on `queue`
 
     init(provider: NEPacketTunnelProvider, host: String, port: UInt16, request: Data,
-         queue: DispatchQueue, completion: ExchangeCompletion) {
+         queue: DispatchQueue, completion: HeartbeatExchangeCompletion) {
         self.provider = provider
         self.host = host
         self.port = port

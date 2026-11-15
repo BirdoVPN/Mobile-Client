@@ -431,6 +431,10 @@ targets:
       # THROUGH the tunnel (TunnelHeartbeatTransport). Foundation-only, pinned
       # by HeartbeatHTTPTests; the transport itself needs NetworkExtension.
       - path: PacketTunnel/HeartbeatHTTP.swift
+      # ...the exchange around those bytes: its deadline (the request's own
+      # timeout, capped), its exactly-once completion and its errors.
+      # Foundation-only, run by HeartbeatExchangeTests.
+      - path: PacketTunnel/HeartbeatExchange.swift
       # ...and the trust decision of that connection (standard validation, then
       # an SPKI pin) with the iOS 17 path's write gate. Foundation + Security +
       # CommonCrypto, all system frameworks, so HeartbeatTrustTests runs the

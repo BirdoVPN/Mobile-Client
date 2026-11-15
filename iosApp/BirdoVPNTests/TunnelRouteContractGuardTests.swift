@@ -148,4 +148,15 @@ final class TunnelRouteContractGuardTests: XCTestCase {
         XCTAssertFalse(transport.contains("tlsParameters: nil"),
                        "nil TLS parameters leave the minimum version to the system default")
     }
+
+    /// The request's own timeout reaches the exchange (HeartbeatExchangeTests
+    /// runs the rule and the completion): a 5 s dead-tunnel probe must not
+    /// wait the beat's 20 s while the tunnel holds every packet.
+    func testTheTransportHonoursTheRequestsTimeout() throws {
+        let transport = try code("PacketTunnel/TunnelHeartbeatTransport.swift")
+        XCTAssertTrue(transport.contains("let deadline = HeartbeatExchangeTimeout.seconds(for: request, cap: timeout)"))
+        XCTAssertTrue(transport.contains("try await completion.run(timeout: deadline,"))
+        XCTAssertFalse(transport.contains("completion.run(timeout: timeout,"), "the fixed 20 s is back")
+        XCTAssertTrue(transport.contains("timeout: TimeInterval = HeartbeatExchangeTimeout.cap"))
+    }
 }
