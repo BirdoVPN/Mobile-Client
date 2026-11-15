@@ -118,6 +118,30 @@ interface BirdoApi {
     @GET(GDPR_DELETE_PREFLIGHT_PATH)
     suspend fun deletionPreflight(): Response<DeletionPreflightResponse>
 
+    /**
+     * MR-179: e-mail the one-time deletion code to an SSO account whose step-up
+     * is that code. No body. 400 `email_code_not_used` for any other account,
+     * 429 `too_many_attempts` past 3 sends an hour, 503 `email_code_not_sent`.
+     * Pinned by GdprRouteContractTest.
+     */
+    @POST(GDPR_DELETE_CODE_PATH)
+    suspend fun sendDeletionCode(): Response<DeletionCodeResponse>
+
+    /**
+     * MR-179 hold fallback: the account's held sensitive changes (birdo-web
+     * step-up.controller.ts, `@Controller('auth')`, unprefixed like every
+     * other auth route). An `account_delete` entry is a deletion on hold.
+     */
+    @GET(PENDING_CHANGES_PATH)
+    suspend fun pendingChanges(): Response<PendingChangesResponse>
+
+    /**
+     * Cancel a held change from this session: 200 `{ success, cancelled }`,
+     * 404 `pending_change_not_found` when it is already gone. No body.
+     */
+    @POST("$PENDING_CHANGES_PATH/{id}/cancel")
+    suspend fun cancelPendingChange(@Path("id") id: String): Response<CancelPendingChangeResponse>
+
     // ── App updates ──────────────────────────────────────────────
 
     /**
@@ -257,5 +281,11 @@ interface BirdoApi {
 
         /** Deletion preflight, relative to https://api.birdo.app. See [deletionPreflight]. */
         const val GDPR_DELETE_PREFLIGHT_PATH = "api/v1/gdpr/delete/preflight"
+
+        /** Deletion e-mail code, relative to https://api.birdo.app. See [sendDeletionCode]. */
+        const val GDPR_DELETE_CODE_PATH = "api/v1/gdpr/delete/code"
+
+        /** Held sensitive changes, relative to https://api.birdo.app. See [pendingChanges]. */
+        const val PENDING_CHANGES_PATH = "auth/pending-changes"
     }
 }

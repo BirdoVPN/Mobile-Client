@@ -3,6 +3,7 @@ package app.birdo.vpn.billing
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.testing.StringsXml
+import com.android.billingclient.api.AccountIdentifiers
 import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingResult
 import com.android.billingclient.api.Purchase
@@ -41,11 +42,17 @@ class PlayBillingManagerReconcileTest {
         GooglePlayLinkResponse(linked = true, plan = "OPERATIVE", state = "ACTIVE"),
     )
 
-    private fun purchase(token: String): Purchase = mockk {
-        every { purchaseToken } returns token
-        every { products } returns listOf(BirdoPlayProduct.OPERATIVE.productId)
-        every { purchaseState } returns Purchase.PurchaseState.PURCHASED
-        every { isAcknowledged } returns true
+    private fun purchase(token: String): Purchase {
+        // Bound, as a purchase this app launched is: an unbound one is never
+        // presented automatically (F-967-02), which is not what this suite is about.
+        val ids = mockk<AccountIdentifiers> { every { obfuscatedAccountId } returns "acct-$token" }
+        return mockk {
+            every { purchaseToken } returns token
+            every { products } returns listOf(BirdoPlayProduct.OPERATIVE.productId)
+            every { purchaseState } returns Purchase.PurchaseState.PURCHASED
+            every { isAcknowledged } returns true
+            every { accountIdentifiers } returns ids
+        }
     }
 
     /** Counts, per token, how many `/link` calls are in flight at once. */
@@ -81,7 +88,7 @@ class PlayBillingManagerReconcileTest {
             }
         }
         val repository = mockk<BirdoRepository> {
-            coEvery { linkGooglePurchase(any()) } coAnswers {
+            coEvery { linkGooglePurchase(any(), any()) } coAnswers {
                 val token = firstArg<String>()
                 probe.enter(token)
                 delay(100)
