@@ -103,6 +103,38 @@ class AppPreferencesTest {
         verify(exactly = 1) { editor.remove("crash_reports_enabled_since") }
     }
 
+    // ── MR-953 F5: crash reports held for a Stealth session ─────────────
+
+    @Test
+    fun `nothing is held on a device that never ran stealth`() {
+        assertFalse(prefs.crashReportsHeldForStealth)
+        verify(exactly = 1) { store.getBoolean("crash_reports_held_for_stealth", false) }
+    }
+
+    @Test
+    fun `a stored hold is read back as held`() {
+        every { store.getBoolean("crash_reports_held_for_stealth", any()) } returns true
+        assertTrue(prefs.crashReportsHeldForStealth)
+    }
+
+    /** A crash moments after Stealth starts must still find the hold on disk. */
+    @Test
+    fun `setting the hold is synchronous`() {
+        prefs.crashReportsHeldForStealth = true
+        verify(exactly = 1) { editor.putBoolean("crash_reports_held_for_stealth", true) }
+        verify(exactly = 1) { editor.commit() }
+        verify(exactly = 0) { editor.apply() }
+    }
+
+    /** A lost release only holds reports longer, so it does not block the caller. */
+    @Test
+    fun `releasing the hold is asynchronous`() {
+        prefs.crashReportsHeldForStealth = false
+        verify(exactly = 1) { editor.putBoolean("crash_reports_held_for_stealth", false) }
+        verify(exactly = 1) { editor.apply() }
+        verify(exactly = 0) { editor.commit() }
+    }
+
     // ── LIVE-PORT53: the port is no longer a setting ────────────────────
 
     @Test

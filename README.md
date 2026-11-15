@@ -111,8 +111,9 @@ Compiled to:
   before the session began is kept for that session only, at most a day), or
   the lookup fails. The lookups made to connect and to reconnect happen before
   Stealth is active, and on a network that blocks DNS-over-HTTPS they still
-  use the network's resolver. Opted-in crash reports wait on the device until
-  Stealth ends.
+  use the network's resolver. Opted-in crash reports from a Stealth session
+  wait on the device, even across a crash, until the app is inside a tunnel
+  without Stealth or you end the session yourself.
 - **Biometric Lock** -- Fingerprint / Face ID app lock
 - **Quick Settings Tile** -- Toggle VPN from the notification shade (Android)
 - **Home Screen Widget** -- Glanceable status with one-tap connect (Android,

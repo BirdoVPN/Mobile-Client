@@ -102,6 +102,25 @@ class AppPreferences @Inject constructor(
     val crashReportsEnabledSince: Long
         get() = prefs.getLong(KEY_CRASH_REPORTS_SINCE, 0L)
 
+    /**
+     * MR-953 F5 (review of #622): crash reports are held for a Stealth session.
+     * BirdoVpnService sets it when Stealth starts, and clears it only when a
+     * tunnel the app's own traffic rides is verified up (Stealth not active)
+     * or when the user ends a session. While it is set,
+     * CrashReporting.StealthHoldTransportGate keeps every report in the SDK's
+     * bounded on-disk cache.
+     *
+     * Persisted because a crash during Stealth ends Stealth: the live flag is
+     * false at the next start, and the cached report would otherwise go then,
+     * from the real IP and through the network's own resolver, before any
+     * tunnel exists. commit() to set, so a crash moments after Stealth starts
+     * still finds it on disk; apply() to clear, since a lost clear only holds
+     * reports longer. Not HMAC-protected: a forged value can only hold reports.
+     */
+    var crashReportsHeldForStealth: Boolean
+        get() = prefs.getBoolean(KEY_CRASH_REPORTS_HELD_FOR_STEALTH, false)
+        set(value) = prefs.edit(commit = value) { putBoolean(KEY_CRASH_REPORTS_HELD_FOR_STEALTH, value) }
+
     // ── Auto-Connect ─────────────────────────────────────────────
     var autoConnect: Boolean
         get() = prefs.getBoolean(KEY_AUTO_CONNECT, false)
@@ -477,6 +496,7 @@ class AppPreferences @Inject constructor(
         const val CURRENT_CONSENT_VERSION = 2
         private const val KEY_CRASH_REPORTS = "crash_reports_enabled"
         private const val KEY_CRASH_REPORTS_SINCE = "crash_reports_enabled_since"
+        private const val KEY_CRASH_REPORTS_HELD_FOR_STEALTH = "crash_reports_held_for_stealth"
         private const val KEY_LOCAL_NETWORK_SHARING = "local_network_sharing"
         private const val KEY_STEALTH_MODE = "stealth_mode_enabled"
         private const val KEY_DNS_FILTERING_ENABLED = "dns_filtering_enabled"

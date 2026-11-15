@@ -246,11 +246,14 @@ class BirdoApp : Application() {
             options.environment = "production"
             options.release = "${BuildConfig.APPLICATION_ID}@${BuildConfig.APP_VERSION}"
             // MR-953 F5: nothing is sent while Stealth runs (the app is outside
-            // its tunnel then, and the SDK cannot use DoH); reports wait in the
-            // SDK's on-disk cache. See CrashReporting.StealthHoldTransportGate.
+            // its tunnel then, and the SDK cannot use DoH), nor after a Stealth
+            // session that ended without a tunnel or a user stop since (a crash
+            // ends Stealth too); reports wait in the SDK's on-disk cache. See
+            // CrashReporting.StealthHoldTransportGate.
             options.setTransportGate(
                 CrashReporting.StealthHoldTransportGate(
                     stealthActive = { app.birdo.vpn.service.BirdoVpnService.stealthActive },
+                    heldForStealth = { appPreferences.crashReportsHeldForStealth },
                     connectionStatus = { options.connectionStatusProvider.connectionStatus },
                 ),
             )

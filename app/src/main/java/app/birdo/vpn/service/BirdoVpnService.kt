@@ -2967,11 +2967,19 @@ class BirdoVpnService : VpnService() {
     /**
      * The one writer of [stealthActive] (MR-953 F5, review of #622).
      *
-     * A Stealth session's END drops the system-resolver answer DohResolver
-     * kept from before it began: that answer was obtained for this session,
-     * and the next session's connect looks the host up again.
+     * A Stealth session's START sets the persisted crash-report hold
+     * ([AppPreferences.crashReportsHeldForStealth]), synchronously, before
+     * the flag: a crash during the session ends Stealth, and its report must
+     * not go at the next start, from the real IP, before any tunnel exists.
+     * Only a tunnel the app's own traffic rides ([publishConnected]) or a stop
+     * the user asked for ([stopTunnel]) releases it.
+     *
+     * Its END drops the system-resolver answer DohResolver kept from before
+     * it began: that answer was obtained for this session, and the next
+     * session's connect looks the host up again.
      */
     private fun setStealthActive(active: Boolean) {
+        if (active) appPrefs.crashReportsHeldForStealth = true
         val was = _stealthActiveFlow.getAndUpdate { active }
         if (was && !active) DohResolver.forgetSystemAnswers()
     }
@@ -2988,6 +2996,10 @@ class BirdoVpnService : VpnService() {
         clearKillSwitchWarning()
         _connectedSinceFlow.value = System.currentTimeMillis()
         updateState(VpnState.Connected)
+        // MR-953 F5: without Stealth the app's own traffic rides this tunnel,
+        // so crash reports held for an earlier Stealth session can go through
+        // it. With Stealth the hold stays: it is this session's.
+        if (!stealthActive && appPrefs.crashReportsHeldForStealth) appPrefs.crashReportsHeldForStealth = false
         updateWidgetState(true, connectedServer)
         mainHandler.removeCallbacks(connectTimeoutRunnable)
         mainHandler.post {
@@ -3055,6 +3067,11 @@ class BirdoVpnService : VpnService() {
         _connectedSinceFlow.value = 0L
         _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
         setStealthActive(false); _quantumActiveFlow.value = false
+        // MR-953 F5: the user ended the session, so the device is off-VPN by
+        // their choice, as whenever they are disconnected; crash reports held
+        // for a Stealth session may go. Any other end (a crash, Xray exiting,
+        // a re-dial, an error stop) keeps them held (setStealthActive).
+        if (userInitiated && appPrefs.crashReportsHeldForStealth) appPrefs.crashReportsHeldForStealth = false
         updateWidgetState(false, null)
         if (reason == null && shouldPostDisconnectedNotice(userInitiated, appPrefs.notificationsEnabled)) {
             notifManager.postDisconnectedNotification()

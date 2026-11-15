@@ -40,7 +40,8 @@ internal object TunnelAppRules {
      * with DoH, as before the overhaul). MR-953 F5 bounds it: that DoH never
      * falls back to the network's resolver while Stealth runs
      * (DohResolver.resolveWith), and opted-in crash reports are held on the
-     * device until Stealth ends (CrashReporting.StealthHoldTransportGate).
+     * device, across a crash, until the app is inside a tunnel without Stealth
+     * or the user ends the session (CrashReporting.StealthHoldTransportGate).
      * Running Xray in-process with a protect callback remains the full fix.
      *
      * A persisted split-tunnel list can still name this app (the picker hides
