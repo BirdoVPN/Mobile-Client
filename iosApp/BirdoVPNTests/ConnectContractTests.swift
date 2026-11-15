@@ -13,7 +13,8 @@ import XCTest
 /// The reply side of the heartbeat is here too (MR-1638): every
 /// `$defs.HeartbeatReason` value in every shape the server writes it, checked
 /// against `$defs.HeartbeatResponse` and decoded by the REAL `HeartbeatResult`
-/// (HeartbeatWire.swift).
+/// (HeartbeatWire.swift), and what iOS does with each one (a mirror of
+/// VpnViewModel's heartbeat, which this bundle cannot compile).
 ///
 /// No third-party validator on iOS: the schema is parsed with
 /// JSONSerialization and the handful of keywords these definitions actually
@@ -604,6 +605,118 @@ final class ConnectContractTests: XCTestCase {
         body = ok
         body.removeValue(forKey: "valid")
         assertRefused(body, heartbeatDef, containing: "missing required valid")
+    }
+
+    // MARK: - Heartbeat (MR-1638): what iOS does with each reason
+
+    /// What iOS does with one heartbeat reply.
+    ///
+    /// The host's 30 s beat (`VpnViewModel.sendHeartbeat`) acts on `valid`,
+    /// `serverOnline` and `message` and on nothing else; the extension's own
+    /// beat (`PacketTunnelProvider.sendHeartbeat`) on `valid` alone, tearing
+    /// the tunnel down through the breaker's `revoked` budget. Neither reads
+    /// `reason` or the quota fields yet (HeartbeatWire.swift says so too).
+    private enum HeartbeatHandling: Equatable {
+        /// The session stays as it is.
+        case keep
+        /// The session stays; the host only logs that its node reports offline.
+        case keepNodeOffline
+        /// The host drops the key, disconnects and shows `showing`; the
+        /// extension tears its tunnel down as revoked. The host does not
+        /// reconnect on its own.
+        case end(showing: String)
+    }
+
+    /// `VpnViewModel.sendHeartbeat`'s three branches, over the REAL decoded
+    /// reply. A MIRROR: VpnViewModel.swift cannot be compiled into this bundle
+    /// (it is also under open PRs). Keep the two in step; moving this decision
+    /// into HeartbeatWire.swift and calling it from VpnViewModel would make
+    /// this the real code.
+    private static func handling(of reply: HeartbeatResult) -> HeartbeatHandling {
+        if !reply.valid {
+            return .end(showing: reply.message ?? "Connection has been revoked. Please reconnect.")
+        }
+        return reply.serverOnline == false ? .keepNodeOffline : .keep
+    }
+
+    /// Keyed by reason: one handling per body `heartbeatBodies(reason:)`
+    /// builds, in its order. The keys must be exactly the contract's reasons
+    /// (checked below), so a reason a re-vendor adds fails until someone
+    /// decides what iOS does with it. `GAP` marks where iOS falls short of the
+    /// contract's description of the reason: the host reads no `reason` and no
+    /// quota field, so the sentence is whatever `message` says, nothing is
+    /// rebuilt and no other server is tried. Android (HeartbeatPolicy) and
+    /// Desktop (reconnect_policy) read both.
+    private static var expectedHandling: [String: [HeartbeatHandling]] {
+        let gone = "Connection not found. Please reconnect."
+        let revoked = "Connection has been revoked. Please reconnect."
+        let offline = "Your current VPN server is offline. Please reconnect to a different server."
+        let ended = "Free-tier data limit reached (50.2 / 50 GB this period). This connection has ended. "
+            + "Your allowance resets after 1 Nov. Upgrade to Operative for unlimited data."
+        return [
+            // Live, then live inside the Free grace window. GAP: no notice of
+            // the grace window (the quota fields are unread); the session
+            // simply ends at the first beat after it.
+            "ok": [.keep, .keep],
+            // The key live on a node that is not ONLINE (also inside the grace
+            // window), then the key removed with a drained node. GAP: the
+            // drained node's reply stops the session with the not-found
+            // sentence; the contract says connect to a different server.
+            "server_offline": [.keepNodeOffline, .keepNodeOffline, .end(showing: gone)],
+            // Stop, no automatic reconnect, as the contract says. GAP: for a
+            // revoked key on an offline node the check-in cache's offline
+            // sentence is what the user reads.
+            "revoked": [.end(showing: revoked), .end(showing: revoked), .end(showing: offline), .end(showing: gone)],
+            // Stop, as the contract says. GAP: nothing says another device took over.
+            "evicted": [.end(showing: gone)],
+            // GAP: stops and asks the user to reconnect; the contract allows one quiet rebuild.
+            "reaped": [.end(showing: gone)],
+            // Stop, no automatic reconnect, in the server's words. GAP: the
+            // removal record a later beat finds reads as not found, not as the
+            // end of the allowance.
+            "quota_exceeded": [.end(showing: ended), .end(showing: ended), .end(showing: gone)],
+            // No record of why: a reply without a reason, which iOS ends like
+            // any `valid: false`.
+            "not_found": [.end(showing: gone)],
+        ]
+    }
+
+    func testEveryHeartbeatReasonInTheContractHasADecidedHandling() {
+        let decided = Set(Self.expectedHandling.keys)
+        XCTAssertEqual(decided, Set(contractHeartbeatReasons),
+                       "no iOS handling decided for: \(Set(contractHeartbeatReasons).subtracting(decided)); "
+                       + "decided for a reason the contract dropped: \(decided.subtracting(contractHeartbeatReasons))")
+        for reason in contractHeartbeatReasons {
+            XCTAssertEqual(Self.expectedHandling[reason]?.count, Self.heartbeatBodies(reason: reason).count,
+                           "one handling per body of '\(reason)'")
+        }
+    }
+
+    func testEachHeartbeatBodyGetsItsDecidedHandling() throws {
+        for reason in contractHeartbeatReasons {
+            let expected = try XCTUnwrap(Self.expectedHandling[reason], "no handling decided for '\(reason)'")
+            for (body, want) in zip(Self.heartbeatBodies(reason: reason), expected) {
+                let reply = try heartbeatWire(body).decoded
+                XCTAssertEqual(Self.handling(of: reply), want, "\(reason): \(body)")
+            }
+        }
+    }
+
+    /// The contract's hard rule, independent of the table above: every body
+    /// of a reason that must never come back on its own (revoked, evicted,
+    /// quota_exceeded) ends the session, and no body of `ok` does.
+    func testTheReasonsTheContractSaysStopOnEndTheSession() throws {
+        for reason in ["revoked", "evicted", "quota_exceeded"] {
+            XCTAssertTrue(contractHeartbeatReasons.contains(reason), reason)
+            for body in Self.heartbeatBodies(reason: reason) {
+                if case .end = Self.handling(of: try heartbeatWire(body).decoded) {} else {
+                    XCTFail("'\(reason)' must end the session: \(body)")
+                }
+            }
+        }
+        for body in Self.heartbeatBodies(reason: "ok") {
+            XCTAssertEqual(Self.handling(of: try heartbeatWire(body).decoded), .keep, "\(body)")
+        }
     }
 
     // MARK: - D18 persisted key
