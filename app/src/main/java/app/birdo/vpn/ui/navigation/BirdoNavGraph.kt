@@ -232,11 +232,9 @@ fun BirdoNavGraph(
     LaunchedEffect(authState.isLoggedIn) {
         if (authState.isLoggedIn) vpnViewModel.onSignedIn()
     }
-    // Deletion tears the tunnel down only once the server has CONFIRMED it
-    // (A2-005): a mistyped password used to disconnect the VPN and then fail.
-    LaunchedEffect(authState.accountDeleted) {
-        if (authState.accountDeleted) vpnViewModel.onAccountDeleted()
-    }
+    // A deletion's teardown is not here (MR-2338): VpnManager runs it when
+    // the repository confirms the erasure (A2-005: never before the server
+    // has), so it does not wait for this graph to be composed and started.
 
     // Handle VPN permission requests. The ViewModel replays the exact dial
     // that asked (A1-007), including when no prompt is needed after all.

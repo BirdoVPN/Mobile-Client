@@ -581,6 +581,25 @@ class VpnManager @Inject constructor(
             }
         }
 
+        // MR-2338: a confirmed account deletion ends the session here, on
+        // Main, whatever the UI is doing (see onAccountDeleted).
+        scope.launch {
+            repository.accountErasures.drop(1).collect {
+                try {
+                    onAccountDeleted()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "manager_erasure_collector_threw",
+                        "VpnManager threw while ending the session of a deleted account",
+                        e,
+                    )
+                }
+            }
+        }
+
         // The supervisor: every state this class ends up in is judged here,
         // whoever produced it (a dial, the service, the heartbeat).
         scope.launch {
@@ -2240,7 +2259,16 @@ class VpnManager @Inject constructor(
         // On Main, like every other writer of the supervisor's state: the
         // tile calls this from its own IO scope, and a Disconnect racing
         // onFailure there could leave a re-dial scheduled (REVIEW-AND-017).
-        //
+        endSessionIntent()
+        tearDownTunnel(userInitiated = true)
+    }
+
+    /**
+     * What a Disconnect and a confirmed account deletion both drop the moment
+     * the session is over, before its STOP: the intent to be up, any recovery
+     * or rebuild in flight, and what Home says about the session.
+     */
+    private fun endSessionIntent() {
         // Win over any in-flight settings-reapply blip: a user Disconnect must
         // not be undone by the reconnect half of an apply-on-change rebuild.
         reapplyAbortGeneration++
@@ -2254,11 +2282,10 @@ class VpnManager @Inject constructor(
         prefs.sessionShouldBeUp = false
         _stealthNotice.value = null
         _deviceNotice.value = null
-        // The not-armed warning describes the session the user just ended.
+        // The not-armed warning describes the session that just ended.
         // Cleared here, not only when the service's stop lands: Home must not
         // keep saying it over the user's own Disconnect.
         BirdoVpnService.clearKillSwitchNotArmed()
-        tearDownTunnel(userInitiated = true)
     }
 
     /** Fire-and-forget [disconnect] for callers with no coroutine of their own. */
@@ -2281,17 +2308,20 @@ class VpnManager @Inject constructor(
     /**
      * The account was deleted: the server has already removed the peer and
      * the tokens are gone, so tear down locally without the release call.
+     * Otherwise the sign-out's teardown (MR-2338): the same user-initiated
+     * STOP, which releases the kill-switch block, and the same session state
+     * cleared ([endSessionIntent]), so nothing of the deleted account's
+     * session reaches the next account on this device.
+     *
+     * Called from [BirdoRepository.accountErasures], i.e. the moment the
+     * server CONFIRMS the erasure (A2-005), not from a screen: the nav graph's
+     * effect that used to call it runs only while the activity is composed
+     * and started, so a deletion answered with the app in the background (or
+     * its activity gone) left the tunnel up behind a signed-out app.
      */
     fun onAccountDeleted() {
-        reapplyAbortGeneration++
-        reapplyInProgress = false
-        intentGeneration++
-        session = ReconnectPolicy.Session.IDLE
-        cancelRecovery()
-        connectWatchdogJob?.cancel()
-        _switching.value = false
+        endSessionIntent()
         _sessionExpired.value = false
-        prefs.sessionShouldBeUp = false
         sessionKeyId = null
         scope.launch { tearDownTunnel(userInitiated = true, releasePeer = false) }
     }

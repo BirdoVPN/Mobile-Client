@@ -300,6 +300,10 @@ class AuthViewModel @Inject constructor(
                     if (result.code == 401) onSessionExpired()
                 }
             }
+            // MR-2367: read the deletion on hold once per session, so Home's
+            // sign-out warns that it cancels the deletion without Profile
+            // having been opened first. A no-op after the 401 above.
+            refreshPendingDeletion()
         }
     }
 
@@ -521,6 +525,9 @@ class AuthViewModel @Inject constructor(
                 )
             }
         }
+        // MR-2367: a hold filed earlier (another device, the website) is
+        // known from the start of this session, for Home's sign-out warning.
+        refreshPendingDeletion()
     }
 
     /**
@@ -537,6 +544,14 @@ class AuthViewModel @Inject constructor(
         // whose session died. So this is always the plain expiry: the block
         // stays, nothing is wiped, no identity is rotated. Only the wording
         // admits the possibility.
+        //
+        // MR-2367 item 2, ACCEPTED trade-off (same on iOS): a deletion that
+        // the hold DID complete therefore also ends here, as a plain expiry,
+        // and this device keeps its device id (BirdoRepository.clearAfterErasure,
+        // which rotates it, runs only on a confirmed erasure). Rotating on a
+        // guess would wipe the identity of an account that may still exist.
+        // The cost: the next account signed in on this device presents the
+        // same (random, not recomputable) device id as the erased one.
         val held = _uiState.value.pendingDeletion
         val holdRanOut = held != null && !Instant.now().isBefore(held.applyAfter)
         _uiState.value = _uiState.value.copy(

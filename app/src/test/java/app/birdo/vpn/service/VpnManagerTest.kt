@@ -80,6 +80,9 @@ class VpnManagerTest {
     /** The service's count of finished stops, per test for the same reason. */
     private val stopsCompleted = MutableStateFlow(0L)
 
+    /** The repository's count of confirmed account erasures (MR-2338). */
+    private val accountErasures = MutableStateFlow(0L)
+
     /** Home-screen widget re-renders VpnManager asked for (REVIEW-AND-012). */
     private var widgetRefreshes = 0
     private val stringExtras = mutableMapOf<String, String?>()
@@ -129,6 +132,7 @@ class VpnManagerTest {
         // the key is still live, so the drop is re-dialled as before.
         coEvery { repository.sendHeartbeat(any(), true) } returns
             ApiResult.Success(app.birdo.vpn.data.model.HeartbeatResponse())
+        every { repository.accountErasures } returns accountErasures
 
         // Mock BirdoVpnService static companion members
         mockkObject(BirdoVpnService.Companion)
@@ -3248,6 +3252,46 @@ class VpnManagerTest {
     }
 
     // ── MR-2338: after a deletion the app showed the VPN as connected ────
+
+    /**
+     * MR-2338: the teardown follows the server's CONFIRMED erasure itself,
+     * not a screen. It used to run from a nav-graph effect, which waits for
+     * the activity to be started and composed: a deletion answered while the
+     * app was in the background, or whose activity was gone, left the tunnel
+     * up behind a signed-out app ("Your VPN is still connected." on Login).
+     */
+    @Test
+    fun `a confirmed erasure ends the session with no screen involved`() = runTest {
+        connectAndEstablish()
+
+        accountErasures.value++
+        runCurrent()
+
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        assertEquals(VpnState.Disconnecting, vpnManager.state.value)
+        verify { prefs.sessionShouldBeUp = false }
+        serviceEmits(VpnState.Disconnected)
+        stopsCompleted.value++
+        runCurrent()
+        advanceTimeBy(30 * 60_000L)
+
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+        coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+    }
+
+    /** The count a manager starts with is no erasure: only a new one ends a session. */
+    @Test
+    fun `a manager built after an erasure does not stop anything for it`() = runTest {
+        accountErasures.value = 1
+        dispatchedActions.clear()
+
+        val later = VpnManager(context, repository, prefs, networkMonitor)
+        runCurrent()
+
+        assertFalse(BirdoVpnService.ACTION_STOP in dispatchedActions)
+        assertEquals(VpnState.Disconnected, later.state.value)
+    }
 
     /**
      * MR-2338, the connected case end to end: the service runs the STOP

@@ -58,6 +58,8 @@ class DeleteStepUpViewModelTest {
         every { prefs.hasAcceptedCurrentConsent } returns true
         every { tokenManager.isLoggedIn() } returns true
         every { tokenManager.getPendingAnonymousId() } returns null
+        // No deletion on hold (read at session start, MR-2367).
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(null)
     }
 
     @After

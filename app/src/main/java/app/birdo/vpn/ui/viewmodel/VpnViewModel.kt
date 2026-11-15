@@ -1072,11 +1072,6 @@ class VpnViewModel @Inject constructor(
         }
     }
 
-    /** The account is gone server-side, peer included: tear down locally only. */
-    fun onAccountDeleted() {
-        vpnManager.onAccountDeleted()
-    }
-
     /** The account session died (a 401 the refresh could not fix). See VpnManager.onSessionExpired. */
     fun onSessionExpired() {
         vpnManager.onSessionExpired()

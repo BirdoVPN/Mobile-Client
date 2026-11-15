@@ -26,6 +26,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -149,6 +153,16 @@ class BirdoRepository @Inject constructor(
      * server call (see logout()).
      */
     private val sessionGeneration = AtomicLong(0)
+
+    private val _accountErasures = MutableStateFlow(0L)
+
+    /**
+     * Counts the account erasures this server CONFIRMED (a plain deletion's
+     * 2xx, [clearAfterErasure]); never a hold, a refusal or an inference.
+     * VpnManager ends the session on each new value (MR-2338), so the tunnel
+     * comes down with the account even when no screen is there to see it.
+     */
+    val accountErasures: StateFlow<Long> = _accountErasures.asStateFlow()
 
     /**
      * Store the pair a sign-in returned, under [sessionLock] like every other
@@ -850,6 +864,8 @@ class BirdoRepository @Inject constructor(
         deviceInfoProvider.resetDeviceIdentity()
         // Same reasoning for the ML-KEM keypair (audit D-15).
         forgetPostQuantumKeypair()
+        // Last, once the credentials are gone: the session ends now (MR-2338).
+        _accountErasures.update { it + 1 }
     }
 
     /**

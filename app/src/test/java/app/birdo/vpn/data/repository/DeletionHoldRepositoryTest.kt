@@ -99,6 +99,8 @@ class DeletionHoldRepositoryTest {
         verify(exactly = 0) { tokenManager.clearAll() }
         verify(exactly = 0) { deviceInfoProvider.resetDeviceIdentity() }
         verify(exactly = 0) { deviceInfoProvider.forgetPostQuantumKeypair() }
+        // …and nothing ends the VPN session (MR-2338: only a confirmed erasure does).
+        assertEquals(0L, repository.accountErasures.value)
     }
 
     // ── 202: a hold, not a deletion ─────────────────────────────
@@ -194,6 +196,8 @@ class DeletionHoldRepositoryTest {
         coEvery { api.deleteAccount(any(), any()) } returns answered(200, """{"success":true}""")
         assertTrue(repository.deleteAccount("pass123") is ApiResult.Success)
         verify(exactly = 1) { deviceInfoProvider.resetDeviceIdentity() }
+        // MR-2338: the confirmed erasure is what ends the VPN session.
+        assertEquals(1L, repository.accountErasures.value)
     }
 
     /** An expired access token: the refresh runs, and the RETRY is still the hold, with its proof. */

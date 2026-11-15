@@ -39,8 +39,8 @@ import java.util.Locale
 /**
  * MR-179 hold fallback (birdo-web #883): "Delete in 24 hours (I lost my
  * account number)". The rule that matters most: a hold is NOT a deletion.
- * The user stays signed in (and so connected: the graph tears the tunnel down
- * only on [AuthUiState.accountDeleted]), the dialog closes and Profile shows
+ * The user stays signed in (and so connected: the tunnel comes down only on a
+ * confirmed erasure, BirdoRepository.accountErasures), the dialog closes and Profile shows
  * when the account will be deleted, with Cancel.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -428,7 +428,8 @@ class DeleteHoldViewModelTest {
         vm.refreshPendingDeletion() // e.g. ON_RESUME while the cancel is out
         gate.complete(ApiResult.Success(true))
 
-        coVerify(exactly = 1) { repository.pendingDeletion() }
+        // The session-start read (MR-2367) and the one above, none during the cancel.
+        coVerify(exactly = 2) { repository.pendingDeletion() }
         assertNull(vm.uiState.value.pendingDeletion)
     }
 
@@ -441,6 +442,52 @@ class DeleteHoldViewModelTest {
         vm.logout()
 
         assertNull(vm.uiState.value.pendingDeletion)
+    }
+
+    // ── MR-2367: the hold is known from the start of the session ─
+
+    /**
+     * Cold start straight into Home, Profile never opened: Home's sign-out
+     * confirmation reads the hold from this state, and it used to be filled
+     * only when Profile opened, so signing out gave no "this cancels the
+     * deletion" warning.
+     */
+    @Test
+    fun `a cold start reads the hold once, so Home's sign-out can warn`() = runTest {
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(held)
+
+        val vm = viewModelFor(anon)
+
+        assertEquals(held, vm.uiState.value.pendingDeletion)
+        coVerify(exactly = 1) { repository.pendingDeletion() }
+    }
+
+    @Test
+    fun `a sign-in reads the hold once`() = runTest {
+        every { tokenManager.isLoggedIn() } returns false
+        val vm = viewModelFor(anon)
+        coVerify(exactly = 0) { repository.pendingDeletion() }
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(held)
+        coEvery { repository.loginAnonymous(any(), any()) } returns ApiResult.Success(
+            app.birdo.vpn.data.model.AnonymousLoginResponse(ok = true),
+        )
+
+        vm.loginAnonymous("1".repeat(24))
+
+        assertTrue(vm.uiState.value.isLoggedIn)
+        assertEquals(held, vm.uiState.value.pendingDeletion)
+        coVerify(exactly = 1) { repository.pendingDeletion() }
+    }
+
+    @Test
+    fun `a dead session at cold start reads no hold`() = runTest {
+        coEvery { repository.getProfile() } returns
+            ApiResult.Error(StringsXml.text("error_session_expired"), 401, FailureReason.SESSION_EXPIRED)
+
+        val vm = AuthViewModel(repository, tokenManager, mockk(relaxed = true), prefs, StringsXml)
+
+        assertFalse(vm.uiState.value.isLoggedIn)
+        coVerify(exactly = 0) { repository.pendingDeletion() }
     }
 
     // ── The banner's date ───────────────────────────────────────
