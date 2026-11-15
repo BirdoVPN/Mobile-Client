@@ -10,6 +10,8 @@ name: ASC metadata
 #   3.1.2  "offers auto-renewable subscriptions but does not include a functional
 #           link to the Terms of Use (EULA) in the app metadata that appears on
 #           the app's App Store product page"  -> App DESCRIPTION
+#   (also, iOS only: the one-sentence kill-switch limit, MR-2259, appended to the
+#   description in every localization, in English)
 #   2.1.0  "provide detailed responses to the following questions regarding the
 #           app's VPN functionality ... and add this information to the App
 #           Review Information section"        -> App Review Information NOTES

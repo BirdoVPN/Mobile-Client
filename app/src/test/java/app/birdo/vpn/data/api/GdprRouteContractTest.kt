@@ -63,6 +63,17 @@ class GdprRouteContractTest {
         assertEquals("https://api.birdo.app/api/v1/gdpr/delete/preflight", resolved)
     }
 
+    /** MR-179: gdpr.controller.ts `@Post('delete/code')`, no body, same `api/v1/gdpr` controller. */
+    @Test
+    fun `the deletion e-mail code is a POST to the api prefixed route`() {
+        val method = BirdoApi::class.java.methods.single { it.name == "sendDeletionCode" }
+        val post = method.getAnnotation(retrofit2.http.POST::class.java)
+        assertNotNull("BirdoApi.sendDeletionCode lost its @POST annotation", post)
+        assertEquals(BirdoApi.GDPR_DELETE_CODE_PATH, post!!.value)
+        val resolved = "https://api.birdo.app/".toHttpUrl().resolve(post.value)?.toString()
+        assertEquals("https://api.birdo.app/api/v1/gdpr/delete/code", resolved)
+    }
+
     @Test
     fun `no other client route still points at the unprefixed gdpr path`() {
         val offenders = BirdoApi::class.java.methods.mapNotNull { m ->

@@ -1,7 +1,7 @@
 import Foundation
 
 // MR-1948. Foundation-only BY DESIGN, and in its own file for the same reason
-// ClientUpdateAdvisory.swift and StoredPQKeyTriage.swift are: the decoding and
+// ClientUpdateAdvisory.swift is: the decoding and
 // the clamp below are the whole risk surface (a refusal that loses its code,
 // a wait that hammers the API or parks the user for an hour, a junk body that
 // crashes), and they can only be pinned by a test if they compile into the

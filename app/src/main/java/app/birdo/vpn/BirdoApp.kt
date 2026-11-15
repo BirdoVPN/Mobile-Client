@@ -76,6 +76,9 @@ class BirdoApp : Application() {
             } catch (e: Exception) {
                 android.util.Log.w("BirdoApp", "Token store warm-up failed", e)
             }
+            // MR-703 / MR-1742: BirdoPQ keys are per connect and never stored.
+            // Delete the keypair and Keystore keys an older build left, once.
+            app.birdo.vpn.service.BirdoPqManager.purgeLegacyKeypair(this)
             // Nothing reaches the backend before the CURRENT consent (audit
             // D-12, A2-028's residual): the rail's start reconciles Play
             // purchases with the server. MainActivity starts it the moment

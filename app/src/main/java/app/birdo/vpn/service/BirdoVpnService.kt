@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import androidx.glance.appwidget.updateAll
 import java.net.InetAddress
 import java.net.Socket
@@ -240,6 +241,14 @@ class BirdoVpnService : VpnService() {
          * asked — rather than re-reading the setting during the setup.
          */
         const val EXTRA_STEALTH_REQUESTED = "stealth_requested"
+
+        /**
+         * The Base64 ML-KEM public key THIS dial uploaded (MR-703 / MR-1742;
+         * public, so safe in an intent). The service decapsulates and wipes only
+         * the pair with this key ([BirdoPqManager]), so an older generation's
+         * teardown can never consume or wipe a newer dial's pair.
+         */
+        const val EXTRA_PQ_UPLOADED_KEY = "pq_uploaded_key"
         const val EXTRA_SPLIT_TUNNEL_ENABLED = "split_tunnel_enabled"
         const val EXTRA_SPLIT_TUNNEL_APPS = "split_tunnel_apps"
         /** STOP only: the user asked for this teardown (no "Not connected" notice follows it). */
@@ -379,6 +388,17 @@ class BirdoVpnService : VpnService() {
         // VpnManager collects this flow to receive state changes immediately.
         private val _stateFlow = MutableStateFlow<VpnState>(VpnState.Disconnected)
         val stateFlow: StateFlow<VpnState> = _stateFlow.asStateFlow()
+
+        /**
+         * How many stops [stopTunnel] has finished, bumped after its final
+         * state. [stateFlow] alone cannot tell VpnManager that a stop is done:
+         * a stop of a service with nothing up publishes Disconnected →
+         * Disconnecting → Disconnected on the tunnel executor, and a collector
+         * that resumes after that round trip finds the value unchanged and
+         * sees nothing at all. A count never repeats, so no stop is missed.
+         */
+        private val _stopsCompleted = MutableStateFlow(0L)
+        val stopsCompleted: StateFlow<Long> = _stopsCompleted.asStateFlow()
 
         /**
          * Application context, captured in [onCreate], so [updateState] can ask
@@ -582,6 +602,15 @@ class BirdoVpnService : VpnService() {
 
     /** Whether the dial being set up asked for Stealth ([EXTRA_STEALTH_REQUESTED]). */
     @Volatile private var stealthRequested = false
+
+    /**
+     * The uploaded ML-KEM public key of the session this service is setting up
+     * or running ([EXTRA_PQ_UPLOADED_KEY]); what [cleanupStealthAndQuantum]
+     * names when it ends that session. Set when its START (or live rebuild)
+     * arrives, so a teardown that runs for the PREVIOUS session still names the
+     * previous key.
+     */
+    @Volatile private var sessionPqKey: String? = null
 
     /** Single-thread executor for tunnel operations — avoids ANR on main thread. */
     private val tunnelExecutor = Executors.newSingleThreadExecutor { r ->
@@ -1193,6 +1222,7 @@ class BirdoVpnService : VpnService() {
         // A START without the extra (none is sent today) falls back to the
         // stored setting: the old, fail-closed reading.
         stealthRequested = intent.getBooleanExtra(EXTRA_STEALTH_REQUESTED, appPrefs.stealthModeEnabled)
+        sessionPqKey = intent.getStringExtra(EXTRA_PQ_UPLOADED_KEY)
         isSplitTunnelingEnabled = intent.getBooleanExtra(EXTRA_SPLIT_TUNNEL_ENABLED, false)
         splitTunnelAppList = intent.getStringArrayExtra(EXTRA_SPLIT_TUNNEL_APPS)
             ?.toSet() ?: emptySet()
@@ -2024,7 +2054,7 @@ class BirdoVpnService : VpnService() {
                 mainHandler.post { updateNotification("Quantum key exchange…") }
 
                 quantumPsk = runBlocking(Dispatchers.IO) {
-                    BirdoPqManager.performKeyExchange(applicationContext, config)
+                    BirdoPqManager.performKeyExchange(applicationContext, config, sessionPqKey)
                 }
                 if (supersededAt(gen, "quantum key exchange")) return
 
@@ -2809,9 +2839,17 @@ class BirdoVpnService : VpnService() {
         val id = intent.getLongExtra(EXTRA_REBUILD_ID, -1L)
         val config = rebuildConfig
         rebuildConfig = null
-        fun keepOld() = completeLiveRebuild(id, LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP)
+        // The pair this rebuild's /connect uploaded. A rebuild that ends before
+        // the decapsulation drops it, and only it: the live session's own key
+        // ([sessionPqKey]) is untouched.
+        val rebuildPqKey = intent.getStringExtra(EXTRA_PQ_UPLOADED_KEY)
+        fun keepOld() {
+            BirdoPqManager.discardPending(rebuildPqKey)
+            completeLiveRebuild(id, LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP)
+        }
         // A transition that arrived after this rebuild owns the tunnel.
         if (!isCurrent(seen)) {
+            BirdoPqManager.discardPending(rebuildPqKey)
             completeLiveRebuild(id, LiveRebuildPolicy.Event.SUPERSEDED)
             return
         }
@@ -2822,6 +2860,7 @@ class BirdoVpnService : VpnService() {
         // today's path instead (the fail-closed teardown, then a fresh dial)
         // and gives both keys back.
         if (config == null || currentState !is VpnState.Connected || tunnelHandle < 0 || stealthActive) {
+            BirdoPqManager.discardPending(rebuildPqKey)
             completeLiveRebuild(id, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
             return
         }
@@ -2831,6 +2870,7 @@ class BirdoVpnService : VpnService() {
         // thread at any moment, and one that landed after the check above must
         // still win (a check, then a separate incrementAndGet, let it lose).
         if (destroyed || !transitionGen.compareAndSet(seen, seen + 1)) {
+            BirdoPqManager.discardPending(rebuildPqKey)
             completeLiveRebuild(id, LiveRebuildPolicy.Event.SUPERSEDED)
             return
         }
@@ -2840,7 +2880,7 @@ class BirdoVpnService : VpnService() {
         intent.getStringArrayExtra(EXTRA_SPLIT_TUNNEL_APPS)?.let { splitTunnelAppList = it.toSet() }
         val rebuildAskedForStealth = intent.getBooleanExtra(EXTRA_STEALTH_REQUESTED, appPrefs.stealthModeEnabled)
 
-        val prepared = prepareLiveRebuild(config, rebuildAskedForStealth) ?: run { keepOld(); return }
+        val prepared = prepareLiveRebuild(config, rebuildAskedForStealth, rebuildPqKey) ?: run { keepOld(); return }
         if (!isCurrent(gen)) {
             completeLiveRebuild(id, LiveRebuildPolicy.Event.SUPERSEDED)
             return
@@ -2883,6 +2923,8 @@ class BirdoVpnService : VpnService() {
         startTunnelMonitor(handle, WireGuardConfigBuilder.effectiveKeepaliveSec(prepared.first))
         registerUnderlyingNetworkCallback(handle)
         activeConfig = prepared.first.copy(privateKey = "", presharedKey = null)
+        // The swapped-in session is the rebuild's: its end names this key.
+        sessionPqKey = rebuildPqKey
         _connectedServerFlow.value = config.serverNode?.name ?: "Unknown"
         _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
         extractServerIp()
@@ -2896,7 +2938,11 @@ class BirdoVpnService : VpnService() {
      * the requested-vs-granted guards, the PQ derivation, the engine and the
      * config. Null keeps the live session.
      */
-    private fun prepareLiveRebuild(config: ConnectResponse, askedForStealth: Boolean): Pair<ConnectResponse, Config>? {
+    private fun prepareLiveRebuild(
+        config: ConnectResponse,
+        askedForStealth: Boolean,
+        uploadedPk: String?,
+    ): Pair<ConnectResponse, Config>? {
         if (appPrefs.quantumProtectionEnabled && !config.quantumEnabled) {
             FaultReporter.report(
                 FaultReporter.PATH_QUANTUM,
@@ -2911,7 +2957,7 @@ class BirdoVpnService : VpnService() {
         if (config.quantumEnabled) {
             if (config.rosenpassPublicKey == null || config.rosenpassEndpoint == null) return null
             // BirdoPqManager reports the specific cause.
-            psk = runBlocking(Dispatchers.IO) { BirdoPqManager.performKeyExchange(applicationContext, config) }
+            psk = runBlocking(Dispatchers.IO) { BirdoPqManager.performKeyExchange(applicationContext, config, uploadedPk) }
                 ?: return null
         }
         if (!app.birdo.vpn.utils.NativeLibraryVerifier.verifyLibrary(this, "wg-go") || !WgNative.init()) return null
@@ -3035,6 +3081,9 @@ class BirdoVpnService : VpnService() {
         }
         leaveForeground()
         stopSelfUnlessNewerStart()
+        // Last, once the status notification is gone too (A-L51): VpnManager
+        // settles the Disconnecting it published for this stop on it.
+        _stopsCompleted.update { it + 1 }
     }
 
     /**
@@ -3211,7 +3260,9 @@ class BirdoVpnService : VpnService() {
     /** Stop Xray Reality and BirdoPQ, zeroing all PQ key material. */
     private fun cleanupStealthAndQuantum() {
         try { XrayManager.stop() } catch (e: Exception) { Log.w(TAG, "Error stopping Xray", e) }
-        try { BirdoPqManager.stop() } catch (e: Exception) { Log.w(TAG, "Error stopping BirdoPQ", e) }
+        // Names THIS session's pair only: a stale generation's teardown must not
+        // wipe the pair a newer dial uploaded (MR-703).
+        try { BirdoPqManager.stop(sessionPqKey) } catch (e: Exception) { Log.w(TAG, "Error stopping BirdoPQ", e) }
     }
 
     // ── Widget ───────────────────────────────────────────────────

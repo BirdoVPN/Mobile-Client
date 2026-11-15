@@ -4,6 +4,7 @@
 Sets, for BOTH the iOS and macOS apps:
 
   * the Terms of Use (EULA) link in the App DESCRIPTION            (guideline 3.1.2)
+  * the iOS kill-switch sentence in the App DESCRIPTION (iOS only, MR-2259)
   * the VPN data answers in App Review Information NOTES           (guideline 2.1.0)
 
 MODE=read changes nothing and prints what each platform currently has. Run that
@@ -16,7 +17,9 @@ Deliberate design choices, because this writes to a live storefront:
     reviewing cannot be edited, and trying is how you get a confusing 409 rather
     than a clear message.
   * The description is READ, then the EULA block appended only if its marker is
-    absent. Re-running is a no-op instead of stacking duplicate blocks.
+    absent, and (iOS only) the kill-switch sentence appended only if its marker
+    is absent and it still fits in 4000 characters. Re-running is a no-op
+    instead of stacking duplicate blocks. See build_description().
   * Every write is preceded by printing the exact before/after length, so the
     run log is the audit trail.
 """
@@ -53,6 +56,42 @@ Terms of Use (EULA): https://www.apple.com/legal/internet-services/itunes/dev/st
 Privacy Policy: https://birdo.app/privacy
 Birdo Terms of Service: https://birdo.app/terms
 """
+
+# MR-2259 (owner 2026-11-13): the iOS kill-switch limit lives in the App Store
+# description (and on the website), not in the app. iOS only. The sentence rests
+# on iosApp/iosApp/Services/KillSwitchProfile.swift (includeAllNetworks, carrier
+# services excluded), VPNManager.swift (local network sharing) and
+# TunnelCircuitBreaker.swift / VPNManager.failOpenAndStop() (the block is
+# released when the tunnel cannot reconnect). The marker is short and ASCII so
+# it survives App Store Connect curling the apostrophe.
+KILL_SWITCH_MARKER = "the kill switch blocks traffic outside the VPN"
+KILL_SWITCH_NOTE = """
+
+On iPhone and iPad, the kill switch blocks traffic outside the VPN except your carrier's own services (such as Wi-Fi Calling) and, if you allow it, your local network. If the VPN cannot reconnect, the app turns the block off so your device stays online, and traffic leaves outside the VPN until you reconnect.
+"""
+
+DESCRIPTION_LIMIT = 4000
+
+
+def build_description(desc: str, platform: str) -> str:
+    """The description to write, or `desc` unchanged when nothing is needed.
+
+    The EULA block (guideline 3.1.2) is built first and wins: the iOS kill-switch
+    note is appended only if the result still fits in 4000 characters. macOS is
+    never given the note. Re-running on its own output changes nothing.
+    """
+    new = desc
+    if EULA_MARKER not in new:
+        eula = new.rstrip() + EULA_BLOCK
+        if len(eula) > DESCRIPTION_LIMIT:
+            return desc  # cannot fit even the EULA: leave it, the caller reports
+        new = eula
+    if platform == "IOS" and KILL_SWITCH_MARKER not in new:
+        with_note = new.rstrip() + KILL_SWITCH_NOTE
+        if len(with_note) <= DESCRIPTION_LIMIT:
+            new = with_note
+    return new
+
 
 # Audit 2026-09-29 (D-5 / B-15): the previous answers told App Review that
 # account data was stored "on servers under our control in the United
@@ -219,13 +258,17 @@ def handle(asc: Asc, app, want_platform: str, mode: str) -> None:
             locale = loc["attributes"]["locale"]
             desc = loc["attributes"].get("description") or ""
             has = EULA_MARKER in desc
-            print(f"  [{vs}] description {locale}: {len(desc)} chars, EULA link present = {has}")
-            if has or mode != "apply":
+            ks = "n/a" if want_platform != "IOS" else str(KILL_SWITCH_MARKER in desc)
+            print(f"  [{vs}] description {locale}: {len(desc)} chars, EULA link present = {has}, kill-switch note present = {ks}")
+            if mode != "apply":
                 continue
-            new = desc.rstrip() + EULA_BLOCK
-            if len(new) > 4000:
-                print(f"    SKIP {locale}: would exceed the 4000-char description limit ({len(new)})")
+            new = build_description(desc, want_platform)
+            if new == desc:
+                if not has:
+                    print(f"    SKIP {locale}: would exceed the {DESCRIPTION_LIMIT}-char description limit")
                 continue
+            if want_platform == "IOS" and KILL_SWITCH_MARKER not in new:
+                print(f"    NOTE {locale}: kill-switch note skipped, it would exceed {DESCRIPTION_LIMIT} chars")
             asc.patch(
                 f"appStoreVersionLocalizations/{loc['id']}",
                 {

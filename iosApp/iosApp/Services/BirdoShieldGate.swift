@@ -208,12 +208,15 @@ enum BirdoShieldGate {
     /// subtitle it shows all have to agree about whether the feature can do
     /// anything. Deriving them separately at three call sites is how a row ends
     /// up reading ON while greyed out.
+    ///
+    /// Owner decision 2026-11-13: while the FLEET gate is off the row is HIDDEN
+    /// (`isVisible == false`), not shown with a "not available" reason. It
+    /// returns by itself if the gate is ever turned on.
     struct Row: Equatable {
         let isOn: Bool
         let isEnabled: Bool
-        /// True when the row should show the "not available yet" reason instead
-        /// of the normal description.
-        let unavailable: Bool
+        /// False unless the fleet gate is known to be on: the row is not shown.
+        let isVisible: Bool
     }
 
     /// - Parameters:
@@ -223,33 +226,21 @@ enum BirdoShieldGate {
     ///     YET (cold start before the fetch lands, an unreachable web app, or a
     ///     deploy older than birdo-web#465).
     ///
-    /// `available == false` rather than `available != true` is the whole point:
-    /// UNKNOWN COUNTS AS AVAILABLE. The two failure modes are not symmetric —
-    /// a wrongly-off gate hides a feature that works and silently drops the
-    /// filtering the user asked for, while a wrongly-available one costs a
-    /// greyed-out row appearing a moment late, and the backend refuses the flag
-    /// anyway while the gate is down. So only an explicit server "no" disables
-    /// the row; a network error never does.
+    /// Owner 2026-11-13: the row exists ONLY while the gate is known to be on
+    /// (`available == true`). UNKNOWN (a cold start before the fetch lands, an
+    /// offline device, an older web deploy) hides it, like an explicit off: a
+    /// row that may be switched on for a feature the fleet does not offer is the
+    /// lie this hides. It appears when the config fetch confirms the gate.
     ///
     /// Note what this does NOT do: it never writes. An unavailable gate makes
     /// the row read OFF, but `preference` is left untouched in UserDefaults, so
     /// the user's own choice comes back by itself when the gate does.
     static func row(preference: Bool, available: Bool?) -> Row {
-        let unavailable = available == false
+        let unavailable = available != true
         return Row(
             isOn: preference && !unavailable,
             isEnabled: !unavailable,
-            unavailable: unavailable
+            isVisible: !unavailable
         )
     }
-
-    /// The subtitle shown while the gate is down.
-    ///
-    /// The user cannot act on this, so the copy does not ask them to; it says
-    /// the preference survives. Kept here beside the rule so the three clients'
-    /// wording stays comparable in review (Android:
-    /// `R.string.vpn_settings_birdoshield_unavailable`).
-    static let unavailableReason =
-        "Not available on your account's server fleet yet. "
-        + "Your preference is kept and applies as soon as it is."
 }
