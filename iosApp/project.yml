@@ -395,6 +395,8 @@ targets:
       # (inbound bytes), as on Android. Foundation-only by design, pinned by
       # TunnelProofTests; VpnViewModel and the views cannot be compiled here.
       - path: iosApp/Services/TunnelProof.swift
+      # MR-1618: the Forgot-password destination (Foundation-only).
+      - path: iosApp/Services/AuthLinks.swift
       # MR-1620/1621: the status label and VoiceOver announcement mapping
       # (Foundation-only; builds on TunnelPhase above).
       - path: iosApp/Services/ConnectionPhase.swift
