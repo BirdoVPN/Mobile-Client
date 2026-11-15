@@ -213,7 +213,12 @@ object DohResolver {
      */
     private val remembered = ConcurrentHashMap<String, Remembered>()
 
-    /** Sign-out, account deletion, a dead session: nothing remembered outlives the account. */
+    /**
+     * An explicit sign-out or an account erasure (BirdoRepository.logout,
+     * clearAfterErasure). NOT a dead session: on a 401 a Stealth tunnel stays
+     * up, and the sign-in that follows needs the address on a network that
+     * blocks DoH (review of #622). An address is not account data.
+     */
     fun forgetRememberedAnswers() {
         remembered.clear()
     }

@@ -449,17 +449,7 @@ class DohResolverStealthTest {
         }
     }
 
-    /** Every sign-out path (log out, deletion, a dead session) clears the tokens through clearAll. */
-    @Test
-    fun `sign-out forgets the remembered answers`() {
-        val tokens = source("app/src/main/java/app/birdo/vpn/data/auth/TokenManager.kt")
-        val clearAll = tokens.substringAfter("fun clearAll() {").substringBefore("\n    }")
-        assertTrue(clearAll.contains("store.clear()"))
-        assertTrue(clearAll.contains("DohResolver.forgetRememberedAnswers()"))
-        val repo = source("app/src/main/java/app/birdo/vpn/data/repository/BirdoRepository.kt")
-        assertTrue(
-            "logout, deleteAccount and the dead-session path must all clear through TokenManager.clearAll()",
-            Regex("""tokenManager\.clearAll\(\)""").findAll(repo).count() >= 3,
-        )
-    }
+    // Who forgets the remembered answers (an explicit logout and an erasure,
+    // never a dead session) is pinned behaviourally in BirdoRepositoryTest
+    // and TokenManagerTest.
 }

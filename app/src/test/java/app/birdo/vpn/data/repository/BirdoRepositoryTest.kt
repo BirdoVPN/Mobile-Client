@@ -838,6 +838,77 @@ class BirdoRepositoryTest {
         verify(exactly = 1) { deviceInfoProvider.resetDeviceIdentity() }
     }
 
+    // ── MR-953 F5 (review of #622): the API answers DohResolver keeps for Stealth ──
+    //
+    // Forgotten on an explicit logout and an erasure, NOT on a dead session:
+    // on a 401 a Stealth tunnel stays up, and the sign-in that follows needs
+    // the address on a network that blocks DoH. (TokenManagerTest pins that
+    // the real clearAll leaves them too.)
+
+    @Suppress("UNCHECKED_CAST")
+    private fun liveDohAnswers(): MutableMap<String, app.birdo.vpn.data.network.DohResolver.Remembered> {
+        val field = app.birdo.vpn.data.network.DohResolver::class.java.getDeclaredField("remembered")
+        field.isAccessible = true
+        return field.get(app.birdo.vpn.data.network.DohResolver)
+            as MutableMap<String, app.birdo.vpn.data.network.DohResolver.Remembered>
+    }
+
+    private val keptAnswer = app.birdo.vpn.data.network.DohResolver.Remembered(
+        listOf(java.net.InetAddress.getByAddress("api.birdo.app", byteArrayOf(198.toByte(), 51, 100, 7))),
+        1_000L,
+        fromSystem = true,
+    )
+
+    @Test
+    fun `logout forgets the API answers kept for Stealth`() = runTest {
+        val live = liveDohAnswers()
+        live["api.birdo.app"] = keptAnswer
+        try {
+            coEvery { api.logout() } returns Response.success(Unit)
+
+            repository.logout()
+
+            assertTrue("logout kept an API answer: ${live.keys}", live.isEmpty())
+        } finally {
+            live.clear()
+        }
+    }
+
+    @Test
+    fun `an erasure forgets the API answers kept for Stealth`() = runTest {
+        val live = liveDohAnswers()
+        live["api.birdo.app"] = keptAnswer
+        try {
+            coEvery { api.deleteAccount(any(), any()) } returns Response.success(DeleteAccountResponse(success = true))
+
+            assertTrue(repository.deleteAccount("pass123") is ApiResult.Success)
+
+            assertTrue("an erasure kept an API answer: ${live.keys}", live.isEmpty())
+        } finally {
+            live.clear()
+        }
+    }
+
+    @Test
+    fun `a dead session keeps the API answers kept for Stealth`() = runTest {
+        val live = liveDohAnswers()
+        live["api.birdo.app"] = keptAnswer
+        try {
+            coEvery { tokenManager.getRefreshToken() } returns "old_refresh"
+            coEvery { api.refreshToken(any()) } returns
+                Response.error(401, "Invalid token".toResponseBody("text/plain".toMediaType()))
+
+            assertEquals(RefreshOutcome.UNAUTHORIZED, repository.refreshToken())
+
+            // The dead-session clear did run…
+            verify(exactly = 1) { tokenManager.clearAll() }
+            // …and the address the Stealth tunnel's next sign-in needs is still there.
+            assertSame(keptAnswer, live["api.birdo.app"])
+        } finally {
+            live.clear()
+        }
+    }
+
     /** ACCOUNT-API-2026-10-01, item 85: the code rides the same body, and only when there is one. */
     @Test
     fun `deleteAccount sends the 2FA code with the password`() = runTest {

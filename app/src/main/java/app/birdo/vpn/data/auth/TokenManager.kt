@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import androidx.annotation.VisibleForTesting
-import app.birdo.vpn.data.network.DohResolver
 import app.birdo.vpn.security.AesGcmSealer
 import app.birdo.vpn.security.AndroidKeystoreKeySource
 import app.birdo.vpn.security.InMemorySecureStore
@@ -243,11 +242,12 @@ class TokenManager @VisibleForTesting internal constructor(
     // ── Clear All ────────────────────────────────────────────────
 
     fun clearAll() {
+        // MR-953 F5: NOT DohResolver's remembered answers. A dead session
+        // also ends here, and on a 401 a Stealth tunnel stays up: wiping them
+        // then left the sign-in that follows with no address on a network
+        // that blocks DoH (review of #622). An address is not account data;
+        // BirdoRepository forgets them on an explicit logout and an erasure.
         store.clear()
-        // MR-953 F5: the API host answers DohResolver keeps for Stealth are
-        // session state too. Every sign-out path (log out, account deletion,
-        // a dead session) ends here.
-        DohResolver.forgetRememberedAnswers()
     }
 
     fun isLoggedIn(): Boolean {
