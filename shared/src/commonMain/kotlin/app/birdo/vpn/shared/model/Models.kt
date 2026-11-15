@@ -468,11 +468,68 @@ data class DeleteAccountRequest(
      * defaults), so a server older than that API never sees the key.
      */
     val twoFactorCode: String? = null,
+    /**
+     * MR-179 (owner 2026-11-13): the 24-digit account number an anonymous
+     * account re-enters before it is deleted. Omitted when null.
+     */
+    val accountNumber: String? = null,
+    /**
+     * MR-179: the 6-digit code e-mailed by `POST api/v1/gdpr/delete/code` to an
+     * SSO account with no 2FA. Omitted when null.
+     */
+    val emailCode: String? = null,
+    /**
+     * MR-179 hold fallback (birdo-web #883): `"hold"` asks the server to delete
+     * the account in 24 hours instead, for a user who cannot present the
+     * step-up factor (a lost account number). The password and 2FA code are
+     * still required where the account has them. Omitted when null. Not a
+     * secret: it only names the method.
+     */
+    val stepUpMethod: String? = null,
 ) {
-    /** Never prints [password] or [twoFactorCode], only whether each was sent (MR-1870). */
+    /**
+     * Never prints [password], [twoFactorCode], [accountNumber] or [emailCode],
+     * only whether each was sent (MR-1870).
+     */
     override fun toString(): String =
-        "DeleteAccountRequest(password=${redacted(password)}, twoFactorCode=${redacted(twoFactorCode)})"
+        "DeleteAccountRequest(password=${redacted(password)}, twoFactorCode=${redacted(twoFactorCode)}, " +
+            "accountNumber=${redacted(accountNumber)}, emailCode=${redacted(emailCode)}, stepUpMethod=$stepUpMethod)"
 }
+
+/**
+ * MR-179: what `GET api/v1/gdpr/delete/preflight` says this account is asked
+ * for before a deletion. [factors] are the server's tokens: `password`,
+ * `account_number`, `email_code`, `apple_reauth` (iOS only), `two_factor`.
+ * [enforced] is whether the server refuses a deletion that lacks them.
+ */
+@Serializable
+data class DeletionStepUp(
+    val factors: List<String> = emptyList(),
+    val enforced: Boolean = false,
+    /**
+     * MR-179 hold fallback (birdo-web #883): the server takes
+     * `stepUpMethod: "hold"` (delete in 24 hours) from this account. The
+     * dialog offers it only when this is true; a server without the hold omits
+     * it, which reads as false.
+     */
+    val holdAvailable: Boolean = false,
+) {
+    val needsAccountNumber: Boolean get() = FACTOR_ACCOUNT_NUMBER in factors
+    val needsEmailCode: Boolean get() = FACTOR_EMAIL_CODE in factors
+
+    companion object {
+        const val FACTOR_ACCOUNT_NUMBER = "account_number"
+        const val FACTOR_EMAIL_CODE = "email_code"
+    }
+}
+
+/** `POST api/v1/gdpr/delete/code`: the code was e-mailed to [sentTo], a masked address. */
+@Serializable
+data class DeletionCodeResponse(
+    val success: Boolean = false,
+    val sentTo: String? = null,
+    val expiresInMinutes: Int? = null,
+)
 
 @Serializable
 data class DeleteAccountResponse(
@@ -491,6 +548,47 @@ data class DeleteAccountResponse(
      * coerceInputValues maps an explicit null to the empty default.
      */
     val storeSubscriptionsStillBilling: List<StoreSubscriptionStillBilling> = emptyList(),
+    /**
+     * MR-179 hold fallback: true on the 202 `change_pending` answer, which
+     * is NOT a deletion (the account is deleted 24 hours later unless the hold
+     * is cancelled). A deletion never carries it.
+     */
+    val pending: Boolean = false,
+    /** The 202's `code` (`change_pending`). Named so it is not read as a credential code. */
+    @SerialName("code") val outcome: String? = null,
+    /**
+     * The 202's `{ methods, pendingChangeId, applyAfter }`. Raw, so that no
+     * shape of it (the refusals send an ARRAY of factors under the same key)
+     * can fail the decode; BirdoRepository reads it.
+     */
+    val stepUp: JsonElement? = null,
+)
+
+/**
+ * MR-179: one held sensitive change of `GET auth/pending-changes`
+ * (birdo-web step-up.controller.ts). [action] `account_delete` is a deletion
+ * on hold; [applyAfter] (ISO-8601) is when it takes effect unless cancelled.
+ */
+@Serializable
+data class PendingChange(
+    val id: String = "",
+    val action: String = "",
+    val description: String? = null,
+    val applyAfter: String? = null,
+    val createdAt: String? = null,
+)
+
+/** `GET auth/pending-changes`. */
+@Serializable
+data class PendingChangesResponse(
+    val pendingChanges: List<PendingChange> = emptyList(),
+)
+
+/** `POST auth/pending-changes/{id}/cancel`: 200 `{ success, cancelled }`. */
+@Serializable
+data class CancelPendingChangeResponse(
+    val success: Boolean = false,
+    val cancelled: Boolean = false,
 )
 
 /**
@@ -508,6 +606,8 @@ data class DeletionPreflightResponse(
     val storeSubscriptionsStillBilling: List<StoreSubscriptionStillBilling> = emptyList(),
     /** A web (Polar) subscription is billing and the deletion will cancel it. */
     val webSubscriptionWillBeCancelled: Boolean = false,
+    /** MR-179: what the account is asked for. Null from a server older than #766. */
+    val stepUp: DeletionStepUp? = null,
 )
 
 /** One entry of [DeleteAccountResponse.storeSubscriptionsStillBilling]. Every field optional. */

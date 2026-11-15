@@ -760,6 +760,33 @@ class BirdoVpnServiceLifecycleTest {
         verify(exactly = 1) { notifications.cancelAlert() }
     }
 
+    @Test
+    fun `a stop with nothing up is still counted, once the status notification is gone`() {
+        // Disconnected before and after: stateFlow has nothing to tell
+        // VpnManager, so the count is how it learns the stop is done (1.4.40).
+        assertEquals(VpnState.Disconnected, BirdoVpnService.currentState)
+        val before = BirdoVpnService.stopsCompleted.value
+        var countAtStopForeground = -1L
+        every { service.stopForeground(any<Int>()) } answers {
+            countAtStopForeground = BirdoVpnService.stopsCompleted.value
+        }
+        val stop = BirdoVpnService::class.java.getDeclaredMethod(
+            "stopTunnel",
+            VpnState.Error::class.java,
+            Boolean::class.javaPrimitiveType,
+        )
+        stop.isAccessible = true
+
+        stop.invoke(service, null, true)
+
+        assertEquals(VpnState.Disconnected, BirdoVpnService.currentState)
+        assertEquals(before + 1, BirdoVpnService.stopsCompleted.value)
+        // Counted after stopForeground: a render the count triggers cannot
+        // post the status notification again (A-L51).
+        assertEquals(before, countAtStopForeground)
+        verify(exactly = 0) { notifications.postDisconnectedNotification() }
+    }
+
     // ── A-L51: no orphan status notification after a stop ────────────────
 
     private fun renderStatusNotification() {

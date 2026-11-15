@@ -132,6 +132,24 @@ class CredentialToStringTest {
     }
 
     @Test
+    fun deleteAccountRequestPrintsNoAccountNumberOrEmailedCode() {
+        val printed = DeleteAccountRequest(accountNumber = "123456789012345678901234", emailCode = "654321").toString()
+        assertTrue(!printed.contains("123456789012345678901234"), "DeleteAccountRequest printed the account number")
+        assertTrue(!printed.contains("654321"), "DeleteAccountRequest printed the emailed code")
+        assertTrue(printed.contains("accountNumber=[REDACTED]"), "DeleteAccountRequest hides that a number was sent")
+        assertTrue(printed.contains("emailCode=[REDACTED]"), "DeleteAccountRequest hides that a code was sent")
+    }
+
+    /** MR-179 hold fallback: the method shows, the password and code that ride with it do not. */
+    @Test
+    fun deleteAccountHoldRequestPrintsTheMethodButNoCredential() {
+        val printed = DeleteAccountRequest(password = "hunter2-password", twoFactorCode = "otp-424242", stepUpMethod = "hold").toString()
+        assertTrue(!printed.contains("hunter2-password"), "DeleteAccountRequest printed the password")
+        assertTrue(!printed.contains("otp-424242"), "DeleteAccountRequest printed the code")
+        assertTrue(printed.contains("stepUpMethod=hold"), "DeleteAccountRequest hides which method was asked for")
+    }
+
+    @Test
     fun voucherRequestPrintsNoCode() {
         assertNoSecret(RedeemVoucherRequest(code = "voucher-code-pqr").toString())
     }
