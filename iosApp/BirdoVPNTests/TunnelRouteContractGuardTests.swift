@@ -159,4 +159,25 @@ final class TunnelRouteContractGuardTests: XCTestCase {
         XCTAssertFalse(transport.contains("completion.run(timeout: timeout,"), "the fixed 20 s is back")
         XCTAssertTrue(transport.contains("timeout: TimeInterval = HeartbeatExchangeTimeout.cap"))
     }
+
+    /// No connection is opened after the exchange was stopped, on either path;
+    /// the iOS 17 delegate outlives its connection; and a close right after a
+    /// complete answer is the answer. HeartbeatExchangeTests runs the slot, the
+    /// start guard and the close rule; this pins that the exchanges use them.
+    func testTheExchangesNeverOpenAfterAStop() throws {
+        let exchange = try code("PacketTunnel/HeartbeatExchange.swift")
+        XCTAssertTrue(exchange.contains("guard !isFinished else { return }"))
+        let transport = try code("PacketTunnel/TunnelHeartbeatTransport.swift")
+        let legacy = try XCTUnwrap(transport.components(separatedBy: "private final class LegacyTunnelExchange").last)
+        XCTAssertTrue(legacy.contains("guard let connection = slot.open(retaining: self, {"))
+        XCTAssertTrue(legacy.contains("slot.stop()?.cancel()"))
+        XCTAssertEqual(legacy.components(separatedBy: "slot.ended()").count - 1, 1)
+        let cancelled = try XCTUnwrap(legacy.components(separatedBy: "case .cancelled:").last)
+        XCTAssertTrue(cancelled.prefix(200).contains("ended()"), "the delegate is let go only at .cancelled")
+        XCTAssertFalse(legacy.contains("__NWTCPConnection?"), "a connection outside the slot is back")
+        let disconnected = try XCTUnwrap(legacy.components(separatedBy: "case .disconnected:").last)
+        XCTAssertTrue(disconnected.prefix(400).contains("HeartbeatExchangeOutcome.atClose("))
+        let modern = try XCTUnwrap(transport.components(separatedBy: "private final class InterfaceExchange").last)
+        XCTAssertTrue(modern.contains("guard !stopped else { return }"))
+    }
 }

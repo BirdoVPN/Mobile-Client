@@ -106,6 +106,9 @@ private final class InterfaceExchange: @unchecked Sendable {
     private let queue: DispatchQueue
     private let completion: HeartbeatExchangeCompletion
     private var buffer = Data()   // touched only on `queue`
+    private let lock = NSLock()
+    /// Set by `stop`; a stopped exchange never starts its connection.
+    private var stopped = false
 
     init(host: String, port: UInt16, interface: NWInterface, request: Data,
          queue: DispatchQueue, completion: HeartbeatExchangeCompletion) {
@@ -133,6 +136,12 @@ private final class InterfaceExchange: @unchecked Sendable {
     }
 
     func start() {
+        // Held across the start, so a stop on another thread lands either
+        // before it (nothing starts) or after it (the cancel reaches a started
+        // connection). The handler runs on `queue` and never takes this lock.
+        lock.lock()
+        defer { lock.unlock() }
+        guard !stopped else { return }
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
@@ -155,6 +164,9 @@ private final class InterfaceExchange: @unchecked Sendable {
     }
 
     func stop() {
+        lock.lock()
+        stopped = true
+        lock.unlock()
         connection.cancel()
     }
 
@@ -220,7 +232,10 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
     private let queue: DispatchQueue
     private let completion: HeartbeatExchangeCompletion
     private let lock = NSLock()
-    private var connection: __NWTCPConnection?
+    /// The connection, from its open to `.cancelled` (HeartbeatExchange.swift):
+    /// never opened after a stop, and this exchange (the connection's
+    /// authentication delegate) is kept alive until the connection is over.
+    private let slot = HeartbeatConnectionSlot<__NWTCPConnection>()
     private var observation: NSKeyValueObservation?
     /// Approved by `evaluateTrust` and required before a byte is written: the
     /// connection must have been through THIS pin check, whatever the
@@ -248,27 +263,39 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
         // parameters the floor was whatever the system default allowed.
         let tls = __NWTLSParameters()
         tls.minimumSSLProtocolVersion = Self.minimumTLSVersion
-        let connection = provider.__createTCPConnectionThroughTunnel(to: endpoint, enableTLS: true,
-                                                                   tlsParameters: tls, delegate: self)
+        // Review of #621: a stop that landed first (the beat cancelled, timed
+        // out) leaves nothing to open; the slot refuses.
+        guard let connection = slot.open(retaining: self, {
+            provider.__createTCPConnectionThroughTunnel(to: endpoint, enableTLS: true,
+                                                        tlsParameters: tls, delegate: self)
+        }) else { return }
+        // `.initial` reports the state now, so a cancel that raced this line is
+        // still seen as `.cancelled` and releases the slot's hold on `self`.
         let observation = connection.observe(\.state, options: [.initial, .new]) { [weak self] observed, _ in
             guard let self else { return }
             let state = observed.state
             self.queue.async { self.stateChanged(state) }
         }
         lock.lock()
-        self.connection = connection
         self.observation = observation
         lock.unlock()
     }
 
+    /// Cancels the connection, if one was opened, and makes sure none opens
+    /// later. The state observation stays until `.cancelled` arrives.
     func stop() {
+        slot.stop()?.cancel()
+    }
+
+    /// `.cancelled` is the connection's last state: stop observing it and let
+    /// the slot release this exchange.
+    private func ended() {
         lock.lock()
-        let connection = self.connection
         let observation = self.observation
         self.observation = nil
         lock.unlock()
         observation?.invalidate()
-        connection?.cancel()
+        slot.ended()
     }
 
     private func stateChanged(_ state: __NWTCPConnectionState) {
@@ -283,10 +310,7 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
             case .write:
                 break
             }
-            lock.lock()
-            let connection = self.connection
-            lock.unlock()
-            guard let connection else { return }
+            guard let connection = slot.current else { return }
             connection.write(request) { [weak self] error in
                 guard let self else { return }
                 if error != nil {
@@ -296,9 +320,13 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
                 }
             }
         case .disconnected:
-            completion.finish(.failure(TunnelHeartbeatTransport.TransportError.connectionFailed))
+            // Review of #621: `Connection: close` means the server closes right
+            // after its answer, and this state can arrive before the read that
+            // saw the end. A complete answer already received is the answer.
+            completion.finish(HeartbeatExchangeOutcome.atClose(buffer))
         case .cancelled:
             completion.finish(.failure(TunnelHeartbeatTransport.TransportError.cancelled))
+            ended()
         default:
             break
         }

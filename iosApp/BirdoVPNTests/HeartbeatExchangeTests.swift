@@ -192,4 +192,137 @@ final class HeartbeatExchangeTests: XCTestCase {
             XCTAssertEqual(calls.count("stop"), 1, "round \(round)")
         }
     }
+
+    // MARK: - No connection after the stop (review: iOS 17 path)
+
+    /// The stop lands while the exchange's start is still queued behind other
+    /// work: when the start block finally runs, it must not open anything,
+    /// because the stop that would have cancelled it has already happened.
+    func testAnExchangeStoppedBeforeItsStartRanNeverStarts() async throws {
+        let completion = HeartbeatExchangeCompletion()
+        let calls = Calls()
+        let queue = DispatchQueue(label: "exchange-test")
+        queue.suspend()   // the start block waits in the queue
+        let task = Task {
+            try await completion.run(timeout: 30, queue: queue,
+                                     start: { calls.hit("start") }, stop: { calls.hit("stop") })
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)   // the start block is queued by now
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("expected cancellation")
+        } catch {
+            XCTAssertEqual(error as? HeartbeatTransportError, .cancelled)
+        }
+        queue.resume()
+        queue.sync {}     // the queued start block has run
+        XCTAssertEqual(calls.count("start"), 0, "a connection was opened after the exchange was stopped")
+        XCTAssertEqual(calls.count("stop"), 1)
+    }
+
+    private final class FakeConnection: Sendable {}
+    private final class Owner: Sendable {}
+
+    func testAStoppedSlotNeverOpens() {
+        let slot = HeartbeatConnectionSlot<FakeConnection>()
+        let calls = Calls()
+        XCTAssertNil(slot.stop(), "nothing was opened, nothing to cancel")
+        XCTAssertNil(slot.open(retaining: Owner()) { calls.hit("make"); return FakeConnection() })
+        XCTAssertEqual(calls.count("make"), 0, "the connection was made after the stop")
+        XCTAssertNil(slot.current)
+    }
+
+    func testAStopAfterTheOpenHandsBackTheConnectionToCancel() throws {
+        let slot = HeartbeatConnectionSlot<FakeConnection>()
+        let opened = try XCTUnwrap(slot.open(retaining: Owner()) { FakeConnection() })
+        XCTAssertTrue(slot.current === opened)
+        XCTAssertTrue(slot.stop() === opened)
+        XCTAssertNil(slot.open(retaining: Owner()) { FakeConnection() }, "a slot opens once")
+    }
+
+    /// The owner is the iOS 17 connection's delegate: it must outlive the
+    /// connection, so it is held until the connection reports `.cancelled`,
+    /// which comes after the stop, not with it.
+    func testTheOwnerIsHeldUntilTheConnectionHasEnded() {
+        let slot = HeartbeatConnectionSlot<FakeConnection>()
+        weak var weakOwner: Owner?
+        do {
+            let owner = Owner()
+            weakOwner = owner
+            XCTAssertNotNil(slot.open(retaining: owner) { FakeConnection() })
+        }
+        XCTAssertNotNil(weakOwner, "held while the connection lives")
+        _ = slot.stop()
+        XCTAssertNotNil(weakOwner, "a stop is not the end: the connection has not reported .cancelled yet")
+        slot.ended()
+        XCTAssertNil(weakOwner, "released once the connection is over")
+    }
+
+    func testAnOwnerIsNotHeldWhenNothingOpened() {
+        let slot = HeartbeatConnectionSlot<FakeConnection>()
+        _ = slot.stop()
+        weak var weakOwner: Owner?
+        do {
+            let owner = Owner()
+            weakOwner = owner
+            XCTAssertNil(slot.open(retaining: owner) { FakeConnection() })
+        }
+        XCTAssertNil(weakOwner)
+    }
+
+    /// The start (open) and the stop race on two threads. Whatever the order,
+    /// a connection that was opened is the one the stop hands back to cancel.
+    func testAStopRacingTheOpenNeverLeavesAnUncancelledConnection() {
+        final class Outcome: @unchecked Sendable {
+            private let lock = NSLock()
+            private var opened: FakeConnection?
+            private var toCancel: FakeConnection?
+            func record(opened: FakeConnection?) { lock.lock(); self.opened = opened; lock.unlock() }
+            func record(toCancel: FakeConnection?) { lock.lock(); self.toCancel = toCancel; lock.unlock() }
+            var leaked: Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                guard let opened else { return false }
+                return toCancel !== opened
+            }
+        }
+        for round in 0..<500 {
+            let slot = HeartbeatConnectionSlot<FakeConnection>()
+            let outcome = Outcome()
+            let owner = Owner()
+            DispatchQueue.concurrentPerform(iterations: 2) { index in
+                if index == 0 {
+                    outcome.record(opened: slot.open(retaining: owner) { FakeConnection() })
+                } else {
+                    outcome.record(toCancel: slot.stop())
+                }
+            }
+            XCTAssertFalse(outcome.leaked, "round \(round): a connection opened that the stop never saw")
+        }
+    }
+
+    // MARK: - A close right after the answer (review: .disconnected)
+
+    func testACompleteAnswerFollowedByTheCloseIsTheAnswer() throws {
+        let body = #"{"valid":false}"#
+        let raw = Data("HTTP/1.1 200 OK\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".utf8)
+        XCTAssertEqual(try HeartbeatExchangeOutcome.atClose(raw).get(),
+                       HeartbeatHTTP.Response(statusCode: 200, body: Data(body.utf8)))
+        // No length at all: the close is what ends the body.
+        let open = Data("HTTP/1.1 401 Unauthorized\r\n\r\nnope".utf8)
+        XCTAssertEqual(try HeartbeatExchangeOutcome.atClose(open).get().statusCode, 401)
+    }
+
+    func testAnIncompleteAnswerAtTheCloseIsAFailedConnection() {
+        let cut = Data("HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n{\"valid\":".utf8)
+        for received in [cut, Data(), Data("HTTP/1.1 200".utf8), Data("garbage\r\n\r\n".utf8)] {
+            switch HeartbeatExchangeOutcome.atClose(received) {
+            case .success(let response):
+                XCTFail("read \(response) out of \(received.count) bytes")
+            case .failure(let error):
+                XCTAssertEqual(error as? HeartbeatTransportError, .connectionFailed)
+            }
+        }
+    }
 }

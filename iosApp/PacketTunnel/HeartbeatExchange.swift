@@ -55,6 +55,14 @@ final class HeartbeatExchangeCompletion: @unchecked Sendable {
     private var finished = false
     private var stop: (@Sendable () -> Void)?
 
+    /// The exchange has its outcome. A connection that has not started by now
+    /// must not start.
+    var isFinished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return finished
+    }
+
     /// Runs one exchange: `start` (on `queue`) opens the connection, which
     /// ends it with `finish`; `stop` closes it, once, whatever ended it.
     func run(timeout: TimeInterval, queue: DispatchQueue,
@@ -74,7 +82,14 @@ final class HeartbeatExchangeCompletion: @unchecked Sendable {
                 queue.asyncAfter(deadline: .now() + timeout) { [self] in
                     finish(.failure(HeartbeatTransportError.timedOut))
                 }
-                queue.async { start() }
+                // Review of #621: an exchange that ended before this block ran
+                // (cancelled, or timed out behind a busy queue) was stopped
+                // with nothing yet to stop. Starting it now would open a
+                // connection that nothing ever cancels.
+                queue.async { [self] in
+                    guard !isFinished else { return }
+                    start()
+                }
             }
         } onCancel: {
             finish(.failure(HeartbeatTransportError.cancelled))
@@ -94,5 +109,75 @@ final class HeartbeatExchangeCompletion: @unchecked Sendable {
         lock.unlock()
         stop?()
         cont?.resume(with: result)
+    }
+}
+
+/// One exchange's connection, from the moment it is opened to its terminal
+/// state (review of #621).
+///
+/// The exchange is started on its queue and may be stopped from any thread
+/// (the timeout, task cancellation, a failure in a callback). Three rules:
+///   - a slot that was stopped never opens: a connection made after the stop
+///     is one that nothing would ever cancel;
+///   - a stop after the open hands back the connection, to be cancelled;
+///   - the owner is kept alive from the open until the connection reports its
+///     terminal state (`ended`). On the iOS 17 path the owner is the
+///     NWTCPConnection's authentication delegate, so no late delegate callback
+///     can reach a freed object.
+final class HeartbeatConnectionSlot<Connection: AnyObject>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+    private var connection: Connection?
+    private var owner: AnyObject?
+
+    /// Opens with `make`, called at most once and under the slot's lock,
+    /// unless the slot was already stopped (or opened). Returns the connection
+    /// it opened, nil otherwise; `owner` is held until `ended()`.
+    func open(retaining owner: AnyObject, _ make: () -> Connection?) -> Connection? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !stopped, connection == nil, let made = make() else { return nil }
+        connection = made
+        self.owner = owner
+        return made
+    }
+
+    /// The connection, once opened.
+    var current: Connection? {
+        lock.lock()
+        defer { lock.unlock() }
+        return connection
+    }
+
+    /// No open from now on. Returns the connection to cancel, if one was opened.
+    func stop() -> Connection? {
+        lock.lock()
+        defer { lock.unlock() }
+        stopped = true
+        return connection
+    }
+
+    /// The connection reached its terminal state: the owner may go.
+    func ended() {
+        lock.lock()
+        let released = owner
+        owner = nil
+        lock.unlock()
+        withExtendedLifetime(released) {}   // the last release happens outside the lock
+    }
+}
+
+/// How an exchange ends when the server closes the connection.
+enum HeartbeatExchangeOutcome {
+    /// The server closed (the iOS 17 path's NWTCPConnection reported
+    /// `.disconnected`). The request asks for `Connection: close`, so a close
+    /// right after a complete answer is the normal end, and the state change
+    /// can be reported before the read that saw the end: what has arrived is
+    /// read as at EOF, and only an incomplete or unreadable answer fails.
+    static func atClose(_ received: Data) -> Result<HeartbeatHTTP.Response, Error> {
+        if let response = try? HeartbeatHTTP.parse(received, atEOF: true) {
+            return .success(response)
+        }
+        return .failure(HeartbeatTransportError.connectionFailed)
     }
 }
