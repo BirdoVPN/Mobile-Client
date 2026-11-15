@@ -82,57 +82,167 @@ enum HeartbeatHTTP {
     /// - Parameter atEOF: the server has closed; a response with no length is
     ///   complete now, and one still short of its length is `.truncated`.
     static func parse(_ buffer: Data, atEOF: Bool) throws -> Response? {
-        if buffer.count > maxResponseBytes { throw ParseError.tooLarge }
-        var start = buffer.startIndex
-        var interim = 0
-        while true {
-            guard let headEnd = buffer.range(of: headerTerminator, in: start..<buffer.endIndex) else {
-                if atEOF { throw buffer.isEmpty ? ParseError.truncated : ParseError.malformed }
-                return nil
+        var reader = ResponseReader()
+        reader.append(buffer)
+        return try reader.response(atEOF: atEOF)
+    }
+
+    /// One response, read as its bytes arrive (the transport keeps one per
+    /// connection; `parse` is a reader fed everything at once).
+    ///
+    /// It remembers where the search for the end of the head stopped and,
+    /// once the head is complete, the parsed head itself. So an answer that
+    /// arrives a few bytes per read is searched once overall, not once per
+    /// read (`headBytesSearched`, pinned by HeartbeatHTTPTests).
+    ///
+    /// The head is read strictly (RFC 9112), because the answer decides
+    /// whether a tunnel is torn down:
+    ///   - a field name is a token, with NO whitespace before its colon (this
+    ///     also refuses an obsolete folded line);
+    ///   - a second Content-Length or Transfer-Encoding is malformed, and so is
+    ///     a response carrying both;
+    ///   - Transfer-Encoding means chunked only when its FINAL coding is
+    ///     exactly `chunked`; any other final coding is read until the close.
+    struct ResponseReader {
+        /// Everything received so far. Offsets below index it directly: it
+        /// starts empty, so its indices start at 0.
+        private(set) var received = Data()
+        /// Bytes compared while looking for the end of a head, over the
+        /// reader's whole life.
+        private(set) var headBytesSearched = 0
+        private var headStart = 0
+        private var searchFrom = 0
+        private var interim = 0
+        private var head: Head?
+
+        init() {}
+
+        mutating func append(_ data: Data) {
+            received.append(data)
+        }
+
+        /// The response, or nil while more bytes are needed.
+        mutating func response(atEOF: Bool) throws -> Response? {
+            if received.count > maxResponseBytes { throw ParseError.tooLarge }
+            while head == nil {
+                let from = searchFrom
+                guard let end = received.range(of: headerTerminator, in: from..<received.count) else {
+                    headBytesSearched += received.count - from
+                    // The terminator can straddle this read and the next:
+                    // resume just short of its length from the end.
+                    searchFrom = max(headStart, received.count - (headerTerminator.count - 1))
+                    if atEOF { throw received.isEmpty ? ParseError.truncated : ParseError.malformed }
+                    return nil
+                }
+                headBytesSearched += end.upperBound - from
+                let parsed = try HeartbeatHTTP.head(received[headStart..<end.lowerBound], bodyStart: end.upperBound)
+                if parsed.isInterim {
+                    // An interim 1xx answer (never asked for, but legal) is skipped.
+                    interim += 1
+                    if interim > maxInterimResponses { throw ParseError.malformed }
+                    headStart = end.upperBound
+                    searchFrom = end.upperBound
+                    continue
+                }
+                head = parsed
             }
-            guard let head = String(data: buffer[start..<headEnd.lowerBound], encoding: .utf8) else {
-                throw ParseError.malformed
-            }
-            let headLines = head.components(separatedBy: "\r\n")
-            let status = try statusCode(headLines[0])
-            var headers: [String: String] = [:]
-            for line in headLines.dropFirst() {
-                guard let colon = line.firstIndex(of: ":") else { throw ParseError.malformed }
-                let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
-                let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-                headers[name] = value
-            }
-            let bodyStart = headEnd.upperBound
-            // An interim 1xx answer (never asked for, but legal) is skipped.
-            if (100...199).contains(status) && status != 101 {
-                interim += 1
-                if interim > maxInterimResponses { throw ParseError.malformed }
-                start = bodyStart
-                continue
-            }
-            let rest = buffer[bodyStart...]
-            if let encoding = headers["transfer-encoding"], encoding.lowercased().contains("chunked") {
+            guard let head else { return nil }
+            let rest = received[head.bodyStart...]
+            switch head.framing {
+            case .chunked:
                 guard let body = try dechunk(rest, atEOF: atEOF) else { return nil }
-                return Response(statusCode: status, body: body)
-            }
-            if let lengthText = headers["content-length"] {
-                // Bounded by `boundedLength` before any use: `rest.count` and
-                // `length` are both at most `maxResponseBytes` below.
-                let length = try boundedLength(lengthText, radix: 10)
+                return Response(statusCode: head.status, body: body)
+            case .length(let length):
+                // `length` was bounded by `boundedLength`, and `rest.count` by
+                // `maxResponseBytes` above.
                 if rest.count >= length {
-                    return Response(statusCode: status, body: Data(rest.prefix(length)))
+                    return Response(statusCode: head.status, body: Data(rest.prefix(length)))
                 }
                 if atEOF { throw ParseError.truncated }
                 return nil
+            case .empty:
+                return Response(statusCode: head.status, body: Data())
+            case .untilClose:
+                return atEOF ? Response(statusCode: head.status, body: Data(rest)) : nil
             }
-            if status == 204 || status == 304 {
-                return Response(statusCode: status, body: Data())
-            }
-            return atEOF ? Response(statusCode: status, body: Data(rest)) : nil
         }
     }
 
     // MARK: - Private
+
+    private struct Head {
+        let status: Int
+        let framing: Framing
+        let bodyStart: Int
+        let isInterim: Bool
+    }
+
+    private enum Framing {
+        case chunked
+        case length(Int)
+        case empty
+        case untilClose
+    }
+
+    /// One head (status line and fields, without the blank line).
+    private static func head(_ bytes: Data, bodyStart: Int) throws -> Head {
+        guard let text = String(data: bytes, encoding: .utf8) else { throw ParseError.malformed }
+        let lines = text.components(separatedBy: "\r\n")
+        let status = try statusCode(lines[0])
+        var contentLength: String?
+        var transferEncoding: String?
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { throw ParseError.malformed }
+            // RFC 9112 5.1: no whitespace between the name and the colon. A
+            // name is a token, so a leading space (an obsolete folded line)
+            // fails here too.
+            let name = line[..<colon]
+            guard isToken(name) else { throw ParseError.malformed }
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            switch name.lowercased() {
+            case "content-length":
+                // RFC 9112 6.3: differing (or repeated) lengths are an error.
+                guard contentLength == nil else { throw ParseError.malformed }
+                contentLength = value
+            case "transfer-encoding":
+                guard transferEncoding == nil else { throw ParseError.malformed }
+                transferEncoding = value
+            default:
+                break
+            }
+        }
+        if (100...199).contains(status) && status != 101 {
+            return Head(status: status, framing: .empty, bodyStart: bodyStart, isInterim: true)
+        }
+        if let transferEncoding {
+            // RFC 9112 6.1: both at once "ought to be handled as an error".
+            guard contentLength == nil else { throw ParseError.malformed }
+            // RFC 9112 6.3: only a FINAL coding of chunked frames the body;
+            // otherwise the body runs until the server closes.
+            let lastCoding = transferEncoding.split(separator: ",", omittingEmptySubsequences: false).last
+                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            return Head(status: status, framing: lastCoding == "chunked" ? .chunked : .untilClose,
+                        bodyStart: bodyStart, isInterim: false)
+        }
+        if let contentLength {
+            return Head(status: status, framing: .length(try boundedLength(contentLength, radix: 10)),
+                        bodyStart: bodyStart, isInterim: false)
+        }
+        if status == 204 || status == 304 {
+            return Head(status: status, framing: .empty, bodyStart: bodyStart, isInterim: false)
+        }
+        return Head(status: status, framing: .untilClose, bodyStart: bodyStart, isInterim: false)
+    }
+
+    /// RFC 9110 5.6.2 `token`: visible ASCII except the delimiters.
+    private static func isToken(_ name: Substring) -> Bool {
+        !name.isEmpty && name.utf8.allSatisfy { byte in
+            switch byte {
+            case 0x30...0x39, 0x41...0x5A, 0x61...0x7A: return true          // 0-9 A-Z a-z
+            default: return "!#$%&'*+-.^_`|~".utf8.contains(byte)
+            }
+        }
+    }
 
     private static func statusCode(_ line: String) throws -> Int {
         let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)

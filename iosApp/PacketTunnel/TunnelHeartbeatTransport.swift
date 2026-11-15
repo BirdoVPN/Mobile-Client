@@ -105,7 +105,7 @@ private final class InterfaceExchange: @unchecked Sendable {
     private let request: Data
     private let queue: DispatchQueue
     private let completion: HeartbeatExchangeCompletion
-    private var buffer = Data()   // touched only on `queue`
+    private var reader = HeartbeatHTTP.ResponseReader()   // touched only on `queue`
     private let lock = NSLock()
     /// Set by `stop`; a stopped exchange never starts its connection.
     private var stopped = false
@@ -184,10 +184,10 @@ private final class InterfaceExchange: @unchecked Sendable {
     private func receive() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
-            if let data { self.buffer.append(data) }
+            if let data { self.reader.append(data) }
             let atEOF = isComplete || error != nil
             do {
-                if let response = try HeartbeatHTTP.parse(self.buffer, atEOF: atEOF) {
+                if let response = try self.reader.response(atEOF: atEOF) {
                     self.completion.finish(.success(response))
                     return
                 }
@@ -241,7 +241,7 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
     /// connection must have been through THIS pin check, whatever the
     /// system's own evaluation of the trust handed back says.
     private let writeGate = PinnedWriteGate()
-    private var buffer = Data()   // touched only on `queue`
+    private var reader = HeartbeatHTTP.ResponseReader()   // touched only on `queue`
 
     init(provider: NEPacketTunnelProvider, host: String, port: UInt16, request: Data,
          queue: DispatchQueue, completion: HeartbeatExchangeCompletion) {
@@ -323,7 +323,7 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
             // Review of #621: `Connection: close` means the server closes right
             // after its answer, and this state can arrive before the read that
             // saw the end. A complete answer already received is the answer.
-            completion.finish(HeartbeatExchangeOutcome.atClose(buffer))
+            completion.finish(HeartbeatExchangeOutcome.atClose(reader.received))
         case .cancelled:
             completion.finish(.failure(TunnelHeartbeatTransport.TransportError.cancelled))
             ended()
@@ -336,10 +336,10 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
         connection.readMinimumLength(1, maximumLength: 16 * 1024) { [weak self] data, error in
             guard let self else { return }
             self.queue.async {
-                if let data { self.buffer.append(data) }
+                if let data { self.reader.append(data) }
                 let atEOF = error != nil || (data?.isEmpty ?? true)
                 do {
-                    if let response = try HeartbeatHTTP.parse(self.buffer, atEOF: atEOF) {
+                    if let response = try self.reader.response(atEOF: atEOF) {
                         self.completion.finish(.success(response))
                         return
                     }

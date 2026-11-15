@@ -229,4 +229,104 @@ final class HeartbeatHTTPTests: XCTestCase {
         let flood = String(repeating: interim, count: HeartbeatHTTP.maxInterimResponses + 1) + final
         assertRefused(Data(flood.utf8), .malformed)
     }
+
+    // MARK: - A strict head (RFC 9112), re-review of #621
+
+    /// Two lengths, even equal ones: which one frames the body is exactly the
+    /// ambiguity a smuggled answer relies on. The old parser kept the last.
+    func testARepeatedContentLengthIsMalformed() {
+        for second in ["5", "6"] {
+            assertRefused(Data("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: \(second)\r\n\r\nhello".utf8),
+                          .malformed)
+        }
+        assertRefused(Data("HTTP/1.1 200 OK\r\ncontent-length: 5\r\nCONTENT-LENGTH: 5\r\n\r\nhello".utf8), .malformed)
+    }
+
+    func testARepeatedTransferEncodingIsMalformed() {
+        assertRefused(Data("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".utf8),
+                      .malformed)
+    }
+
+    func testTransferEncodingAndContentLengthTogetherAreMalformed() {
+        assertRefused(Data("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".utf8),
+                      .malformed)
+        assertRefused(Data("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n0\r\n\r\n".utf8),
+                      .malformed)
+    }
+
+    /// Only a FINAL coding of `chunked` frames the body; any other final
+    /// coding runs until the server closes. The old check
+    /// (`contains("chunked")`) dechunked all of the second list.
+    func testChunkedFramesTheBodyOnlyAsTheFinalCoding() throws {
+        let chunkedBody = "5\r\nhello\r\n0\r\n\r\n"
+        for encoding in ["chunked", "CHUNKED", " chunked ", "gzip, chunked", "gzip,chunked"] {
+            let raw = Data("HTTP/1.1 200 OK\r\nTransfer-Encoding: \(encoding)\r\n\r\n\(chunkedBody)".utf8)
+            XCTAssertEqual(try HeartbeatHTTP.parse(raw, atEOF: false)?.body, Data("hello".utf8), encoding)
+        }
+        for encoding in ["chunked, gzip", "xchunked", "chunkedx", "not-chunked"] {
+            let raw = Data("HTTP/1.1 200 OK\r\nTransfer-Encoding: \(encoding)\r\n\r\n\(chunkedBody)".utf8)
+            XCTAssertNil(try HeartbeatHTTP.parse(raw, atEOF: false), "\(encoding) is read until the close")
+            XCTAssertEqual(try HeartbeatHTTP.parse(raw, atEOF: true)?.body, Data(chunkedBody.utf8), encoding)
+        }
+    }
+
+    /// RFC 9112 5.1: no whitespace between a field name and its colon; a name
+    /// is a token, which also refuses an obsolete folded line. The old parser
+    /// trimmed the name and accepted every one of these.
+    func testWhitespaceInOrBeforeAFieldNameIsMalformed() {
+        for line in ["Content-Length : 5", "Content-Length\t: 5", " Content-Length: 5", "\tX-Folded: 1",
+                     "Bad Name: 1", ": 5"] {
+            assertRefused(Data("HTTP/1.1 200 OK\r\n\(line)\r\n\r\nhello".utf8), .malformed)
+        }
+        // Whitespace AFTER the colon is optional whitespace, and fine.
+        let fine = Data("HTTP/1.1 200 OK\r\nContent-Length:5\r\nX-A:\t b \r\n\r\nhello".utf8)
+        XCTAssertEqual(try HeartbeatHTTP.parse(fine, atEOF: false)?.body, Data("hello".utf8))
+    }
+
+    // MARK: - The transport's reader
+
+    /// The reader, fed one byte per read (the worst a peer can do), gives the
+    /// same answer as one parse of the whole, and searches the head about once
+    /// overall. The old parser re-scanned everything received on every read:
+    /// about head²/2 byte comparisons, 8 million for this head.
+    func testAReaderFedAByteAtATimeSearchesTheHeadOnce() throws {
+        let body = #"{"valid":true}"#
+        let raw = Data("HTTP/1.1 200 OK\r\nX-Padding: \(String(repeating: "x", count: 4_000))\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)".utf8)
+        let head = raw.count - body.utf8.count
+        var reader = HeartbeatHTTP.ResponseReader()
+        var answer: HeartbeatHTTP.Response?
+        for (index, byte) in raw.enumerated() {
+            reader.append(Data([byte]))
+            answer = try reader.response(atEOF: false)
+            if answer != nil {
+                XCTAssertEqual(index, raw.count - 1, "complete only at its last byte")
+                break
+            }
+        }
+        XCTAssertEqual(answer, try HeartbeatHTTP.parse(raw, atEOF: false))
+        XCTAssertEqual(answer?.body, Data(body.utf8))
+        XCTAssertLessThanOrEqual(reader.headBytesSearched, 4 * head)
+
+        var whole = HeartbeatHTTP.ResponseReader()
+        whole.append(raw)
+        XCTAssertEqual(try whole.response(atEOF: false), answer)
+        XCTAssertEqual(whole.headBytesSearched, head, "one pass over the head, none over the body")
+    }
+
+    func testAReaderFedInPiecesReadsAChunkedAnswerAfterAnInterimOne() throws {
+        let raw = Data("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\n{\"valid\r\n7\r\n\":true}\r\n0\r\n\r\n".utf8)
+        for pieceSize in [1, 2, 3, 5, 64] {
+            var reader = HeartbeatHTTP.ResponseReader()
+            var answer: HeartbeatHTTP.Response?
+            var offset = 0
+            while offset < raw.count, answer == nil {
+                let end = min(offset + pieceSize, raw.count)
+                reader.append(raw.subdata(in: offset..<end))
+                offset = end
+                answer = try reader.response(atEOF: false)
+            }
+            XCTAssertEqual(answer, HeartbeatHTTP.Response(statusCode: 200, body: Data(#"{"valid":true}"#.utf8)),
+                           "pieces of \(pieceSize)")
+        }
+    }
 }
