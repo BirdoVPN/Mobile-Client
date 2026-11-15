@@ -344,6 +344,51 @@ class DohResolverStealthTest {
         assertEquals(0, systemCalls)
     }
 
+    // ── Review of #622, item 8: DoH's own system fallback ────────────────
+    //
+    // OkHttp's DnsOverHttps sends a name with no public suffix to its
+    // systemDns, which is Dns.SYSTEM unless set.
+
+    private fun countingSystem(onLookup: () -> List<InetAddress>) = object : okhttp3.Dns {
+        override fun lookup(hostname: String): List<InetAddress> = onLookup()
+    }
+
+    @Test
+    fun `DoH's system fallback refuses during stealth and is the system resolver otherwise`() {
+        var calls = 0
+        var stealth = true
+        val guard = DohResolver.stealthGuardedSystemDns({ stealth }, countingSystem { calls++; systemAnswer })
+
+        assertLookupFails { guard.lookup("printer") }
+        assertEquals("the network's resolver was asked during Stealth", 0, calls)
+
+        stealth = false
+        assertSame(systemAnswer, guard.lookup("printer"))
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun `outside stealth DoH's system fallback passes the system resolver's failure through unchanged`() {
+        val failure = UnknownHostException("no such host")
+        val guard = DohResolver.stealthGuardedSystemDns({ false }, countingSystem { throw failure })
+        try {
+            guard.lookup("printer")
+            fail("the system resolver's failure must propagate")
+        } catch (e: UnknownHostException) {
+            assertSame(failure, e)
+        }
+    }
+
+    @Test
+    fun `the Cloudflare DoH lookup uses the guarded system fallback with the live flag`() {
+        val src = source("app/src/main/java/app/birdo/vpn/data/network/DohResolver.kt")
+        val builder = src.substringAfter("private val cloudflare: DnsOverHttps = DnsOverHttps.Builder()")
+            .substringBefore(".build()")
+        assertTrue(
+            builder.contains(".systemDns(stealthGuardedSystemDns({ BirdoVpnService.stealthActive }, okhttp3.Dns.SYSTEM))"),
+        )
+    }
+
     // ── Wiring ───────────────────────────────────────────────────────────────
 
     private fun source(path: String): String {

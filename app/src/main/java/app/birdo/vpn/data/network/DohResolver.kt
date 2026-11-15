@@ -152,7 +152,29 @@ object DohResolver {
             InetAddress.getByName("1.0.0.1"),
             InetAddress.getByName("2606:4700:4700::1111"),
         )
+        .systemDns(stealthGuardedSystemDns({ BirdoVpnService.stealthActive }, okhttp3.Dns.SYSTEM))
         .build()
+
+    /**
+     * OkHttp's DnsOverHttps sends a name with no public suffix (a single
+     * label, a private TLD) to its `systemDns` rather than to Cloudflare, and
+     * that is Dns.SYSTEM unless set: a query to the network's resolver. This
+     * one IS [system] outside Stealth, exactly as on main; while Stealth is
+     * active it refuses (MR-953 F5, review of #622 item 8). The app's own
+     * hosts all have a public suffix, so this is hardening, not a path they
+     * take.
+     */
+    internal fun stealthGuardedSystemDns(stealthActive: () -> Boolean, system: okhttp3.Dns): okhttp3.Dns =
+        object : okhttp3.Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                if (stealthActive()) {
+                    throw UnknownHostException(
+                        "a name with no public suffix is not sent to the network's resolver while Stealth is active",
+                    )
+                }
+                return system.lookup(hostname)
+            }
+        }
 
     /**
      * An answer kept for Stealth, when it was obtained (monotonic clock), and
