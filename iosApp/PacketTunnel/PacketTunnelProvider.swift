@@ -91,7 +91,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     private lazy var heartbeatTransport = TunnelHeartbeatTransport(provider: self)
 
     private lazy var adapter: WireGuardAdapter = {
-        WireGuardAdapter(with: self) { [weak self] level, message in
+        let adapter = WireGuardAdapter(with: self) { [weak self] level, message in
             guard let self else { return }
             let type: OSLogType
             switch level {
@@ -140,6 +140,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 os_log("wg: %{private}@", log: self.log, type: type, message)
             }
         }
+        // MR-953 F4: a resume after a network change that cannot re-apply the
+        // tunnel's settings leaves the adapter paused while the system still
+        // says connected. The adapter retries on a timer, then reports here.
+        adapter.onResumeExhausted = { [weak self] in self?.handleResumeExhausted() }
+        return adapter
     }()
 
     override func startTunnel(
@@ -481,6 +486,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     /// so a dead peer stops blackholing traffic even while the host app is
     /// suspended. Transport failures and a stale-token 401 are IGNORED — a
     /// missed heartbeat or an expired token must never kill a live tunnel.
+    ///
+    /// MR-953 F1 limit: the beat goes THROUGH the tunnel, so `{valid:false}`
+    /// arrives only while the node still carries this peer (a revoked key on a
+    /// live node). A node that has already dropped the peer carries nothing,
+    /// and that eviction is caught as a dead data plane (handshake age, below),
+    /// not here. Faster detection is MR-1622/MR-1623 (Mobile #605); nothing
+    /// here may ask the server from outside the tunnel instead.
     private func startHeartbeat(keyId: String, token: String, clientVersion: String) {
         heartbeatLock.lock()
         heartbeatTask?.cancel()
@@ -492,7 +504,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 guard let self else { return }
                 // Data-plane liveness FIRST, and independently of the network
                 // heartbeat below. The heartbeat cannot detect a dead tunnel: its
-                // URLSession rides the live tunnel, so the one condition worth
+                // request goes through the tunnel (MR-953 F1), so the one condition worth
                 // detecting is exactly the condition that disables the detector.
                 await self.checkDataPlaneLiveness()
                 await self.sendHeartbeat(keyId: keyId, token: token, clientVersion: clientVersion)
@@ -636,6 +648,36 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             os_log("Circuit breaker tripped; no on-demand rule armed — stopping for good, traffic falls back to the physical interface",
                    log: log, type: .error)
             cancelTunnelWithError(TunnelError.circuitBreakerTripped)
+        }
+    }
+
+    /// MR-953 F4: the adapter could not resume after a network change.
+    ///
+    /// On iOS WireGuardKit turns WireGuard off while the device is offline and
+    /// re-applies the tunnel's network settings when a path comes back. When
+    /// the system does not apply them the adapter stays paused (it never
+    /// starts WireGuard on settings that were not applied), retries on a timer
+    /// (TunnelResumeWatchdog) and then calls this. Before, nothing noticed: a
+    /// paused adapter has no runtime configuration, so `checkDataPlaneLiveness`
+    /// returned early on every tick while the system said connected and the
+    /// device had no connectivity at all.
+    ///
+    /// It is a dead data plane like any other, so it goes through the breaker:
+    /// a bounded re-dial (a fresh start applies the settings anew), then the
+    /// breaker's own fail-open. `.diedAfterHandshake` is its class: the tunnel
+    /// worked until the network changed under it.
+    ///
+    /// Called on the adapter's work queue. The teardown is moved off it,
+    /// because stopping the tunnel needs that queue.
+    private func handleResumeExhausted() {
+        os_log("Tunnel could not resume after a network change; treating the data plane as dead",
+               log: log, type: .error)
+        Task { [weak self] in
+            self?.handleDataPlaneFailure(.diedAfterHandshake, error: NSError(
+                domain: "app.birdo.vpn.tunnel",
+                code: -1002,
+                userInfo: [NSLocalizedDescriptionKey: "The VPN connection could not resume after a network change."]
+            ))
         }
     }
 

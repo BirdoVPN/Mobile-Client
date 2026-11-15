@@ -45,6 +45,32 @@ final class TunnelRouteContractGuardTests: XCTestCase {
                        "the upstream wait (lost-wakeup prone, proceeds on timeout) is back")
     }
 
+    /// A resume that fails is retried on a timer and then REPORTED, instead of
+    /// waiting for a path event that may never come while the system says
+    /// connected (TunnelResumeWatchdogTests runs the timer itself).
+    func testAFailedResumeIsRetriedAndThenRoutedIntoTheBreaker() throws {
+        let adapter = try code("Vendor/wireguard-apple/Sources/WireGuardKit/WireGuardAdapter.swift")
+        XCTAssertTrue(adapter.contains("self.resumeWatchdog.pathResumeFailed()"),
+                      "a failed resume must start the retry timer")
+        XCTAssertTrue(adapter.contains("if self.resumeBackend(with: settingsGenerator) {"))
+        XCTAssertTrue(adapter.contains("return self.resumeBackend(with: settingsGenerator) ? .resumed : .failed"),
+                      "the timer must retry the same resume")
+        XCTAssertTrue(adapter.contains("self?.onResumeExhausted?()"), "exhaustion must reach the provider")
+        XCTAssertEqual(adapter.components(separatedBy: "self.resumeWatchdog.reset()").count - 1, 3,
+                       "reset on stop, on going offline, and on a resume that worked")
+        // Fail closed: the backend is only ever started after the settings applied.
+        let resume = try XCTUnwrap(adapter.components(separatedBy: "private func resumeBackend(").last)
+        let apply = try XCTUnwrap(resume.range(of: "try self.setNetworkSettings("))
+        let start = try XCTUnwrap(resume.range(of: "try self.startWireGuardBackend("))
+        XCTAssertLessThan(apply.lowerBound, start.lowerBound)
+
+        let provider = try code("PacketTunnel/PacketTunnelProvider.swift")
+        XCTAssertTrue(provider.contains("adapter.onResumeExhausted = { [weak self] in self?.handleResumeExhausted() }"))
+        let handler = try XCTUnwrap(provider.components(separatedBy: "private func handleResumeExhausted() {").last)
+        XCTAssertTrue(handler.contains("self?.handleDataPlaneFailure(.diedAfterHandshake"),
+                      "a tunnel that cannot resume must go through the circuit breaker")
+    }
+
     // MARK: F3, local patch 6
 
     func testTheGeneratorGivesAV4OnlyTunnelThePlaceholder() throws {

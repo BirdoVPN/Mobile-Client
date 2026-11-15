@@ -61,6 +61,12 @@ made them required on 2026-11-13.
   required: a capture on the physical interface shows no TLS to
   api.birdo.app during a session, and the server's lastSeen keeps moving with
   the app in the background.
+  The cost: the `{valid:false}` answer that told the extension its key was
+  revoked or evicted now has to come through the tunnel, and a node that has
+  dropped the peer carries nothing. Such a key is noticed as a dead data plane
+  (handshake age), not as a revocation, so it takes minutes rather than one
+  30 s beat. Faster dead-tunnel detection is MR-1622/MR-1623 (Mobile #605);
+  nothing here asks the server from outside the tunnel.
 - **F2, routes not enforced with the kill switch off.** `enforceRoutes` was
   tied to the kill switch, so a DHCP option 121 route won over the tunnel, and
   Local Network Sharing OFF was never delivered (`excludeLocalNetworks` only
@@ -69,10 +75,14 @@ made them required on 2026-11-13.
   was routed into it, and nothing showed iOS installs that route. Now a
   placeholder ULA makes the blackhole explicit. Device check still required.
 - **F4, "proceeding anyway".** The 5 s settings timeout used to carry on as if
-  the routes were applied. Now it asks once more and then fails the start (or
-  update; a resume after a path change stays paused until the next path change
-  retries). Upstream signalled its condition without the lock, which could
-  turn an early answer into a timeout; that is fixed with it.
+  the routes were applied. Now it asks once more and then fails the start or
+  the update. A resume after a path change stays paused (traffic held) while
+  a timer retries it (`TunnelResumeWatchdog`, 5 s and 10 s later); if it still
+  cannot resume, the provider treats the tunnel as dead and sends it through
+  the circuit breaker, instead of leaving the system saying connected with no
+  connectivity. Upstream signalled its condition without the lock, which
+  could turn an early answer into a timeout; that is fixed with it. A success
+  from any request is final, an error only from the latest one.
 
 ### Excluded routes
 
