@@ -108,6 +108,29 @@ class DohResolverStealthTest {
         assertEquals(1, systemCalls)
     }
 
+    /**
+     * Review of #622, item 7: an expired answer is removed only if it is
+     * still the one stored. Here another lookup stores a fresh answer between
+     * this lookup's read and its removal; a plain remove(key) deleted it.
+     */
+    @Test
+    fun `an expired answer is dropped without deleting a fresh one stored meanwhile`() {
+        val expired = DohResolver.Remembered(systemAnswer, now - DohResolver.REMEMBER_TTL_MS - 1, fromSystem = true)
+        val fresh = DohResolver.Remembered(dohAnswer, now)
+        val cache = object : HashMap<String, DohResolver.Remembered>() {
+            // The read this lookup made, before the fresh answer landed.
+            override fun get(key: String): DohResolver.Remembered? =
+                if (key == "api.birdo.app") expired else super.get(key)
+        }
+        cache["api.birdo.app"] = fresh
+
+        assertLookupFails { resolve(dohFails, stealth = true, cache = cache) }
+
+        assertEquals(1, cache.size)
+        assertSame("a fresh answer stored meanwhile was deleted", fresh, cache.values.single())
+        assertEquals(0, systemCalls)
+    }
+
     @Test
     fun `the ttl is one day`() {
         assertEquals(24L * 60 * 60 * 1000, DohResolver.REMEMBER_TTL_MS)

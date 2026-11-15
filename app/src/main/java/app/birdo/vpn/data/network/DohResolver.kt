@@ -325,7 +325,9 @@ object DohResolver {
                 )
                 return earlier.addresses
             }
-            if (earlier != null) remembered.remove(key)
+            // Only if it is still the one read: a fresh answer another lookup
+            // stored meanwhile must survive (review of #622, item 7).
+            if (earlier != null) remembered.remove(key, earlier)
             FaultReporter.trail(
                 FaultReporter.PATH_DNS,
                 "DoH lookup failed during Stealth (${dohFailure.javaClass.simpleName}) — " +
