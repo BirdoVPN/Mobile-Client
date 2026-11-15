@@ -30,6 +30,11 @@ enum HeartbeatHTTP {
     /// error page is a few KB. Anything bigger is not the heartbeat answering.
     static let maxResponseBytes = 64 * 1024
 
+    /// Interim 1xx answers skipped before the real one. None is ever asked
+    /// for; the bound keeps a peer from making every read re-walk a buffer of
+    /// them.
+    static let maxInterimResponses = 4
+
     private static let headerTerminator = Data("\r\n\r\n".utf8)
     private static let lineTerminator = Data("\r\n".utf8)
 
@@ -67,11 +72,19 @@ enum HeartbeatHTTP {
     }
 
     /// The response in `buffer`, or nil while more bytes are needed.
+    ///
+    /// Every length here is the PEER's (Content-Length, chunk sizes), so none
+    /// is added to or compared with anything before it has been bounded by
+    /// `maxResponseBytes`: Swift traps on integer overflow, and a trap in the
+    /// extension kills the tunnel. Lengths are plain digits only (no sign, no
+    /// whitespace inside), and a number too long to be a sane length is
+    /// `.tooLarge` or `.malformed`, never arithmetic.
     /// - Parameter atEOF: the server has closed; a response with no length is
     ///   complete now, and one still short of its length is `.truncated`.
     static func parse(_ buffer: Data, atEOF: Bool) throws -> Response? {
         if buffer.count > maxResponseBytes { throw ParseError.tooLarge }
         var start = buffer.startIndex
+        var interim = 0
         while true {
             guard let headEnd = buffer.range(of: headerTerminator, in: start..<buffer.endIndex) else {
                 if atEOF { throw buffer.isEmpty ? ParseError.truncated : ParseError.malformed }
@@ -92,6 +105,8 @@ enum HeartbeatHTTP {
             let bodyStart = headEnd.upperBound
             // An interim 1xx answer (never asked for, but legal) is skipped.
             if (100...199).contains(status) && status != 101 {
+                interim += 1
+                if interim > maxInterimResponses { throw ParseError.malformed }
                 start = bodyStart
                 continue
             }
@@ -101,8 +116,9 @@ enum HeartbeatHTTP {
                 return Response(statusCode: status, body: body)
             }
             if let lengthText = headers["content-length"] {
-                guard let length = Int(lengthText), length >= 0 else { throw ParseError.malformed }
-                if length > maxResponseBytes { throw ParseError.tooLarge }
+                // Bounded by `boundedLength` before any use: `rest.count` and
+                // `length` are both at most `maxResponseBytes` below.
+                let length = try boundedLength(lengthText, radix: 10)
                 if rest.count >= length {
                     return Response(statusCode: status, body: Data(rest.prefix(length)))
                 }
@@ -121,10 +137,38 @@ enum HeartbeatHTTP {
     private static func statusCode(_ line: String) throws -> Int {
         let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
         guard parts.count >= 2, parts[0].hasPrefix("HTTP/1."),
-              parts[1].count == 3, let code = Int(parts[1]), (100...599).contains(code) else {
+              parts[1].utf8.count == 3, parts[1].utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }),
+              let code = Int(parts[1]), (100...599).contains(code) else {
             throw ParseError.malformed
         }
         return code
+    }
+
+    /// A length the peer sent (Content-Length in decimal, a chunk size in
+    /// hex), as a value in `0...maxResponseBytes`.
+    ///
+    /// Digits only: `Int(_:radix:)` alone also accepts a sign, so "-0" and
+    /// "+5" would pass. A value over the cap is `.tooLarge` whatever its size:
+    /// one that does not even fit an Int (where `Int(_:radix:)` returns nil)
+    /// is the same answer, not a different error, and nothing is ever added to
+    /// an unbounded value.
+    private static func boundedLength(_ text: String, radix: Int) throws -> Int {
+        let digits = text.utf8
+        guard !digits.isEmpty, digits.allSatisfy({ isDigit($0, radix: radix) }) else {
+            throw ParseError.malformed
+        }
+        guard let value = Int(text, radix: radix), value <= maxResponseBytes else {
+            throw ParseError.tooLarge
+        }
+        return value
+    }
+
+    private static func isDigit(_ byte: UInt8, radix: Int) -> Bool {
+        switch byte {
+        case 0x30...0x39: return true                                   // 0-9
+        case 0x41...0x46, 0x61...0x66: return radix == 16               // A-F, a-f
+        default: return false
+        }
     }
 
     /// The decoded body, or nil while the last chunk has not arrived.
@@ -139,16 +183,19 @@ enum HeartbeatHTTP {
             guard let sizeLine = String(data: data[cursor..<lineEnd.lowerBound], encoding: .ascii) else {
                 throw ParseError.malformed
             }
-            let sizeText = sizeLine.split(separator: ";", maxSplits: 1).first.map(String.init) ?? ""
-            guard let size = Int(sizeText.trimmingCharacters(in: .whitespaces), radix: 16), size >= 0 else {
-                throw ParseError.malformed
-            }
+            let sizeText = sizeLine.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+                .first.map(String.init) ?? ""
+            // `size` is at most `maxResponseBytes` from here on.
+            let size = try boundedLength(sizeText.trimmingCharacters(in: .whitespaces), radix: 16)
             let chunkStart = lineEnd.upperBound
             if size == 0 {
                 // Trailers are not used; the body is complete at the last chunk.
                 return body
             }
-            if body.count + size > maxResponseBytes { throw ParseError.tooLarge }
+            // SUBTRACT, never add: `body.count + size` trapped on a chunk size
+            // of 7fffffffffffffff (Int.max) and killed the extension. `body`
+            // never exceeds the cap, so the right-hand side cannot underflow.
+            if size > maxResponseBytes - body.count { throw ParseError.tooLarge }
             guard data.distance(from: chunkStart, to: data.endIndex) >= size + 2 else {
                 if atEOF { throw ParseError.truncated }
                 return nil

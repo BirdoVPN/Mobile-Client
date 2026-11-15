@@ -150,4 +150,83 @@ final class HeartbeatHTTPTests: XCTestCase {
         let flood = Data(repeating: 0x41, count: HeartbeatHTTP.maxResponseBytes + 1)
         XCTAssertThrowsError(try HeartbeatHTTP.parse(flood, atEOF: false))
     }
+
+    // MARK: - Lengths the peer sends are bounded before any arithmetic
+
+    private func chunked(_ body: String) -> Data {
+        Data("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\(body)".utf8)
+    }
+
+    private func assertRefused(_ raw: Data, _ expected: HeartbeatHTTP.ParseError,
+                               file: StaticString = #filePath, line: UInt = #line) {
+        for atEOF in [false, true] {
+            XCTAssertThrowsError(try HeartbeatHTTP.parse(raw, atEOF: atEOF), file: file, line: line) {
+                XCTAssertEqual($0 as? HeartbeatHTTP.ParseError, expected, file: file, line: line)
+            }
+        }
+    }
+
+    /// The review's input. `body.count + size` overflowed on a chunk size of
+    /// Int.max and TRAPPED, in debug and at -O alike: the extension died, and
+    /// with it the tunnel. A trap cannot be caught, so on the old code this
+    /// test does not fail, it kills the test process.
+    func testAChunkSizeOfIntMaxIsRefusedNotAddedToTheBodyLength() {
+        assertRefused(chunked("1\r\na\r\n7fffffffffffffff\r\n"), .tooLarge)
+        assertRefused(chunked("7fffffffffffffff\r\n"), .tooLarge)
+        assertRefused(chunked("7FFFFFFFFFFFFFFE\r\n"), .tooLarge)
+    }
+
+    /// Too long to fit an Int at all: the same answer, not a different path.
+    func testAChunkSizeThatDoesNotFitAnIntIsTooLarge() {
+        assertRefused(chunked("8000000000000000\r\n"), .tooLarge)
+        assertRefused(chunked("ffffffffffffffffffffffff\r\n"), .tooLarge)
+    }
+
+    /// Each chunk fits the cap; together they do not. No bytes of the second
+    /// chunk are needed to refuse it.
+    func testChunksThatTogetherExceedTheCapAreRefused() {
+        let first = String(repeating: "a", count: 40_000)
+        assertRefused(chunked("9c40\r\n\(first)\r\n7530\r\n"), .tooLarge)
+        // 40 000 + 25 536 is exactly the cap: still an answer in the making.
+        XCTAssertEqual(40_000 + 0x63c0, HeartbeatHTTP.maxResponseBytes)
+        XCTAssertNoThrow(try HeartbeatHTTP.parse(chunked("9c40\r\n\(first)\r\n63c0\r\n"), atEOF: false))
+        assertRefused(chunked("9c40\r\n\(first)\r\n63c1\r\n"), .tooLarge)
+    }
+
+    /// `Int(_:radix:)` accepts a sign; a length does not have one.
+    func testASignedOrEmptyChunkSizeIsMalformed() {
+        for size in ["-0", "+5", "-1", "", ";ext=1", "0x5", "5 5", "g"] {
+            assertRefused(chunked("\(size)\r\nhello\r\n0\r\n\r\n"), .malformed)
+        }
+    }
+
+    func testAContentLengthIsPlainDigitsWithinTheCap() {
+        func answer(_ length: String) -> Data {
+            Data("HTTP/1.1 200 OK\r\nContent-Length: \(length)\r\n\r\nhello".utf8)
+        }
+        for length in ["+5", "-0", "-5", "5, 5", "0x5", "5.0", ""] {
+            assertRefused(answer(length), .malformed)
+        }
+        for length in ["9223372036854775807", "9223372036854775808",
+                       "999999999999999999999999999999", "\(HeartbeatHTTP.maxResponseBytes + 1)"] {
+            assertRefused(answer(length), .tooLarge)
+        }
+        XCTAssertEqual(try HeartbeatHTTP.parse(answer("005"), atEOF: false)?.body, Data("hello".utf8))
+    }
+
+    func testAStatusCodeIsThreePlainDigits() {
+        for status in ["+20", "-20", "2e2", "20", "2000"] {
+            assertRefused(Data("HTTP/1.1 \(status) OK\r\nContent-Length: 0\r\n\r\n".utf8), .malformed)
+        }
+    }
+
+    /// Interim answers are skipped, but not without end.
+    func testAFloodOfInterimAnswersIsRefused() throws {
+        let interim = "HTTP/1.1 100 Continue\r\n\r\n"
+        let final = "HTTP/1.1 204 No Content\r\n\r\n"
+        let allowed = String(repeating: interim, count: HeartbeatHTTP.maxInterimResponses) + final
+        XCTAssertEqual(try HeartbeatHTTP.parse(Data(allowed.utf8), atEOF: false)?.statusCode, 204)
+        let flood = String(repeating: interim, count: HeartbeatHTTP.maxInterimResponses + 1) + final
+        assertRefused(Data(flood.utf8), .malformed)
+    }
 }
