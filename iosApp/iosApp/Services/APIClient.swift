@@ -608,8 +608,12 @@ final class APIClient: @unchecked Sendable {
     /// SettingsViewModel; an absent key is OFF (the opt-in default), so a
     /// fresh install and a user who never touched the toggle both send the
     /// pre-D18 connect body.
+    ///
+    /// Owner 2026-11-13: ANDed with the last-known fleet gate, so a preference
+    /// set while the gate was on is not sent while it is off or not known.
     private static var dnsFilteringEnabled: Bool {
         UserDefaults.standard.bool(forKey: ConnectWire.dnsFilteringDefaultsKey)
+            && UserDefaults.standard.bool(forKey: ConnectWire.dnsFilteringGateDefaultsKey)
     }
 
     /// `rebuildOf`: the server-side key the LIVE tunnel is riding (Mobile-Client
@@ -620,12 +624,12 @@ final class APIClient: @unchecked Sendable {
     /// echoes the key when the deferral was honoured. A backend that predates
     /// the fields 400s them by name — see `APIError.isRebuildFieldRejection`.
     func getConnectConfig(serverId: String, rebuildOf currentKeyId: String? = nil) async throws -> VPNConnectionConfig {
-        // AUDIT-C1: attach the persistent ML-KEM-1024 client public key so the
+        // AUDIT-C1: attach a per-connect ML-KEM-1024 client public key so the
         // server can encapsulate against it and ship the ciphertext back in
-        // `rosenpassPublicKey` for true bilateral PQ PSK derivation.
-        // The Swift `BirdoPQManager` lazy-generates + persists the keypair on
-        // first call; if the call returns nil we proceed without PQ rather
-        // than block the connect.
+        // `rosenpassPublicKey` for true bilateral PQ PSK derivation (MR-703:
+        // `BirdoPQManager` makes a NEW keypair on each call and keeps only its
+        // in-memory hand-off; nothing is persisted). If the call returns nil we
+        // proceed without PQ rather than block the connect.
         // Post-quantum protection is ON by default; user can disable it via the
         // Quantum Protection toggle. Read the raw stored value so an absent key
         // (fresh install) defaults true regardless of view-model init order.

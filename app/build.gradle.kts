@@ -161,6 +161,10 @@ val profilingBuildTypes = setOf("nonMinifiedRelease", "benchmarkRelease")
 // block, configured by name.
 configure<com.android.build.api.dsl.ApplicationExtension> {
     namespace = "app.birdo.vpn"
+    // MR-1793: the NDK that compiles librosenpass_jni.so, libxray.so and strips every
+    // shipped library is pinned, not "whatever the machine has". One source of truth
+    // shared with CI (.github/actions/setup-android-ndk) and BUILD-INSTRUCTIONS.md.
+    ndkVersion = rootProject.file("native/ndk-version.txt").readText().trim()
     // compileSdk 37 + compileSdkMinor 0 -> platforms;android-37.0.
     //
     // The SDK repository publishes NO bare `platforms;android-37`; the only
