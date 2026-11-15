@@ -20,6 +20,12 @@ data class IngestablePurchase(
     val isAcknowledged: Boolean,
     /** Product ids on the purchase, for logging and cross-grade only. */
     val productIds: List<String> = emptyList(),
+    /**
+     * True when the purchase carries an obfuscatedAccountId, i.e. it names the
+     * Birdo account it was bought for. An unbound purchase is presented only
+     * from Restore Purchases (F-967-02); see [StoreLinkOrigin].
+     */
+    val isBound: Boolean,
 ) {
     /** Mirror of `Purchase.PurchaseState`, so the tests need no Play types. */
     enum class State { PURCHASED, PENDING, UNSPECIFIED }
@@ -34,6 +40,7 @@ data class IngestablePurchase(
         "state=$state",
         "isAcknowledged=$isAcknowledged",
         "productIds=$productIds",
+        "isBound=$isBound",
     ).joinToString(separator = ", ", prefix = "IngestablePurchase(", postfix = ")")
 }
 
@@ -59,6 +66,20 @@ sealed interface IngestOutcome {
 
     /** Suppressed by [PurchaseRefusalMemory]; no request was made. */
     data object Skipped : IngestOutcome
+
+    /**
+     * F-967-02: an unbound purchase met on an automatic path, so it was not
+     * presented; or the server answered `needsRestore`. Either way it is left
+     * for the user's Restore tap. Not acknowledged, not a refusal, no notice.
+     */
+    data object NeedsRestore : IngestOutcome
+
+    /**
+     * F-967-05: the server linked the token but says it grants nothing now
+     * (`entitled: false`: expired, or a pending purchase that was cancelled).
+     * Not announced, not acknowledged, not a refusal.
+     */
+    data object NotEntitled : IngestOutcome
 }
 
 /**
@@ -81,24 +102,38 @@ sealed interface IngestOutcome {
  * (google-play-store.service.ts:364, :644). The client is the third chance, not
  * the only one.
  *
+ * "Accepted" means the server GRANTED something, not merely that it answered
+ * 200. A 200 with `entitled: false` (F-967-05: an expired or cancelled-pending
+ * token) is therefore not acknowledged either. Acknowledging it would tell
+ * Google to keep money for access Birdo's database says it is not giving.
+ * Leaving it alone costs nothing real: a purchase already acknowledged stays
+ * so, an expired one has nothing left to refund, and a fresh one the server
+ * has not caught up with is re-presented by the next sweep, while the server
+ * still acknowledges on its own once it does grant it. A server that does not
+ * send the field keeps the old reading, 200 = granted.
+ *
  * Everything is injected as a suspending lambda so the whole policy is testable
  * without Play, without the network and without a clock.
  *
- * @param link        POST payments/store/google/link.
+ * @param link        POST payments/store/google/link, with the request's [StoreLinkOrigin].
  * @param acknowledge BillingClient.acknowledgePurchase; returns true on success.
  * @param isSignedIn  is there a usable Birdo session right now.
  * @param refusals    session memory of refusals; see [PurchaseRefusalMemory].
  * @param strings     the outcome copy, from strings.xml.
  */
 class PurchaseIngestor(
-    private val link: suspend (String) -> StoreLinkOutcome,
+    private val link: suspend (String, StoreLinkOrigin) -> StoreLinkOutcome,
     private val acknowledge: suspend (String) -> Boolean,
     private val isSignedIn: () -> Boolean,
     private val strings: StringLookup,
     private val refusals: PurchaseRefusalMemory = PurchaseRefusalMemory(),
 ) {
 
-    suspend fun ingest(purchase: IngestablePurchase): IngestOutcome {
+    /**
+     * @param origin [StoreLinkOrigin.RESTORE] only from the Restore Purchases
+     *   tap; every other caller passes [StoreLinkOrigin.AUTO].
+     */
+    suspend fun ingest(purchase: IngestablePurchase, origin: StoreLinkOrigin): IngestOutcome {
         when (purchase.state) {
             // Ask to Buy, a bank transfer, a cash top-up, or SCA still pending.
             // Google has not taken the money and the subscription is not active,
@@ -123,6 +158,14 @@ class PurchaseIngestor(
             IngestablePurchase.State.PURCHASED -> Unit
         }
 
+        // F-967-02, owner 2026-11-13 ("Restore tap only"). A purchase that names
+        // no Birdo account is bound by the server to whichever session presents
+        // it first, permanently. Never present one on the user's behalf: no
+        // /link, no acknowledgement, no notice. Restore Purchases presents it.
+        // Checked before the sign-in test on purpose: signing in would not make
+        // this purchase presentable, so "sign in to add it" would be untrue.
+        if (origin == StoreLinkOrigin.AUTO && !purchase.isBound) return IngestOutcome.NeedsRestore
+
         // Already refused this session for a reason that will not change by
         // asking again, or still inside the rate-limit cooldown. No request.
         if (refusals.shouldSkip(purchase.purchaseToken)) return IngestOutcome.Skipped
@@ -137,19 +180,17 @@ class PurchaseIngestor(
             )
         }
 
-        return when (val outcome = link(purchase.purchaseToken)) {
-            is StoreLinkOutcome.Accepted -> {
-                // ONLY NOW. The server owns the entitlement; acknowledging tells
-                // Google we have delivered it. Re-acknowledging is a no-op, but
-                // skipping the call when Play already says acknowledged keeps the
-                // happy path to one round trip.
-                val acknowledged =
-                    if (purchase.isAcknowledged) true else acknowledge(purchase.purchaseToken)
-                IngestOutcome.Accepted(
-                    plan = outcome.result.plan,
-                    acknowledged = acknowledged,
-                    duplicateBilling = outcome.result.duplicateBilling,
-                )
+        return when (val outcome = link(purchase.purchaseToken, origin)) {
+            is StoreLinkOutcome.Accepted -> when {
+                // The server will bind this only from a Restore tap (F-967-02).
+                outcome.result.needsRestore == true -> IngestOutcome.NeedsRestore
+
+                // Linked, but nothing granted (F-967-05): see the class doc for
+                // why this is not acknowledged. `null` (an older server) is NOT
+                // false and falls through to the granted branch, unchanged.
+                outcome.result.entitled == false -> IngestOutcome.NotEntitled
+
+                else -> granted(purchase, outcome)
             }
 
             is StoreLinkOutcome.Refused -> {
@@ -162,6 +203,21 @@ class PurchaseIngestor(
                 IngestOutcome.Rejected(outcome.refusal, outcome.message)
             }
         }
+    }
+
+    /** The server granted the entitlement: acknowledge, and only now. */
+    private suspend fun granted(purchase: IngestablePurchase, outcome: StoreLinkOutcome.Accepted): IngestOutcome {
+        // ONLY NOW. The server owns the entitlement; acknowledging tells
+        // Google we have delivered it. Re-acknowledging is a no-op, but
+        // skipping the call when Play already says acknowledged keeps the
+        // happy path to one round trip.
+        val acknowledged =
+            if (purchase.isAcknowledged) true else acknowledge(purchase.purchaseToken)
+        return IngestOutcome.Accepted(
+            plan = outcome.result.plan,
+            acknowledged = acknowledged,
+            duplicateBilling = outcome.result.duplicateBilling,
+        )
     }
 
     /** The user explicitly asked to try again; forget every suppression. */

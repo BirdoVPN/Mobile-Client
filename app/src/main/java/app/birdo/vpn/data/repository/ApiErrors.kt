@@ -226,6 +226,33 @@ class ApiErrorMapper(private val strings: StringLookup) {
         ApiResult.Error(textFor(FailureReason.UNEXPECTED), 0, FailureReason.UNEXPECTED)
 
     /**
+     * MR-179 hold fallback (birdo-web #883): the refusals of a deletion with
+     * `stepUpMethod: "hold"` that mean more than the deletion mapping says.
+     * Told apart by status AND `error`, never by wording; null for any other
+     * answer, which the deletion mapping keeps. Nothing was filed or deleted
+     * in any of them.
+     *  - 409 `hold_unavailable`: the hold is switched off, or the request could
+     *    not be tied to a signed-in session ("sign in to the app again"). The
+     *    server's own sentence says which.
+     *  - 429 `too_many_attempts`: past 3 holds a day ("try again tomorrow"), or
+     *    the step-up's own limiter. The server's sentence says how long.
+     *  - 503 `step_up_unavailable`: the server could not check; try again.
+     */
+    fun deletionHold(status: Int, rawBody: String?): ApiResult.Error? {
+        val envelope = parseEnvelope(rawBody) ?: return null
+        val server = envelope.message?.trim()?.takeIf { isPresentable(it, HOLD_REFUSAL_MAX_LENGTH) }
+        return when {
+            status == 409 && envelope.error == ERROR_HOLD_UNAVAILABLE ->
+                ApiResult.Error(server ?: strings.get(R.string.delete_hold_unavailable), status, FailureReason.REFUSED)
+            status == 429 && envelope.error == ERROR_TOO_MANY_ATTEMPTS ->
+                ApiResult.Error(server ?: textFor(FailureReason.RATE_LIMITED), status, FailureReason.RATE_LIMITED)
+            status == 503 && envelope.error == ERROR_STEP_UP_UNAVAILABLE ->
+                ApiResult.Error(strings.get(R.string.delete_hold_failed), status, FailureReason.SERVER_UNAVAILABLE)
+            else -> null
+        }
+    }
+
+    /**
      * A connect the server REFUSED inside a 200 (`{success: false, message}`).
      *
      * That is how the backend reports a full device cap (vpn.service.ts:
@@ -427,6 +454,14 @@ class ApiErrorMapper(private val strings: StringLookup) {
         private const val ERROR_ACCOUNT_NUMBER_INVALID = "account_number_invalid"
         private const val ERROR_EMAIL_CODE_REQUIRED = "email_code_required"
         private const val ERROR_EMAIL_CODE_INVALID = "email_code_invalid"
+
+        /** MR-179 hold fallback: the hold's own refusals (birdo-web deletion-step-up.ts, #883). */
+        private const val ERROR_HOLD_UNAVAILABLE = "hold_unavailable"
+        private const val ERROR_TOO_MANY_ATTEMPTS = "too_many_attempts"
+        private const val ERROR_STEP_UP_UNAVAILABLE = "step_up_unavailable"
+
+        /** The hold's sentences run longer than a refusal usually does ("…sign in to the app again…"). */
+        private const val HOLD_REFUSAL_MAX_LENGTH = 300
 
         /**
          * Nest's default messages are the HTTP reason phrase ("Bad Request",

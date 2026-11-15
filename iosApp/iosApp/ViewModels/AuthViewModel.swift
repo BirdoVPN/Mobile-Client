@@ -176,6 +176,30 @@ final class AuthViewModel: ObservableObject {
     /// The masked address the code went to, once sent (empty string: sent, address unknown).
     @Published private(set) var deleteEmailCodeSentTo: String?
     @Published private(set) var isSendingDeleteCode = false
+    /// MR-179 hold fallback (birdo-web #883): the account's deletion on hold,
+    /// from the hold request (202 / 409) or `GET /auth/pending-changes` (read
+    /// when Profile opens and when the app becomes active). The account is
+    /// NOT deleted: Profile shows when it will be, with Cancel. Nil for none.
+    @Published private(set) var pendingDeletion: PendingDeletion?
+    @Published private(set) var isCancellingPendingDeletion = false
+    /// A cancel that failed, shown on the banner. Never a deletion error.
+    @Published private(set) var pendingDeletionError: String?
+    /// One-shot: a hold request was answered with a hold. ProfileView closes
+    /// the deletion dialog and acknowledges it (`acknowledgeDeletionHold`).
+    @Published private(set) var deletionHoldFiled = false
+    /// Why the last "Delete in 24 hours" did nothing, shown under its button
+    /// (a wrong password or 2FA code stays on its own field, as for a deletion).
+    @Published private(set) var deleteHoldError: String?
+    private var pendingDeletionTask: Task<Void, Never>?
+
+    /// MR-179: "Delete in 24 hours" is offered only when the preflight says
+    /// `holdAvailable: true`. Loading, failed or an older backend: not offered.
+    var offersDeletionHold: Bool { deletionPreflight?.stepUp?.holdAvailable == true }
+
+    /// The hold's button names the lost account number for an account that has one.
+    var deletionHoldIsForLostNumber: Bool {
+        isAnonymousAccount || deletionPreflight?.stepUp?.needsAccountNumber == true
+    }
     /// Owner item 97: a non-error note for the deletion dialog — set when the
     /// Sign in with Apple re-authentication was cancelled or failed, and the
     /// next tap deletes without it.
@@ -276,6 +300,161 @@ final class AuthViewModel: ObservableObject {
             }
             isSendingDeleteCode = false
         }
+    }
+
+    /// MR-179 hold fallback (birdo-web #883): "Delete in 24 hours (I lost my
+    /// account number)". The password and 2FA code are still sent where the
+    /// account has them, as for `deleteAccount`.
+    ///
+    /// A hold is NOT a deletion, and nothing a hold request answers is taken
+    /// for one (review of #616): no tunnel teardown, no sign-out, no keychain
+    /// wipe. The dialog closes and Profile shows when the account will be
+    /// deleted, with Cancel.
+    func requestDeletionHold(password: String?) {
+        guard !isDeleting else { return }
+        var twoFactorCode: String?
+        if deleteRequiresTwoFactor {
+            guard AccountDeletion.isCompleteTwoFactorCode(deleteTwoFactorCode) else {
+                deleteError = "Enter the 6-digit code from your authenticator app, or a backup code."
+                return
+            }
+            twoFactorCode = deleteTwoFactorCode.trimmingCharacters(in: .whitespaces)
+        }
+        isDeleting = true
+        deleteError = nil
+        deleteHoldError = nil
+        Task { [weak self, twoFactorCode] in
+            guard let self else { return }
+            do {
+                let pending = try await api.requestDeletionHold(password: password, twoFactorCode: twoFactorCode)
+                showDeletionHold(pending)
+            } catch let refusal as DeletionRefusal {
+                // Nothing was deleted. The 2FA prompt works as for a deletion.
+                switch refusal {
+                case .twoFactorRequired:
+                    deleteRequiresTwoFactor = true
+                    deleteError = twoFactorCode == nil
+                        ? nil
+                        : "Enter the 6-digit code from your authenticator app, or a backup code."
+                case .twoFactorInvalid:
+                    deleteRequiresTwoFactor = true
+                    deleteError = "That code is not valid. Check it and try again."
+                default:
+                    deleteHoldError = Self.holdFailedMessage
+                }
+            } catch DeletionHoldRefusal.alreadyPending, DeletionHoldRefusal.unexpectedAnswer {
+                // A hold may exist but the answer did not name it: read the list.
+                await reloadPendingDeletion()
+                if let pending = pendingDeletion {
+                    showDeletionHold(pending)
+                } else {
+                    deleteHoldError = Self.holdFailedMessage
+                }
+            } catch DeletionHoldRefusal.unavailable(let message) {
+                // Switched off, or no session to tie it to: the server says which.
+                deleteHoldError = message ?? "A delayed deletion is not available. Nothing was deleted."
+            } catch DeletionHoldRefusal.limited(let message) {
+                // Past 3 holds a day: "try again tomorrow", in the server's words.
+                deleteHoldError = message ?? "Too many attempts. Please try again later."
+            } catch DeletionHoldRefusal.notFiled {
+                deleteHoldError = Self.holdFailedMessage
+            } catch {
+                // Not `logoutIfUnauthorized`: a 401 here is the password check
+                // answering (as for `deleteAccount`), not the session dying.
+                if Self.httpStatus(of: error) == 401 {
+                    deleteError = "Incorrect password"
+                } else {
+                    deleteHoldError = Self.mapHoldError(error)
+                    // The answer may have been lost on the way: the banner tells.
+                    await reloadPendingDeletion()
+                }
+            }
+            isDeleting = false
+        }
+    }
+
+    /// A filed hold: the banner carries it; the dialog closes (`deletionHoldFiled`).
+    private func showDeletionHold(_ pending: PendingDeletion) {
+        pendingDeletionEpoch += 1
+        pendingDeletion = pending
+        pendingDeletionError = nil
+        deleteError = nil
+        deleteHoldError = nil
+        deletionHoldFiled = true
+    }
+
+    /// ProfileView closed the dialog for a filed hold.
+    func acknowledgeDeletionHold() {
+        deletionHoldFiled = false
+    }
+
+    /// Bumped whenever this app itself changes the hold (filed, cancelled):
+    /// a list read that started before then is stale and must not put an old
+    /// hold back on screen (review of #616).
+    private var pendingDeletionEpoch = 0
+
+    /// MR-179: re-read the deletion on hold. Called when Profile opens and
+    /// when the app becomes active. A hold the server cancelled by itself
+    /// (sign-out elsewhere, number rotation, a password or 2FA change) or
+    /// swept simply leaves the list: no error. A failure keeps what is shown;
+    /// a definitive 401 is the ordinary sign-out, never taken for a deletion.
+    /// Skipped while a cancel is in flight, whose own answer decides.
+    func refreshPendingDeletion() {
+        guard isLoggedIn, !isCancellingPendingDeletion else { return }
+        pendingDeletionTask?.cancel()
+        pendingDeletionTask = Task { [weak self] in
+            await self?.reloadPendingDeletion()
+        }
+    }
+
+    private func reloadPendingDeletion() async {
+        let epoch = pendingDeletionEpoch
+        do {
+            let listed = try await api.pendingDeletion()
+            guard !Task.isCancelled, isLoggedIn, epoch == pendingDeletionEpoch,
+                  !isCancellingPendingDeletion else { return }
+            pendingDeletion = listed
+        } catch {
+            logoutIfUnauthorized(error)
+        }
+    }
+
+    /// MR-179: cancel the deletion on hold. A 404 means it is already gone
+    /// (cancelled elsewhere, or applied): the list is read again. A list read
+    /// already in flight is dropped first, so it cannot bring the hold back.
+    func cancelPendingDeletion() {
+        guard let pending = pendingDeletion, !isCancellingPendingDeletion else { return }
+        pendingDeletionTask?.cancel()
+        pendingDeletionEpoch += 1
+        isCancellingPendingDeletion = true
+        pendingDeletionError = nil
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let cancelled = try await api.cancelPendingChange(id: pending.id)
+                pendingDeletionEpoch += 1
+                pendingDeletion = nil
+                isCancellingPendingDeletion = false
+                if !cancelled { await reloadPendingDeletion() }
+            } catch {
+                if !logoutIfUnauthorized(error) {
+                    pendingDeletionError = error is URLError
+                        ? "Unable to reach server. Check your connection."
+                        : "The deletion could not be cancelled. Please try again."
+                }
+            }
+            isCancellingPendingDeletion = false
+        }
+    }
+
+    private static let holdFailedMessage = "Nothing was deleted. Please try again."
+
+    /// The hold's failures: like `mapDeleteError`, but a 5xx or an unknown
+    /// failure says plainly that nothing was deleted.
+    private static func mapHoldError(_ error: Error) -> String {
+        if let status = httpStatus(of: error), status >= 500 { return holdFailedMessage }
+        let mapped = mapDeleteError(error)
+        return mapped == "Account deletion failed. Please try again." ? holdFailedMessage : mapped
     }
 
     /// App-shell reset hook, fired at the END of every local sign-out
@@ -1169,6 +1348,13 @@ final class AuthViewModel: ObservableObject {
         deletionAppleIdentityToken = nil
         deletionAppleNonce = nil
         deletionAppleStepDone = false
+        // MR-179: a hold belongs to the account that filed it.
+        pendingDeletionTask?.cancel()
+        pendingDeletion = nil
+        pendingDeletionError = nil
+        deleteHoldError = nil
+        isCancellingPendingDeletion = false
+        deletionHoldFiled = false
         isLoading = false
         isDeleting = false
         selectedTab = .email
@@ -1257,51 +1443,70 @@ final class AuthViewModel: ObservableObject {
                                                                appleIdentityToken: deletionAppleIdentityToken,
                                                                appleNonce: deletionAppleNonce)
                 finishConfirmedDeletion(stillBilling: stillBilling, tearDownTunnel: tearDownTunnel)
-            } catch let refusal as DeletionRefusal {
-                // Owner item 85. Nothing was deleted; the user stays as they were.
-                switch refusal {
-                case .twoFactorRequired:
-                    deleteRequiresTwoFactor = true
-                    // The first ask is not an error — the dialog explains it
-                    // beside the new field. Asked again WITH a code, say so.
-                    deleteError = twoFactorCode == nil
-                        ? nil
-                        : "Enter the 6-digit code from your authenticator app, or a backup code."
-                case .twoFactorInvalid:
-                    deleteRequiresTwoFactor = true
-                    deleteError = "That code is not valid. Check it and try again."
-                // MR-179: the step-up. The first ask for a factor is not an
-                // error (its field appears); a wrong one says so.
-                case .accountNumberRequired:
-                    deleteStepUpEnforced = true
-                    deleteRequiresAccountNumber = true
-                    deleteError = accountNumber == nil
-                        ? nil
-                        : "The account number is 24 digits."
-                case .accountNumberInvalid:
-                    deleteRequiresAccountNumber = true
-                    deleteError = "That account number is not the number of this account."
-                case .emailCodeRequired:
-                    deleteStepUpEnforced = true
-                    deleteRequiresEmailCode = true
-                    deleteError = emailCode == nil
-                        ? nil
-                        : "Enter the code we emailed you to delete your account."
-                case .emailCodeInvalid:
-                    deleteRequiresEmailCode = true
-                    deleteError = "That code is not valid or has expired. Request a new code."
-                case .appleReauthRequired, .appleReauthInvalid:
-                    // Run Sign in with Apple again on the next tap.
-                    deletionAppleStepDone = false
-                    deletionAppleCode = nil
-                    deletionAppleIdentityToken = nil
-                    deletionAppleNonce = nil
-                    deleteError = "Sign in with Apple again to delete your account. Tap Delete My Account to continue."
-                }
-            } catch let error where AccountDeletion.outcomeIsUnknown(error) {
-                await resolveUnknownDeletionOutcome(tearDownTunnel: tearDownTunnel)
             } catch {
-                self.deleteError = Self.mapDeleteError(error)
+                // Review of #616: one pinned routing (AccountDeletion.route),
+                // a hold before the lost-answer check.
+                switch AccountDeletion.route(error) {
+                case .refusal(let refusal):
+                    // Owner item 85. Nothing was deleted; the user stays as they were.
+                    switch refusal {
+                    case .twoFactorRequired:
+                        deleteRequiresTwoFactor = true
+                        // The first ask is not an error — the dialog explains it
+                        // beside the new field. Asked again WITH a code, say so.
+                        deleteError = twoFactorCode == nil
+                            ? nil
+                            : "Enter the 6-digit code from your authenticator app, or a backup code."
+                    case .twoFactorInvalid:
+                        deleteRequiresTwoFactor = true
+                        deleteError = "That code is not valid. Check it and try again."
+                    // MR-179: the step-up. The first ask for a factor is not an
+                    // error (its field appears); a wrong one says so.
+                    case .accountNumberRequired:
+                        deleteStepUpEnforced = true
+                        deleteRequiresAccountNumber = true
+                        deleteError = accountNumber == nil
+                            ? nil
+                            : "The account number is 24 digits."
+                    case .accountNumberInvalid:
+                        deleteRequiresAccountNumber = true
+                        deleteError = "That account number is not the number of this account."
+                    case .emailCodeRequired:
+                        deleteStepUpEnforced = true
+                        deleteRequiresEmailCode = true
+                        deleteError = emailCode == nil
+                            ? nil
+                            : "Enter the code we emailed you to delete your account."
+                    case .emailCodeInvalid:
+                        deleteRequiresEmailCode = true
+                        deleteError = "That code is not valid or has expired. Request a new code."
+                    case .appleReauthRequired, .appleReauthInvalid:
+                        // Run Sign in with Apple again on the next tap.
+                        deletionAppleStepDone = false
+                        deletionAppleCode = nil
+                        deletionAppleIdentityToken = nil
+                        deletionAppleNonce = nil
+                        deleteError = "Sign in with Apple again to delete your account. Tap Delete My Account to continue."
+                    }
+                case .held(let pending):
+                    // MR-179: the server held this deletion instead (202). Not a
+                    // deletion: nothing is torn down; the banner shows the hold.
+                    if let pending {
+                        showDeletionHold(pending)
+                    } else {
+                        await reloadPendingDeletion()
+                        if let listed = pendingDeletion {
+                            showDeletionHold(listed)
+                        } else {
+                            // Review of #616: never a silent dialog.
+                            deleteError = Self.holdFailedMessage
+                        }
+                    }
+                case .outcomeUnknown:
+                    await resolveUnknownDeletionOutcome(tearDownTunnel: tearDownTunnel)
+                case .failed:
+                    self.deleteError = Self.mapDeleteError(error)
+                }
             }
             self.isDeleting = false
         }
@@ -1320,6 +1525,7 @@ final class AuthViewModel: ObservableObject {
         deleteEmailCode = ""
         deleteEmailCodeSentTo = nil
         deleteError = nil
+        deleteHoldError = nil
         deleteNotice = nil
         deletionAppleCode = nil
         deletionAppleIdentityToken = nil

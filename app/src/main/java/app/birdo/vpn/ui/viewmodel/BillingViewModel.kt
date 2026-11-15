@@ -39,8 +39,15 @@ class BillingViewModel @Inject constructor(
      * A Birdo session has appeared. Re-present anything Play still considers
      * current: this is the moment a purchase made while signed out, on another
      * device, or on a previous install can finally be bound to an account.
+     * One that names no account waits for Restore (F-967-02).
      */
     fun onSignedIn() = billing.onSignedIn()
+
+    /**
+     * The Birdo session ended (sign-out, deletion, or a dead session). Forget
+     * what the billing rail learned for that account (F-967-10).
+     */
+    fun onSignedOut() = billing.onSignedOut()
 
     /**
      * Start a purchase.

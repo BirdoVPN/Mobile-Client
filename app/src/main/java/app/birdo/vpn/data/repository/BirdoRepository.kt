@@ -3,8 +3,10 @@ package app.birdo.vpn.data.repository
 import androidx.annotation.StringRes
 import app.birdo.vpn.R
 import app.birdo.vpn.billing.GooglePlayLinkRequest
+import app.birdo.vpn.billing.GooglePlayLinkResponse
 import app.birdo.vpn.billing.GooglePurchaseIntentResponse
 import app.birdo.vpn.billing.StoreErrorEnvelope
+import app.birdo.vpn.billing.StoreLinkOrigin
 import app.birdo.vpn.billing.StoreLinkOutcome
 import app.birdo.vpn.billing.StoreLinkRefusal
 import app.birdo.vpn.data.api.AnonymousRegisterRequest
@@ -196,6 +198,10 @@ class BirdoRepository @Inject constructor(
         internal const val CLIENT_CONFIG_PATH = "/api/client-config"
 
         private const val SERVER_CACHE_TTL_MS = 60_000L
+
+        /** The status [deleteAccount] reports when the server held the deletion instead (MR-179). */
+        internal const val HTTP_ACCEPTED = 202
+        private const val HTTP_OK = 200
 
         /** `algorithm` of the only proof-of-work the server issues. */
         private const val POW_ALGORITHM = "sha256-leading-zero-bits"
@@ -721,34 +727,157 @@ class BirdoRepository @Inject constructor(
         twoFactorCode: String? = null,
         accountNumber: String? = null,
         emailCode: String? = null,
-    ): ApiResult<DeleteAccountResponse> {
-        val result = withAutoRefresh(R.string.error_delete_failed, ErrorContext.DELETE_ACCOUNT) {
-            api.deleteAccount(DeleteAccountRequest(password, twoFactorCode, accountNumber, emailCode), AroundTunnel)
+    ): ApiResult<DeleteAccountResponse> =
+        when (val answer = sendDeletion(DeleteAccountRequest(password, twoFactorCode, accountNumber, emailCode))) {
+            is DeletionAnswer.Refused -> answer.error
+            is DeletionAnswer.Deleted -> ApiResult.Success(answer.response)
+            // MR-179: a 202 hold is never a deletion, whatever asked for it.
+            // Nothing local was cleared; the caller re-reads the holds.
+            is DeletionAnswer.Held -> errors.unexpected().copy(code = HTTP_ACCEPTED)
         }
-        if (result is ApiResult.Success) {
-            // Clear local state — account no longer exists on the server.
-            // Bump the generation to fence any in-flight refresh (finding #6),
-            // and invalidate BOTH caches so the next account on this device can
-            // never briefly read the deleted account's plan (finding #15) — the
-            // server cache was already cleared, the subscription cache was not.
-            synchronized(sessionLock) {
-                sessionGeneration.incrementAndGet()
-                tokenManager.clearAll()
+
+    /**
+     * MR-179 hold fallback (birdo-web #883): ask the server to delete the
+     * account in 24 hours, for a user who cannot present the step-up factor
+     * (a lost account number). Same route, method and body as [deleteAccount],
+     * with `stepUpMethod: "hold"`; the password and 2FA code still go where
+     * the account has them.
+     *
+     * Nothing a hold request answers clears anything (review of #616): a
+     * [DeletionHoldResult.Held] (202 `change_pending`, or 409
+     * `change_already_pending`) leaves the account, the session, the tokens
+     * and the tunnel as they are, and so does every other answer. A 2xx that
+     * is not the hold (the server never deletes at once for a hold) is an
+     * unexpected answer, never a deletion. Every refusal comes back as the
+     * mapped error.
+     */
+    suspend fun requestDeletionHold(password: String?, twoFactorCode: String? = null): ApiResult<DeletionHoldResult.Held> =
+        when (
+            val answer = sendDeletion(
+                DeleteAccountRequest(password = password, twoFactorCode = twoFactorCode, stepUpMethod = DeletionHoldWire.METHOD_HOLD),
+            )
+        ) {
+            is DeletionAnswer.Refused -> answer.error
+            is DeletionAnswer.Held -> ApiResult.Success(answer.held)
+            // Unreachable: sendDeletion never confirms a deletion for a hold.
+            is DeletionAnswer.Deleted -> errors.unexpected().copy(code = HTTP_OK)
+        }
+
+    /** What one deletion request answered, before the caller's mapping. */
+    private sealed interface DeletionAnswer {
+        data class Deleted(val response: DeleteAccountResponse) : DeletionAnswer
+        data class Held(val held: DeletionHoldResult.Held) : DeletionAnswer
+        data class Refused(val error: ApiResult.Error) : DeletionAnswer
+    }
+
+    /**
+     * One `DELETE api/v1/gdpr/delete`, classified by STATUS as well as body:
+     * a 2xx is a deletion only for a PLAIN request and only when it is not
+     * the hold's 202. A hold whose `stepUp` cannot be read, and any other 2xx
+     * to a hold request, is an error: never a success, never a deletion. The
+     * local clean-up of a confirmed deletion runs here, once.
+     */
+    private suspend fun sendDeletion(request: DeleteAccountRequest): DeletionAnswer {
+        val isHold = request.stepUpMethod == DeletionHoldWire.METHOD_HOLD
+        val response = when (val sent = send { api.deleteAccount(request, AroundTunnel) }) {
+            is Sent.Failed -> return DeletionAnswer.Refused(sent.error)
+            is Sent.Answered -> sent.response
+        }
+        if (response.isSuccessful) {
+            val body = response.body()
+            if (DeletionHoldWire.isHoldAnswer(response.code(), body)) {
+                val held = DeletionHoldWire.holdOf(body?.stepUp)
+                    ?: return DeletionAnswer.Refused(errors.unexpected().copy(code = response.code()))
+                return DeletionAnswer.Held(DeletionHoldResult.Held(held, alreadyPending = false))
             }
-            invalidateServerCache()
-            invalidateSubscriptionCache()
-            // PRIVACY: the deviceId would otherwise survive the deletion and
-            // link the NEXT account registered on this handset to the one just
-            // erased. Mint a fresh random identity so the erased account's
-            // device fingerprint dies with it. (Since P1-dk-ssaid-device-linkage
-            // the id is already random rather than SSAID-derived, so this is now
-            // a rotation of a value nothing can recompute, not an escape from
-            // one that can.)
-            deviceInfoProvider.resetDeviceIdentity()
-            // Same reasoning for the ML-KEM keypair (audit D-15).
-            forgetPostQuantumKeypair()
+            // Review of #616: a hold request is never answered with an
+            // erasure, so `{}`, an empty or an odd 2xx assumes nothing.
+            if (isHold) return DeletionAnswer.Refused(errors.unexpected().copy(code = response.code()))
+            body ?: return DeletionAnswer.Refused(errors.unexpected())
+            clearAfterErasure()
+            return DeletionAnswer.Deleted(body)
         }
-        return result
+        val raw = runCatching { response.errorBody()?.string() }.getOrNull()
+        if (response.code() == 409 &&
+            DeletionHoldWire.errorCodeOf(raw) == DeletionHoldWire.ERROR_CHANGE_ALREADY_PENDING
+        ) {
+            // The hold that already waits: from `stepUp`, else `details`
+            // (the API's exception filter passes only `details` through),
+            // else from the list.
+            val held = DeletionHoldWire.holdOfErrorBody(raw)
+                ?: when (val listed = pendingDeletion()) {
+                    is ApiResult.Success -> listed.data
+                    is ApiResult.Error -> null
+                }
+            if (held != null) return DeletionAnswer.Held(DeletionHoldResult.Held(held, alreadyPending = true))
+        }
+        val mapped = errorFromBody(response, raw, ErrorContext.DELETE_ACCOUNT, R.string.error_delete_failed)
+        // MR-179 (#883 final): a hold's 409 hold_unavailable, 429 (3 holds a
+        // day) and 503 step_up_unavailable say more than the deletion mapping;
+        // their `stepUp` is the factor ARRAY, never a hold.
+        if (isHold) {
+            errors.deletionHold(response.code(), raw)?.let {
+                return DeletionAnswer.Refused(it.copy(retryAfterMs = mapped.retryAfterMs, serverCode = mapped.serverCode))
+            }
+        }
+        return DeletionAnswer.Refused(mapped)
+    }
+
+    /**
+     * What a CONFIRMED deletion (a 2xx erasure answer) clears. Never run from
+     * an inference such as a session dying after a hold's applyAfter (review
+     * of #616): that hold may have been cancelled elsewhere.
+     */
+    private fun clearAfterErasure() {
+        // Clear local state — account no longer exists on the server.
+        // Bump the generation to fence any in-flight refresh (finding #6),
+        // and invalidate BOTH caches so the next account on this device can
+        // never briefly read the deleted account's plan (finding #15) — the
+        // server cache was already cleared, the subscription cache was not.
+        synchronized(sessionLock) {
+            sessionGeneration.incrementAndGet()
+            tokenManager.clearAll()
+        }
+        invalidateServerCache()
+        invalidateSubscriptionCache()
+        // PRIVACY: the deviceId would otherwise survive the deletion and
+        // link the NEXT account registered on this handset to the one just
+        // erased. Mint a fresh random identity so the erased account's
+        // device fingerprint dies with it. (Since P1-dk-ssaid-device-linkage
+        // the id is already random rather than SSAID-derived, so this is now
+        // a rotation of a value nothing can recompute, not an escape from
+        // one that can.)
+        deviceInfoProvider.resetDeviceIdentity()
+        // Same reasoning for the ML-KEM keypair (audit D-15).
+        forgetPostQuantumKeypair()
+    }
+
+    /**
+     * MR-179: the account's deletion on hold, from `GET auth/pending-changes`,
+     * or null when there is none. Read only.
+     */
+    suspend fun pendingDeletion(): ApiResult<PendingDeletion?> =
+        when (val result = withAutoRefresh(R.string.error_unexpected) { api.pendingChanges() }) {
+            is ApiResult.Error -> result
+            is ApiResult.Success -> ApiResult.Success(DeletionHoldWire.accountDeletionIn(result.data.pendingChanges))
+        }
+
+    /**
+     * MR-179: cancel a held change. Success(true) when this call cancelled it,
+     * Success(false) for 404 `pending_change_not_found` (already applied,
+     * cancelled elsewhere or expired: the caller re-reads the list). Cancelling
+     * keeps the account as it is, so it needs no step-up.
+     */
+    suspend fun cancelPendingChange(id: String): ApiResult<Boolean> {
+        val response = when (val sent = send { api.cancelPendingChange(id) }) {
+            is Sent.Failed -> return sent.error
+            is Sent.Answered -> sent.response
+        }
+        return when {
+            response.isSuccessful -> ApiResult.Success(true)
+            response.code() == 404 -> ApiResult.Success(false)
+            else -> errorFrom(response, ErrorContext.GENERAL, R.string.error_unexpected)
+        }
     }
 
     /**
@@ -1327,28 +1456,29 @@ class BirdoRepository @Inject constructor(
      * replayed token as THEFT and revokes the family, so that mistake does not
      * end in a harmless extra request — it ends in the user being signed out.
      * The coded 401 is therefore never allowed to reach the refresh path.
+     *
+     * [origin] goes on the wire as `origin` (F-967-02); see [postGoogleLink]
+     * for a server that predates the field.
      */
-    suspend fun linkGooglePurchase(purchaseToken: String): StoreLinkOutcome {
-        val body = GooglePlayLinkRequest(purchaseToken = purchaseToken)
+    suspend fun linkGooglePurchase(purchaseToken: String, origin: StoreLinkOrigin): StoreLinkOutcome {
+        val body = GooglePlayLinkRequest(purchaseToken = purchaseToken, origin = origin.wire)
         return try {
             val presented = tokenManager.getAccessToken()
-            val first = api.linkGooglePurchase(body)
+            val (first, parsed) = postGoogleLink(body)
             if (first.isSuccessful) {
                 first.body()?.let { return StoreLinkOutcome.Accepted(it) }
                     ?: return refusal(StoreLinkRefusal.TRANSIENT, null)
             }
 
-            val parsed = parseStoreError(first)
             // ONLY an UNCODED 401 is a session problem. See the doc comment.
             if (first.code() == 401 && parsed.code == null) {
                 return when (refreshToken(presented)) {
                     RefreshOutcome.SUCCESS -> {
-                        val retry = api.linkGooglePurchase(body)
+                        val (retry, retryParsed) = postGoogleLink(body)
                         if (retry.isSuccessful) {
                             retry.body()?.let { StoreLinkOutcome.Accepted(it) }
                                 ?: refusal(StoreLinkRefusal.TRANSIENT, null)
                         } else {
-                            val retryParsed = parseStoreError(retry)
                             refusal(
                                 StoreLinkRefusal.classify(retry.code(), retryParsed.code),
                                 retryParsed.message,
@@ -1365,6 +1495,30 @@ class BirdoRepository @Inject constructor(
             // Transport failure: no status, no code. The purchase is still real.
             refusal(StoreLinkRefusal.TRANSIENT, null)
         }
+    }
+
+    /**
+     * One POST of [body], with its error envelope parsed here because
+     * `errorBody()` can be read only once.
+     *
+     * A server that predates `origin` refuses the field with an UNCODED 400:
+     * its ValidationPipe runs forbidNonWhitelisted. That answer is re-sent once
+     * without the field, which is byte for byte the old request, so this build
+     * does not depend on the web deploy landing first. Bounded: the re-sent
+     * body has no origin. A CODED 400 is the server's decision and is returned.
+     * Guards run before pipes there, so an expired session still shows up as
+     * the uncoded 401 first, and the refreshed retry comes back through here.
+     */
+    private suspend fun postGoogleLink(
+        body: GooglePlayLinkRequest,
+    ): Pair<Response<GooglePlayLinkResponse>, ParsedStoreError> {
+        val response = api.linkGooglePurchase(body)
+        if (response.isSuccessful) return response to ParsedStoreError(null, null)
+        val parsed = parseStoreError(response)
+        if (response.code() == 400 && parsed.code == null && body.origin != null) {
+            return postGoogleLink(body.copy(origin = null))
+        }
+        return response to parsed
     }
 
     /**
