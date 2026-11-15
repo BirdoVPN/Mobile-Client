@@ -1773,6 +1773,71 @@ class VpnManagerTest {
         coVerify { repository.disconnectVpn("mh-key") }
     }
 
+    // ── MR-703: a dial's PQ pair is the service's only once START carries it ──
+
+    private fun uploadsPqKey(key: String) {
+        every { prefs.quantumProtectionEnabled } returns true
+        mockkObject(BirdoPqManager)
+        coEvery { BirdoPqManager.getClientPublicKeyB64(context) } returns key
+    }
+
+    /** The service never got this dial (no START), so nothing else would wipe its pair. */
+    @Test
+    fun `a Disconnect while connecting wipes the pair the dial uploaded`() = runTest {
+        uploadsPqKey("pq-key-A")
+        val gate = CompletableDeferred<ApiResult<ConnectResponse>>()
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(),
+            )
+        } coAnswers { gate.await() }
+
+        launch { vpnManager.connect("srv-1") }
+        runCurrent()
+        verify(exactly = 0) { BirdoPqManager.discardPending(any()) }
+        vpnManager.disconnect()
+        gate.complete(ApiResult.Success(makeConnectResponse()))
+        runCurrent()
+
+        assertFalse(BirdoVpnService.ACTION_START in dispatchedActions)
+        verify(exactly = 1) { BirdoPqManager.discardPending("pq-key-A") }
+    }
+
+    @Test
+    fun `a multi-hop dial the server refuses wipes the pair it uploaded`() = runTest {
+        uploadsPqKey("pq-key-M")
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Error("Server unavailable", 503)
+
+        vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertFalse(BirdoVpnService.ACTION_START in dispatchedActions)
+        verify(exactly = 1) { BirdoPqManager.discardPending("pq-key-M") }
+        quiesce()
+    }
+
+    /** The START names the pair; from there the service decapsulates or wipes it, not the dial. */
+    @Test
+    fun `a dial that hands its pair to the service names it in START and does not wipe it`() = runTest {
+        uploadsPqKey("pq-key-A")
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(),
+            )
+        } returns ApiResult.Success(makeConnectResponse())
+
+        vpnManager.connect("srv-1")
+
+        assertTrue(BirdoVpnService.ACTION_START in dispatchedActions)
+        assertEquals("pq-key-A", stringExtras[BirdoVpnService.EXTRA_PQ_UPLOADED_KEY])
+        verify(exactly = 0) { BirdoPqManager.discardPending(any()) }
+    }
+
     @Test
     fun `the notification's Disconnect supersedes a single-hop dial in flight`() = runTest {
         val gate = CompletableDeferred<ApiResult<ConnectResponse>>()
