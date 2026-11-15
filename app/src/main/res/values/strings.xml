@@ -244,7 +244,6 @@
     <!-- Shown under the row when GET /api/client-config reports
          dnsFilteringAvailable:false. The user cannot act on this, so the copy does
          not ask them to; it says the preference survives. -->
-    <string name="vpn_settings_birdoshield_unavailable">Not available on your account\'s server fleet yet. Your preference is kept and applies as soon as it is.</string>
     <string name="vpn_settings_quantum_title">Quantum Protection</string>
     <string name="cd_locked_feature">Premium feature — upgrade to unlock</string>
     <!-- Home / Connect -->
@@ -752,6 +751,26 @@
     <string name="delete_dialog_email_code_resend">Send a new code</string>
     <string name="delete_dialog_email_code_sent">We emailed a code to %1$s. It works once for 10 minutes.</string>
     <string name="delete_dialog_email_code_sent_unknown">We emailed a code to your account address. It works once for 10 minutes.</string>
+    <!-- MR-179 hold fallback (birdo-web #883): offered only while the deletion
+         preflight says holdAvailable. The first button is for an anonymous
+         account (it has a number to lose); the second for any other. A hold
+         is not a deletion: the account is deleted at applyAfter unless the
+         hold is cancelled. %1$s is the local date and time. -->
+    <string name="delete_dialog_hold_button">Delete in 24 hours (I lost my account number)</string>
+    <string name="delete_dialog_hold_button_other">Delete in 24 hours instead</string>
+    <string name="delete_dialog_hold_note">The deletion then waits 24 hours, and you can cancel it until then.</string>
+    <string name="delete_hold_failed">Nothing was deleted. Please try again.</string>
+    <!-- 409 hold_unavailable when the server sends no sentence of its own. -->
+    <string name="delete_hold_unavailable">A delayed deletion is not available. Nothing was deleted.</string>
+    <!-- The session ended after a scheduled deletion's time. Never claims the
+         account was deleted: the hold may have been cancelled elsewhere. -->
+    <string name="error_session_expired_after_hold">Your session has expired. Sign in again. If the deletion you scheduled has taken effect, the account no longer exists.</string>
+    <!-- Server: signing out of the app that filed the hold cancels it. -->
+    <string name="delete_hold_signout_cancels">Stay signed in on this device until then; signing out cancels the deletion.</string>
+    <string name="sign_out_cancels_pending_deletion">Signing out cancels the deletion of your account that is scheduled for %1$s.</string>
+    <string name="profile_pending_deletion_body">Your account will be deleted on %1$s.</string>
+    <string name="profile_pending_deletion_cancel">Cancel deletion</string>
+    <string name="profile_pending_deletion_cancelling">Cancelling…</string>
     <!-- ════ end AND-UI-B ════ -->
 
     <!-- ════ AND-VPN-B (Android connection engine, phase B, 2026-10-01) ════
