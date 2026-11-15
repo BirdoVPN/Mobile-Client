@@ -128,7 +128,8 @@ struct BirdoVPNApp: App {
 
     /// Android bottom-bar chrome (spec-home-servers-consent §2): surface fill,
     /// hairlineSoft top divider, selected = accent, unselected =
-    /// onSurfaceMuted, 11pt labels (SemiBold selected / Medium unselected).
+    /// onSurfaceMuted, 11pt labels (SemiBold selected / Medium unselected)
+    /// at the default text size, scaled with Dynamic Type (MR-1796).
     /// SwiftUI's TabView takes its chrome from UITabBarAppearance, so this is
     /// configured once at launch.
     @MainActor
@@ -156,14 +157,12 @@ struct BirdoVPNApp: App {
             item.selected.iconColor = accent
             item.selected.titleTextAttributes = [
                 .foregroundColor: accent,
-                .font: UIFontMetrics(forTextStyle: .caption2)
-                    .scaledFont(for: UIFont.systemFont(ofSize: 11, weight: .semibold)),
+                .font: BirdoTheme.scaledUIFont(11, weight: .semibold, relativeTo: .caption2),
             ]
             item.normal.iconColor = muted
             item.normal.titleTextAttributes = [
                 .foregroundColor: muted,
-                .font: UIFontMetrics(forTextStyle: .caption2)
-                    .scaledFont(for: UIFont.systemFont(ofSize: 11, weight: .medium)),
+                .font: BirdoTheme.scaledUIFont(11, weight: .medium, relativeTo: .caption2),
             ]
         }
 

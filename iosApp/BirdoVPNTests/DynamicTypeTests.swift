@@ -76,5 +76,16 @@ final class DynamicTypeTests: XCTestCase {
         let big = height(Text("Hg").birdoFont(13, weight: .semibold), .accessibility3)
         XCTAssertGreaterThan(big, large * 1.3)
     }
+
+    /// MR-1796: the tab bar's UIKit labels are 11pt at `.large`, as before,
+    /// and grow with the text size like the SwiftUI tokens.
+    func testUIKitTabBarFontIsTheOldSizeAtLargeAndGrows() {
+        func font(_ category: UIContentSizeCategory) -> UIFont {
+            BirdoTheme.scaledUIFont(11, weight: .semibold, relativeTo: .caption2,
+                                    compatibleWith: UITraitCollection(preferredContentSizeCategory: category))
+        }
+        XCTAssertEqual(font(.large).pointSize, 11, accuracy: 0.01)
+        XCTAssertGreaterThan(font(.accessibilityLarge).pointSize, 11 * 1.3)
+    }
     #endif
 }

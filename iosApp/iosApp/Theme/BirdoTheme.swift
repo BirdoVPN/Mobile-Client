@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Birdo VPN design tokens — emerald brand, dark-only, corporate.
 ///
@@ -358,6 +361,24 @@ extension View {
         modifier(BirdoScaledFont(BirdoFontToken(size: size, weight: weight, design: design)))
     }
 }
+
+#if canImport(UIKit)
+extension BirdoTheme {
+    /// UIKit twin of `.birdoFont(_:weight:)` for chrome that only takes a
+    /// `UIFont` (the tab bar's `UITabBarAppearance`). `size` is the size at
+    /// the default `.large` category; `UIFontMetrics` scales it along
+    /// `textStyle`'s curve for the text size in `traits` (the current one when
+    /// nil). An appearance proxy reads the font once, so the tab bar follows
+    /// the text size in effect when it was styled.
+    static func scaledUIFont(_ size: CGFloat,
+                             weight: UIFont.Weight = .regular,
+                             relativeTo textStyle: UIFont.TextStyle,
+                             compatibleWith traits: UITraitCollection? = nil) -> UIFont {
+        UIFontMetrics(forTextStyle: textStyle)
+            .scaledFont(for: .systemFont(ofSize: size, weight: weight), compatibleWith: traits)
+    }
+}
+#endif
 
 extension Color {
     init(hex: UInt, alpha: Double = 1.0) {

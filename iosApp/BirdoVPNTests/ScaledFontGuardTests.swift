@@ -21,16 +21,22 @@ final class ScaledFontGuardTests: XCTestCase {
         XCTAssertFalse(files.isEmpty)
 
         // Whole-file, multi-line patterns: `.system(size:`, `systemFont(ofSize:`,
-        // any `ofSize:` and a `.custom(... fixedSize:)`. The ONE exemption is the
-        // builder in BirdoTheme.swift (`system(size: scaledSize`), removed from
-        // that file's text before matching -- not the whole file.
+        // any `ofSize:` and a `.custom(... fixedSize:)`. The ONLY exemptions are
+        // the two builders in BirdoTheme.swift, removed from that file's text
+        // before matching -- not the whole file: the SwiftUI one
+        // (`system(size: scaledSize`, an @ScaledMetric) and the UIKit one for the
+        // tab bar (`scaledFont(for: .systemFont(ofSize: size,`, a UIFontMetrics).
         let patterns = [#"system\(\s*size:"#, #"ofSize:"#, #"\.custom\([^)]*fixedSize:"#]
         let regexes = try patterns.map { try NSRegularExpression(pattern: $0, options: [.dotMatchesLineSeparators]) }
+        let themeBuilders = ["system(size: scaledSize", "scaledFont(for: .systemFont(ofSize: size,"]
         var offenders: [String] = []
         for file in files {
             var text = try String(contentsOf: file, encoding: .utf8)
             if file.lastPathComponent == "BirdoTheme.swift" {
-                text = text.replacingOccurrences(of: "system(size: scaledSize", with: "")
+                for builder in themeBuilders {
+                    XCTAssertTrue(text.contains(builder), "stale exemption: \(builder)")
+                    text = text.replacingOccurrences(of: builder, with: "")
+                }
             }
             let range = NSRange(text.startIndex..., in: text)
             for re in regexes {
