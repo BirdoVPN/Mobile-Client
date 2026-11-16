@@ -192,6 +192,10 @@ final class TunnelRouteContractGuardTests: XCTestCase {
         let transport = try code("PacketTunnel/TunnelHeartbeatTransport.swift")
         let legacy = try XCTUnwrap(transport.components(separatedBy: "private final class LegacyTunnelExchange").last)
         XCTAssertTrue(legacy.contains("guard let connection = slot.open(retaining: self, {"))
+        // A connection a stop raced while it was being made is cancelled by
+        // the open; the slot's release fallback runs on the exchange's queue.
+        XCTAssertTrue(legacy.contains("}, cancel: { $0.cancel() }) else { return }"))
+        XCTAssertTrue(legacy.contains("self.slot = HeartbeatConnectionSlot(queue: queue)"))
         XCTAssertTrue(legacy.contains("slot.stop()?.cancel()"))
         XCTAssertEqual(legacy.components(separatedBy: "slot.ended()").count - 1, 1)
         let cancelled = try XCTUnwrap(legacy.components(separatedBy: "case .cancelled:").last)

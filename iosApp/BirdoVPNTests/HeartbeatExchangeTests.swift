@@ -224,82 +224,211 @@ final class HeartbeatExchangeTests: XCTestCase {
     private final class FakeConnection: Sendable {}
     private final class Owner: Sendable {}
 
+    /// A slot whose release fallback is out of the way unless a test wants it.
+    private func makeSlot(releaseAfter: TimeInterval = 60,
+                          queue: DispatchQueue = DispatchQueue(label: "slot-test")) -> HeartbeatConnectionSlot<FakeConnection> {
+        HeartbeatConnectionSlot<FakeConnection>(queue: queue, releaseAfter: releaseAfter)
+    }
+
     func testAStoppedSlotNeverOpens() {
-        let slot = HeartbeatConnectionSlot<FakeConnection>()
+        let slot = makeSlot()
         let calls = Calls()
         XCTAssertNil(slot.stop(), "nothing was opened, nothing to cancel")
-        XCTAssertNil(slot.open(retaining: Owner()) { calls.hit("make"); return FakeConnection() })
+        XCTAssertNil(slot.open(retaining: Owner(), { calls.hit("make"); return FakeConnection() },
+                               cancel: { _ in calls.hit("cancel") }))
         XCTAssertEqual(calls.count("make"), 0, "the connection was made after the stop")
+        XCTAssertEqual(calls.count("cancel"), 0)
         XCTAssertNil(slot.current)
     }
 
     func testAStopAfterTheOpenHandsBackTheConnectionToCancel() throws {
-        let slot = HeartbeatConnectionSlot<FakeConnection>()
-        let opened = try XCTUnwrap(slot.open(retaining: Owner()) { FakeConnection() })
+        let slot = makeSlot()
+        let calls = Calls()
+        let opened = try XCTUnwrap(slot.open(retaining: Owner(), { FakeConnection() },
+                                             cancel: { _ in calls.hit("cancel") }))
         XCTAssertTrue(slot.current === opened)
         XCTAssertTrue(slot.stop() === opened)
-        XCTAssertNil(slot.open(retaining: Owner()) { FakeConnection() }, "a slot opens once")
+        XCTAssertEqual(calls.count("cancel"), 0, "the stop's caller cancels it, not the open")
+    }
+
+    func testASlotMakesItsConnectionAtMostOnce() {
+        let slot = makeSlot()
+        let calls = Calls()
+        XCTAssertNotNil(slot.open(retaining: Owner(), { calls.hit("make"); return FakeConnection() }, cancel: { _ in }))
+        XCTAssertNil(slot.open(retaining: Owner(), { calls.hit("make"); return FakeConnection() }, cancel: { _ in }))
+        XCTAssertEqual(calls.count("make"), 1)
     }
 
     /// The owner is the iOS 17 connection's delegate: it must outlive the
     /// connection, so it is held until the connection reports `.cancelled`,
-    /// which comes after the stop, not with it.
-    func testTheOwnerIsHeldUntilTheConnectionHasEnded() {
-        let slot = HeartbeatConnectionSlot<FakeConnection>()
+    /// which comes after the stop, not with it. The end lets go of the
+    /// connection too.
+    func testTheOwnerAndConnectionAreHeldUntilTheConnectionHasEnded() {
+        let slot = makeSlot()
         weak var weakOwner: Owner?
+        weak var weakConnection: FakeConnection?
         do {
             let owner = Owner()
             weakOwner = owner
-            XCTAssertNotNil(slot.open(retaining: owner) { FakeConnection() })
+            let made = slot.open(retaining: owner, { FakeConnection() }, cancel: { _ in })
+            weakConnection = made
+            XCTAssertNotNil(made)
         }
         XCTAssertNotNil(weakOwner, "held while the connection lives")
         _ = slot.stop()
         XCTAssertNotNil(weakOwner, "a stop is not the end: the connection has not reported .cancelled yet")
         slot.ended()
         XCTAssertNil(weakOwner, "released once the connection is over")
+        XCTAssertNil(weakConnection, "the slot lets go of the connection too")
+        XCTAssertNil(slot.current)
+    }
+
+    /// Re-review LOW-1: a connection that never reports `.cancelled` used to
+    /// keep its exchange (and the connection, and up to 64 KB of answer)
+    /// alive for good, one per beat. The fallback lets go of both a fixed
+    /// time after the stop.
+    func testTheFallbackReleasesTheOwnerAndConnectionWhenTheEndNeverComes() {
+        let queue = DispatchQueue(label: "slot-test")
+        let slot = makeSlot(releaseAfter: 0.05, queue: queue)
+        weak var weakOwner: Owner?
+        weak var weakConnection: FakeConnection?
+        do {
+            let owner = Owner()
+            weakOwner = owner
+            let made = slot.open(retaining: owner, { FakeConnection() }, cancel: { _ in })
+            weakConnection = made
+            XCTAssertNotNil(made)
+        }
+        _ = slot.stop()
+        XCTAssertNotNil(weakOwner, "held for the fallback's delay after the stop")
+        Thread.sleep(forTimeInterval: 0.3)
+        queue.sync {}
+        XCTAssertNil(weakOwner, "never reported .cancelled, and still released")
+        XCTAssertNil(weakConnection, "no connection -> delegate -> slot -> connection cycle survives")
+        XCTAssertNil(slot.current)
+    }
+
+    /// The end, reported after the fallback already let go (or twice), is
+    /// harmless; so is the fallback firing after the end.
+    func testALateEndAfterTheFallbackIsHarmless() {
+        let queue = DispatchQueue(label: "slot-test")
+        let slot = makeSlot(releaseAfter: 0.05, queue: queue)
+        weak var weakOwner: Owner?
+        do {
+            let owner = Owner()
+            weakOwner = owner
+            XCTAssertNotNil(slot.open(retaining: owner, { FakeConnection() }, cancel: { _ in }))
+        }
+        _ = slot.stop()
+        Thread.sleep(forTimeInterval: 0.3)
+        queue.sync {}
+        XCTAssertNil(weakOwner)
+        slot.ended()   // the late .cancelled
+        slot.ended()
+        XCTAssertNil(slot.current)
+        XCTAssertNil(slot.stop(), "nothing left to cancel")
+
+        // And the other order: the end first, the fallback later.
+        let other = makeSlot(releaseAfter: 0.05, queue: queue)
+        XCTAssertNotNil(other.open(retaining: Owner(), { FakeConnection() }, cancel: { _ in }))
+        _ = other.stop()
+        other.ended()
+        Thread.sleep(forTimeInterval: 0.3)
+        queue.sync {}
+        XCTAssertNil(other.current)
     }
 
     func testAnOwnerIsNotHeldWhenNothingOpened() {
-        let slot = HeartbeatConnectionSlot<FakeConnection>()
+        let slot = makeSlot()
         _ = slot.stop()
         weak var weakOwner: Owner?
         do {
             let owner = Owner()
             weakOwner = owner
-            XCTAssertNil(slot.open(retaining: owner) { FakeConnection() })
+            XCTAssertNil(slot.open(retaining: owner, { FakeConnection() }, cancel: { _ in }))
         }
         XCTAssertNil(weakOwner)
     }
 
+    /// Re-review LOW-2: the connection is made OUTSIDE the slot's lock, so a
+    /// stop that arrives while it is being made (NetworkExtension calling back
+    /// into the exchange) neither deadlocks nor is lost: it finds nothing to
+    /// cancel, and the open cancels what it made instead of handing it out.
+    /// With the old slot (make under the lock) this stop deadlocked.
+    func testAStopWhileTheConnectionIsBeingMadeGetsItCancelled() {
+        let queue = DispatchQueue(label: "slot-test")
+        let slot = makeSlot(releaseAfter: 0.05, queue: queue)
+        weak var weakOwner: Owner?
+        var stopFound: FakeConnection?
+        var made: FakeConnection?
+        var cancelled: FakeConnection?
+        do {
+            let owner = Owner()
+            weakOwner = owner
+            let opened = slot.open(retaining: owner, {
+                stopFound = slot.stop()
+                let connection = FakeConnection()
+                made = connection
+                return connection
+            }, cancel: { cancelled = $0 })
+            XCTAssertNil(opened, "a connection a stop raced is not handed out")
+        }
+        XCTAssertNil(stopFound, "the stop came before the connection existed")
+        XCTAssertNotNil(made)
+        XCTAssertTrue(cancelled === made, "the open cancelled what the stop could not")
+        XCTAssertNotNil(weakOwner, "the delegate is held for the fallback all the same")
+        Thread.sleep(forTimeInterval: 0.3)
+        queue.sync {}
+        XCTAssertNil(weakOwner)
+    }
+
     /// The start (open) and the stop race on two threads. Whatever the order,
-    /// a connection that was opened is the one the stop hands back to cancel.
+    /// every connection that was made is cancelled by exactly one side: the
+    /// stop hands it back, or the open cancels it itself.
     func testAStopRacingTheOpenNeverLeavesAnUncancelledConnection() {
         final class Outcome: @unchecked Sendable {
             private let lock = NSLock()
+            private var made: FakeConnection?
             private var opened: FakeConnection?
-            private var toCancel: FakeConnection?
+            private var cancelledByOpen: FakeConnection?
+            private var handedToStop: FakeConnection?
+            func record(made: FakeConnection) { lock.lock(); self.made = made; lock.unlock() }
             func record(opened: FakeConnection?) { lock.lock(); self.opened = opened; lock.unlock() }
-            func record(toCancel: FakeConnection?) { lock.lock(); self.toCancel = toCancel; lock.unlock() }
-            var leaked: Bool {
+            func record(cancelledByOpen: FakeConnection) { lock.lock(); self.cancelledByOpen = cancelledByOpen; lock.unlock() }
+            func record(handedToStop: FakeConnection?) { lock.lock(); self.handedToStop = handedToStop; lock.unlock() }
+            /// Nil when the invariant holds, else what broke it.
+            var broken: String? {
                 lock.lock()
                 defer { lock.unlock() }
-                guard let opened else { return false }
-                return toCancel !== opened
+                guard let made else {
+                    return opened == nil && cancelledByOpen == nil && handedToStop == nil ? nil : "nothing made"
+                }
+                let byStop = handedToStop === made
+                let byOpen = cancelledByOpen === made
+                if byStop == byOpen { return byStop ? "cancelled twice" : "never cancelled" }
+                if opened != nil && !(opened === made && byStop) { return "handed out but not to the stop" }
+                return nil
             }
         }
+        let queue = DispatchQueue(label: "slot-test")
         for round in 0..<500 {
-            let slot = HeartbeatConnectionSlot<FakeConnection>()
+            let slot = makeSlot(releaseAfter: 0.01, queue: queue)
             let outcome = Outcome()
             let owner = Owner()
             DispatchQueue.concurrentPerform(iterations: 2) { index in
                 if index == 0 {
-                    outcome.record(opened: slot.open(retaining: owner) { FakeConnection() })
+                    outcome.record(opened: slot.open(retaining: owner, {
+                        let connection = FakeConnection()
+                        outcome.record(made: connection)
+                        return connection
+                    }, cancel: { outcome.record(cancelledByOpen: $0) }))
                 } else {
-                    outcome.record(toCancel: slot.stop())
+                    outcome.record(handedToStop: slot.stop())
                 }
             }
-            XCTAssertFalse(outcome.leaked, "round \(round): a connection opened that the stop never saw")
+            XCTAssertNil(outcome.broken, "round \(round)")
         }
+        queue.sync {}
     }
 
     // MARK: - A close right after the answer (review: .disconnected)

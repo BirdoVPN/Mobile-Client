@@ -31,6 +31,11 @@ enum HeartbeatExchangeTimeout {
     /// per-request timeout.
     static let cap: TimeInterval = 20
 
+    /// How long after an exchange was stopped its connection and its owner
+    /// are kept, at most, waiting for the connection to report its end
+    /// (`HeartbeatConnectionSlot`).
+    static let releaseAfterStop: TimeInterval = 5
+
     /// The request's own `timeoutInterval` when it asks for less than `cap`,
     /// otherwise `cap`.
     ///
@@ -112,58 +117,119 @@ final class HeartbeatExchangeCompletion: @unchecked Sendable {
     }
 }
 
-/// One exchange's connection, from the moment it is opened to its terminal
-/// state (review of #621).
+/// One exchange's connection, from the moment it is opened to its end
+/// (review of #621).
 ///
 /// The exchange is started on its queue and may be stopped from any thread
-/// (the timeout, task cancellation, a failure in a callback). Three rules:
+/// (the timeout, task cancellation, a failure in a callback). The rules:
 ///   - a slot that was stopped never opens: a connection made after the stop
 ///     is one that nothing would ever cancel;
+///   - the connection is MADE outside the slot's lock (NetworkExtension may
+///     call back into the exchange, and so into `stop`, while it makes it);
+///     a stop that lands meanwhile finds nothing to cancel, so `open` cancels
+///     what it made instead of handing it out;
 ///   - a stop after the open hands back the connection, to be cancelled;
-///   - the owner is kept alive from the open until the connection reports its
-///     terminal state (`ended`). On the iOS 17 path the owner is the
-///     NWTCPConnection's authentication delegate, so no late delegate callback
-///     can reach a freed object.
+///   - the owner (on the iOS 17 path the NWTCPConnection's authentication
+///     delegate) is kept alive from the open until the connection reports its
+///     end (`ended`), so no late delegate callback can reach a freed object;
+///   - but never for ever: `releaseAfter` seconds after the stop the slot lets
+///     go of the owner AND the connection whether or not the end was
+///     reported. Otherwise a connection that never reports `.cancelled` would
+///     keep one exchange, its connection and its buffer alive per beat. The
+///     release happens once; an end reported later is harmless.
 final class HeartbeatConnectionSlot<Connection: AnyObject>: @unchecked Sendable {
     private let lock = NSLock()
+    private let queue: DispatchQueue
+    private let releaseAfter: TimeInterval
     private var stopped = false
+    private var opening = false
     private var connection: Connection?
     private var owner: AnyObject?
+    private var releaseScheduled = false
 
-    /// Opens with `make`, called at most once and under the slot's lock,
+    /// - Parameters:
+    ///   - queue: where the release fallback runs (the exchange's queue).
+    ///   - releaseAfter: how long after the stop the owner is held at most.
+    init(queue: DispatchQueue, releaseAfter: TimeInterval = HeartbeatExchangeTimeout.releaseAfterStop) {
+        self.queue = queue
+        self.releaseAfter = releaseAfter
+    }
+
+    /// Opens with `make`, called at most once and OUTSIDE the slot's lock,
     /// unless the slot was already stopped (or opened). Returns the connection
-    /// it opened, nil otherwise; `owner` is held until `ended()`.
-    func open(retaining owner: AnyObject, _ make: () -> Connection?) -> Connection? {
+    /// it opened, nil otherwise; `owner` is held until the connection ends or
+    /// the release fallback. A stop that landed while `make` ran gets the
+    /// connection cancelled here, with `cancel`, and nil is returned.
+    func open(retaining owner: AnyObject, _ make: () -> Connection?,
+              cancel: (Connection) -> Void) -> Connection? {
         lock.lock()
-        defer { lock.unlock() }
-        guard !stopped, connection == nil, let made = make() else { return nil }
+        guard !stopped, !opening, connection == nil else {
+            lock.unlock()
+            return nil
+        }
+        opening = true
+        lock.unlock()
+
+        guard let made = make() else { return nil }
+
+        lock.lock()
         connection = made
         self.owner = owner
+        let stoppedMeanwhile = stopped
+        lock.unlock()
+        guard !stoppedMeanwhile else {
+            cancel(made)
+            scheduleRelease()
+            return nil
+        }
         return made
     }
 
-    /// The connection, once opened.
+    /// The connection, while the slot holds it.
     var current: Connection? {
         lock.lock()
         defer { lock.unlock() }
         return connection
     }
 
-    /// No open from now on. Returns the connection to cancel, if one was opened.
+    /// No open from now on. Returns the connection to cancel, if one was
+    /// opened, and starts the release fallback for it.
     func stop() -> Connection? {
         lock.lock()
-        defer { lock.unlock() }
         stopped = true
+        let connection = self.connection
+        lock.unlock()
+        if connection != nil { scheduleRelease() }
         return connection
     }
 
-    /// The connection reached its terminal state: the owner may go.
+    /// The connection reported its end: let go of the owner and the
+    /// connection now. Harmless after the fallback, and twice.
     func ended() {
+        release()
+    }
+
+    private func scheduleRelease() {
         lock.lock()
-        let released = owner
-        owner = nil
+        guard !releaseScheduled, owner != nil else {
+            lock.unlock()
+            return
+        }
+        releaseScheduled = true
         lock.unlock()
-        withExtendedLifetime(released) {}   // the last release happens outside the lock
+        queue.asyncAfter(deadline: .now() + releaseAfter) { [self] in
+            release()
+        }
+    }
+
+    private func release() {
+        lock.lock()
+        let owner = self.owner
+        let connection = self.connection
+        self.owner = nil
+        self.connection = nil
+        lock.unlock()
+        withExtendedLifetime((owner, connection)) {}   // the last releases happen outside the lock
     }
 }
 

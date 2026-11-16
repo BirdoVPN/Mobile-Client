@@ -239,10 +239,11 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
     private let queue: DispatchQueue
     private let completion: HeartbeatExchangeCompletion
     private let lock = NSLock()
-    /// The connection, from its open to `.cancelled` (HeartbeatExchange.swift):
+    /// The connection, from its open to its end (HeartbeatExchange.swift):
     /// never opened after a stop, and this exchange (the connection's
-    /// authentication delegate) is kept alive until the connection is over.
-    private let slot = HeartbeatConnectionSlot<__NWTCPConnection>()
+    /// authentication delegate) kept alive until `.cancelled`, or at most
+    /// `HeartbeatExchangeTimeout.releaseAfterStop` after the stop.
+    private let slot: HeartbeatConnectionSlot<__NWTCPConnection>
     private var observation: NSKeyValueObservation?
     /// Approved by `evaluateTrust` and required before a byte is written: the
     /// connection must have been through THIS pin check, whatever the
@@ -258,6 +259,7 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
         self.request = request
         self.queue = queue
         self.completion = completion
+        self.slot = HeartbeatConnectionSlot(queue: queue)
     }
 
     func start() {
@@ -271,11 +273,13 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
         let tls = __NWTLSParameters()
         tls.minimumSSLProtocolVersion = Self.minimumTLSVersion
         // Review of #621: a stop that landed first (the beat cancelled, timed
-        // out) leaves nothing to open; the slot refuses.
+        // out) leaves nothing to open; the slot refuses. The connection is
+        // made outside the slot's lock, and one a stop raced is cancelled
+        // there rather than handed back here.
         guard let connection = slot.open(retaining: self, {
             provider.__createTCPConnectionThroughTunnel(to: endpoint, enableTLS: true,
                                                         tlsParameters: tls, delegate: self)
-        }) else { return }
+        }, cancel: { $0.cancel() }) else { return }
         // `.initial` reports the state now, so a cancel that raced this line is
         // still seen as `.cancelled` and releases the slot's hold on `self`.
         let observation = connection.observe(\.state, options: [.initial, .new]) { [weak self] observed, _ in
@@ -289,7 +293,9 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
     }
 
     /// Cancels the connection, if one was opened, and makes sure none opens
-    /// later. The state observation stays until `.cancelled` arrives.
+    /// later. The state observation stays until `.cancelled` arrives; if that
+    /// never comes, the slot lets go of this exchange and the connection
+    /// `releaseAfterStop` later, and the observation goes with the exchange.
     func stop() {
         slot.stop()?.cancel()
     }
