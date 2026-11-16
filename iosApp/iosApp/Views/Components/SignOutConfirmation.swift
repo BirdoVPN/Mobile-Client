@@ -23,6 +23,10 @@ import SwiftUI
 struct SignOutConfirmation: View {
     @EnvironmentObject var authVM: AuthViewModel
 
+    /// The canonical words (MR-1617), set by the caller: "Sign out?" and
+    /// "Sign out" (IosRequiredRowsGuardTest pins them in HomeView).
+    let title: String
+    let confirmLabel: String
     /// The opening line (still connected, the anonymous number reminder).
     let message: String
     /// Disconnect, then sign out. The caller owns VpnViewModel.
@@ -41,10 +45,14 @@ struct SignOutConfirmation: View {
     /// - Parameter listAnswered: the caller already knows what waits (a hold
     ///   is known, or it read the list itself): true or false for that read's
     ///   answer. Nil: read it here first.
-    init(message: String,
+    init(title: String,
+         message: String,
+         confirmLabel: String,
          listAnswered: Bool?,
          signOut: @escaping @MainActor () async -> Void,
          onClose: @escaping () -> Void) {
+        self.title = title
+        self.confirmLabel = confirmLabel
         self.message = message
         self.signOut = signOut
         self.onClose = onClose
@@ -59,9 +67,9 @@ struct SignOutConfirmation: View {
     var body: some View {
         let notice = self.notice
         BirdoConfirmDialog(
-            title: "Sign out?",
+            title: title,
             message: fullMessage(notice),
-            confirmLabel: confirmLabel,
+            confirmLabel: confirmButtonLabel,
             cancelLabel: notice.offersCancelDeletion ? "Stay signed in" : "Cancel",
             isWorking: busy,
             onConfirm: { confirm() },
@@ -82,9 +90,9 @@ struct SignOutConfirmation: View {
         }
     }
 
-    private var confirmLabel: String {
+    private var confirmButtonLabel: String {
         if checking { return "Checking\u{2026}" }
-        return blocked == nil ? "Sign out" : "Try again"
+        return blocked == nil ? confirmLabel : "Try again"
     }
 
     private func fullMessage(_ notice: SignOutHoldNotice) -> String {

@@ -129,7 +129,9 @@ struct HomeView: View {
             ZStack {
                 if showLogoutConfirm {
                     SignOutConfirmation(
+                        title: "Sign out?",
                         message: signOutMessage,
+                        confirmLabel: "Sign out",
                         listAnswered: authVM.pendingDeletion != nil ? true : nil,
                         signOut: {
                             // Order is load-bearing: disconnectForSignOut() tears the

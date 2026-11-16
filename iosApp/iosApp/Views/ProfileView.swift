@@ -179,7 +179,9 @@ struct ProfileView: View {
             ZStack {
                 if showSignOutHoldConfirm {
                     SignOutConfirmation(
+                        title: "Sign out?",
                         message: "Are you sure you want to sign out?",
+                        confirmLabel: "Sign out",
                         listAnswered: signOutListAnswered,
                         signOut: {
                             // Slot release is awaited so the server frees this
