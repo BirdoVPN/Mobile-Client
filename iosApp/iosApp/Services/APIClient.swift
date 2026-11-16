@@ -491,15 +491,18 @@ final class APIClient: @unchecked Sendable {
     /// `stepUpMethod: "hold"`; the password and 2FA code still go where the
     /// account has them.
     ///
-    /// - Returns: the hold, for 202 `change_pending` and for 409
-    ///   `change_already_pending`. NOT a deletion: nothing local changes.
-    ///   No answer to a hold request is ever taken as a deletion (review of
-    ///   #616): any other 2xx throws `DeletionHoldRefusal.unexpectedAnswer`.
+    /// - Returns: the hold, told apart by where it came from (MR-179 hold
+    ///   origin): `.filed` for 202 `change_pending` (this request, this
+    ///   session), `.alreadyPending` for 409 `change_already_pending` (filed
+    ///   earlier, perhaps on the website or another device). NOT a deletion:
+    ///   nothing local changes. No answer to a hold request is ever taken as
+    ///   a deletion (review of #616): any other 2xx throws
+    ///   `DeletionHoldRefusal.unexpectedAnswer`.
     /// - Throws: `DeletionRefusal` (2FA), `DeletionHoldRefusal` (409
     ///   `hold_unavailable`, 429 `too_many_attempts`, 503
     ///   `step_up_unavailable`, an already-pending hold the body does not
     ///   name, an unexpected 2xx), or the generic errors.
-    func requestDeletionHold(password: String?, twoFactorCode: String?) async throws -> PendingDeletion {
+    func requestDeletionHold(password: String?, twoFactorCode: String?) async throws -> DeletionHoldAnswer {
         let body = try encoder.encode(
             DeleteAccountBody(password: password, twoFactorCode: twoFactorCode, stepUpMethod: DeletionHold.method)
         )
@@ -519,12 +522,14 @@ final class APIClient: @unchecked Sendable {
                 }
             )
         } catch DeletionHoldRefusal.alreadyPending(let pending?) {
-            return pending
+            // Not filed by this request: the server's sign-out of this
+            // session may not void it.
+            return .alreadyPending(pending)
         }
         guard let pending = DeletionHold.holdAnswer(status: answer.status, body: answer.data) else {
             throw DeletionHoldRefusal.unexpectedAnswer
         }
-        return pending
+        return .filed(pending)
     }
 
     /// MR-179: the account's deletion on hold (`GET /auth/pending-changes`,

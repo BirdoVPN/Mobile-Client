@@ -384,14 +384,54 @@ enum DeletionHold {
         return plain.date(from: text)
     }
 
-    /// Review of #616: the server cancels a hold when the app that filed it
-    /// signs out, so the user is told before, wherever a sign-out is offered.
+    /// Review of #616: the server cancels a hold when the app SESSION that
+    /// filed it signs out. Said only about a hold this session files or filed
+    /// (the deletion dialog's hold step, the banner of a hold filed here):
+    /// one filed on the website or another device survives this sign-out
+    /// (`signOutKeeps`, `HeldDeletionRecord`).
     static let signOutCancels = "Stay signed in on this device until then; signing out cancels the deletion."
 
-    /// The sign-out confirmation's line while a deletion is on hold.
+    /// The sign-out confirmation's line for a hold THIS session filed
+    /// (`SignOutHoldNotice.filedHere`).
     static func signOutWarning(applyAfter: Date, timeZone: TimeZone = .current, locale: Locale = .current) -> String {
         "Signing out cancels the deletion of your account that is scheduled for "
             + formatted(applyAfter, timeZone: timeZone, locale: locale) + "."
+    }
+
+    /// MR-179 (hold origin): a hold not known to be filed by this session.
+    /// The server voids a hold on sign-out only when the session that filed
+    /// it signs out (birdo-web #883, `heldDeletionVoided`): one asked for on
+    /// the website, or on another device, survives this app's sign-out.
+    static let signOutKeeps = "Signing out of this app does not cancel a deletion asked for on the website "
+        + "or another device. To keep your account, cancel the deletion."
+
+    /// The sign-out confirmation's line for a hold not known to be filed here
+    /// (a list read or a 409 named it).
+    static func signOutKeepsWarning(applyAfter: Date, timeZone: TimeZone = .current, locale: Locale = .current) -> String {
+        bannerText(applyAfter: applyAfter, timeZone: timeZone, locale: locale) + " " + signOutKeeps
+    }
+
+    /// The list could not be read before the sign-out confirmation decided
+    /// (a failure, or no answer within `SignOutHold.readWait`). Sign-out
+    /// stays allowed.
+    static let signOutUnchecked = "We couldn't check whether a deletion is waiting for this account. "
+        + "If you asked for one on the website or another device, signing out of this app does not cancel it."
+
+    /// Shown while the sign-out confirmation waits for the list read.
+    static let signOutChecking = "Checking whether a deletion is waiting for this account\u{2026}"
+
+    /// Sign-out cancels a hold filed here first, and that cancel failed:
+    /// nobody was signed out, and nothing claims the account is safe.
+    static func signOutCancelFailed(reason: String, applyAfter: Date,
+                                    timeZone: TimeZone = .current, locale: Locale = .current) -> String {
+        reason + " You are still signed in, and your account is still scheduled to be deleted on "
+            + formatted(applyAfter, timeZone: timeZone, locale: locale)
+            + ". Try again, or sign out anyway: the deletion may then still go ahead."
+    }
+
+    /// The Profile banner's sentence about signing out, by where the hold came from.
+    static func bannerSignOutNote(filedHere: Bool) -> String {
+        filedHere ? signOutCancels : signOutKeeps
     }
 
     private static func formatted(_ date: Date, timeZone: TimeZone, locale: Locale) -> String {
@@ -406,5 +446,269 @@ enum DeletionHold {
     /// The Profile banner's sentence: `applyAfter` in the device's zone and locale.
     static func bannerText(applyAfter: Date, timeZone: TimeZone = .current, locale: Locale = .current) -> String {
         "Your account will be deleted on " + formatted(applyAfter, timeZone: timeZone, locale: locale) + "."
+    }
+}
+
+// MARK: - MR-179: where a held deletion came from
+
+/// What a hold request (`APIClient.requestDeletionHold`) was answered with.
+/// Which of the two decides what signing out of this app does to the hold.
+enum DeletionHoldAnswer: Equatable, Sendable {
+    /// 202 `change_pending`: THIS request filed it, tied to this session.
+    case filed(PendingDeletion)
+    /// 409 `change_already_pending` naming the hold that already waits. Filed
+    /// earlier, perhaps on the website or another device: not known to be
+    /// this session's.
+    case alreadyPending(PendingDeletion)
+
+    var pending: PendingDeletion {
+        switch self {
+        case .filed(let pending), .alreadyPending(let pending): return pending
+        }
+    }
+
+    /// This request filed it.
+    var filedHere: Bool {
+        if case .filed = self { return true }
+        return false
+    }
+}
+
+/// The account's held deletion as this app knows it, and whether THIS app
+/// session filed it.
+///
+/// The server voids a held deletion on sign-out ONLY when the session that
+/// signs out is the one that filed it (birdo-web #883,
+/// `pending-change.service.ts` `heldDeletionVoided`): a hold filed on the
+/// website has no session and is never voided by a sign-out, and one filed on
+/// another device survives this device's sign-out. (A sign-out everywhere, a
+/// number rotation, a password change and turning 2FA on or off cancel every
+/// hold at once.) So:
+///   * `filedHereId` is set ONLY by this session's own 202 (`filed`), never by
+///     a 409 for a hold already waiting or by a list read: neither says which
+///     session filed it;
+///   * a list read or a 409 keeps it only while it names the SAME hold;
+///   * a confirmed cancel, the end of the session and a list without the hold
+///     drop it.
+/// AuthViewModel keeps `filedHereId` in the keychain with the session
+/// (`KeychainService.heldDeletionFiledHereId`, dropped by `clear()`), so a cold
+/// start still knows once the list names that hold again.
+struct HeldDeletionRecord: Equatable, Sendable {
+    /// The deletion on hold, nil for none known.
+    private(set) var pending: PendingDeletion?
+    /// The id this session's own 202 named, while that hold is the one known.
+    private(set) var filedHereId: String?
+
+    init() {}
+
+    /// A cold start: the id this session filed, read back from the keychain.
+    /// Nothing is shown until a list read names the same hold.
+    init(restoredFiledHereId: String?) {
+        let id = restoredFiledHereId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        filedHereId = (id?.isEmpty == false) ? id : nil
+    }
+
+    /// The hold that waits was filed by THIS session: signing out of this app
+    /// voids it.
+    var filedHere: Bool {
+        guard let pending, let filedHereId else { return false }
+        return pending.id == filedHereId
+    }
+
+    /// This session's own 202 `change_pending`.
+    mutating func filed(_ hold: PendingDeletion) {
+        pending = hold
+        filedHereId = hold.id
+    }
+
+    /// A hold named by anything but this session's 202 (a 409, a list read):
+    /// filed here only if it is the very hold this session filed.
+    mutating func named(_ hold: PendingDeletion) {
+        if filedHereId != hold.id { filedHereId = nil }
+        pending = hold
+    }
+
+    mutating func apply(_ answer: DeletionHoldAnswer) {
+        switch answer {
+        case .filed(let hold): filed(hold)
+        case .alreadyPending(let hold): named(hold)
+        }
+    }
+
+    /// `GET /auth/pending-changes` answered; nil: no deletion waits.
+    mutating func listed(_ hold: PendingDeletion?) {
+        if let hold {
+            named(hold)
+        } else {
+            forget()
+        }
+    }
+
+    /// The server confirmed the cancel (or that the hold was gone already).
+    mutating func cancelled() {
+        forget()
+    }
+
+    /// The session ended (sign-out, expiry, deletion): the next one inherits nothing.
+    mutating func sessionEnded() {
+        forget()
+    }
+
+    private mutating func forget() {
+        pending = nil
+        filedHereId = nil
+    }
+
+    /// What the sign-out confirmation says. `listAnswered`: the server
+    /// answered a list read for this sign-out, so no hold known means none.
+    func signOutNotice(listAnswered: Bool) -> SignOutHoldNotice {
+        if let pending { return filedHere ? .filedHere(pending) : .notFiledHere(pending) }
+        return listAnswered ? .nothingWaiting : .unchecked
+    }
+}
+
+/// What the sign-out confirmations (Home and Profile) say about a held deletion.
+enum SignOutHoldNotice: Equatable, Sendable {
+    /// The server says no deletion waits.
+    case nothingWaiting
+    /// This session filed it: signing out of this app cancels it (and the app
+    /// cancels it itself first, `SignOutHold.prepareSignOut`).
+    case filedHere(PendingDeletion)
+    /// Waiting, and not known to be this session's (the website, another
+    /// device, a list read, a 409): signing out of this app leaves it.
+    case notFiledHere(PendingDeletion)
+    /// The list could not be read in time: nothing is known. Sign-out stays allowed.
+    case unchecked
+
+    var hold: PendingDeletion? {
+        switch self {
+        case .filedHere(let hold), .notFiledHere(let hold): return hold
+        case .nothingWaiting, .unchecked: return nil
+        }
+    }
+
+    /// Both confirmations offer "Cancel deletion" whenever a hold is known.
+    var offersCancelDeletion: Bool { hold != nil }
+
+    /// The hold the app cancels before signing out: only one this session filed.
+    var cancelsBeforeSignOut: PendingDeletion? {
+        if case .filedHere(let hold) = self { return hold }
+        return nil
+    }
+
+    /// The confirmation's line about the hold, nil when none waits.
+    func message(timeZone: TimeZone = .current, locale: Locale = .current) -> String? {
+        switch self {
+        case .nothingWaiting:
+            return nil
+        case .filedHere(let hold):
+            return DeletionHold.signOutWarning(applyAfter: hold.applyAfter, timeZone: timeZone, locale: locale)
+        case .notFiledHere(let hold):
+            return DeletionHold.signOutKeepsWarning(applyAfter: hold.applyAfter, timeZone: timeZone, locale: locale)
+        case .unchecked:
+            return DeletionHold.signOutUnchecked
+        }
+    }
+}
+
+/// How `POST /auth/pending-changes/:id/cancel` ended.
+enum HeldDeletionCancelOutcome: Equatable, Sendable {
+    /// 200: the server cancelled it.
+    case cancelled
+    /// 404 `pending_change_not_found`: gone already.
+    case alreadyGone
+    /// Not cancelled; the sentence says why.
+    case failed(String)
+    /// A definitive 401: the session is over and the app signed out.
+    case sessionEnded
+}
+
+/// MR-179 (hold origin): the decisions of the sign-out confirmations, with the
+/// server behind closures so AccountDeletionTests drives them.
+enum SignOutHold {
+    /// The longest a sign-out waits for the list read when no hold is known.
+    static let readWait: Duration = .seconds(3)
+
+    /// Before a sign-out confirmation decides what to say: with no hold known
+    /// (a tap right after a cold start, before the list read answered), read
+    /// the list first, waiting at most `wait`. True when a hold is already
+    /// known or the list answered; false when the read failed or took longer
+    /// (the confirmation then says it could not check, and still signs out).
+    @MainActor
+    static func check(current: @MainActor () -> HeldDeletionRecord,
+                      read: @escaping @MainActor @Sendable () async -> Bool,
+                      wait: Duration = readWait) async -> Bool {
+        if current().pending != nil { return true }
+        return await answered(within: wait, read)
+    }
+
+    /// `read`'s answer, or false once `wait` has passed first. A read that
+    /// answers later still updates what the app knows; only this wait ends.
+    static func answered(within wait: Duration,
+                         _ read: @escaping @MainActor @Sendable () async -> Bool) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let once = ResumeOnce(continuation)
+            let timer = Task {
+                try? await Task.sleep(for: wait)
+                once.resume(false)
+            }
+            Task {
+                let answered = await read()
+                once.resume(answered)
+                timer.cancel()
+            }
+        }
+    }
+
+    /// Sign-out was refused because the cancel before it failed.
+    struct Blocked: Equatable, Sendable {
+        let reason: String
+        let hold: PendingDeletion
+    }
+
+    enum Step: Equatable, Sendable {
+        /// Go on and sign out.
+        case signOut
+        /// Nobody is signed out: the deletion is still scheduled.
+        case blocked(Blocked)
+        /// The session ended on its own (401).
+        case sessionEnded
+    }
+
+    /// Sign-out confirmed. A hold THIS session filed is cancelled first: the
+    /// user was told signing out cancels it, and the server's sign-out is best
+    /// effort (offline it may never arrive). If that cancel fails, nobody is
+    /// signed out. A hold not known to be filed here is left alone: its line
+    /// said signing out does not cancel it, and offered Cancel deletion.
+    @MainActor
+    static func prepareSignOut(_ notice: SignOutHoldNotice,
+                               cancel: @MainActor (PendingDeletion) async -> HeldDeletionCancelOutcome) async -> Step {
+        guard let hold = notice.cancelsBeforeSignOut else { return .signOut }
+        switch await cancel(hold) {
+        case .cancelled, .alreadyGone:
+            return .signOut
+        case .failed(let reason):
+            return .blocked(Blocked(reason: reason, hold: hold))
+        case .sessionEnded:
+            return .sessionEnded
+        }
+    }
+}
+
+/// Resumes a continuation once, whichever of two tasks gets there first.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: Bool) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(returning: value)
     }
 }

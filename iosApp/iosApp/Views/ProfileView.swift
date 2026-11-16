@@ -25,8 +25,14 @@ struct ProfileView: View {
     @State private var showSubscription = false
     @State private var showDeleteDialog = false
     /// MR-179 (review of #616): sign-out is one tap, except while a deletion
-    /// is on hold, which signing out cancels: then it asks first.
+    /// is on hold: then it asks first, saying what signing out does to it
+    /// (`SignOutConfirmation`; only a hold this session filed is cancelled).
     @State private var showSignOutHoldConfirm = false
+    /// MR-179 (hold origin): Sign out was tapped with no hold known, and the
+    /// list is being read (at most `SignOutHold.readWait`) before deciding.
+    @State private var checkingSignOut = false
+    /// Whether that read answered (the confirmation's input).
+    @State private var signOutListAnswered = false
     @State private var deletePassword = ""
     /// Local empty-password guard message ("Please enter your password") —
     /// applied ONLY when the account has a password. Server-side results
@@ -97,11 +103,12 @@ struct ProfileView: View {
                     ProfileActionRow(
                         icon: "rectangle.portrait.and.arrow.right",
                         title: "Sign out",
-                        subtitle: signOutSubtitle,
+                        subtitle: checkingSignOut ? DeletionHold.signOutChecking : signOutSubtitle,
                         destructive: true
                     ) {
                         signOut()
                     }
+                    .disabled(checkingSignOut)
                     ProfileActionRow(
                         icon: "trash",
                         title: "Delete Account",
@@ -168,14 +175,26 @@ struct ProfileView: View {
                 authVM.refreshPendingDeletion()
             }
         }
-        .birdoConfirmDialog(
-            isPresented: $showSignOutHoldConfirm,
-            title: "Sign out?",
-            message: authVM.pendingDeletion.map { DeletionHold.signOutWarning(applyAfter: $0.applyAfter) }
-                ?? "Are you sure you want to sign out?",
-            confirmLabel: "Sign out",
-            onConfirm: { performSignOut() }
-        )
+        .overlay {
+            ZStack {
+                if showSignOutHoldConfirm {
+                    SignOutConfirmation(
+                        message: "Are you sure you want to sign out?",
+                        listAnswered: signOutListAnswered,
+                        signOut: {
+                            // Slot release is awaited so the server frees this
+                            // device's connection before the tokens die.
+                            await vpnVM.disconnectForSignOut()
+                            authVM.logout()
+                        },
+                        onClose: { showSignOutHoldConfirm = false }
+                    )
+                    .transition(.opacity)
+                }
+            }
+            .animation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick),
+                       value: showSignOutHoldConfirm)
+        }
         .onChange(of: authVM.deletionHoldFiled) { _, filed in
             // MR-179: a filed hold is not a deletion. The dialog closes, the
             // user stays signed in and connected, and the banner says when.
@@ -647,8 +666,10 @@ struct ProfileView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                // Review of #616: signing out of this app cancels the hold.
-                Text(DeletionHold.signOutCancels)
+                // MR-179 (hold origin): signing out of this app cancels only
+                // a hold this session filed; one from the website or another
+                // device stays.
+                Text(DeletionHold.bannerSignOutNote(filedHere: authVM.heldDeletion.filedHere))
                     .font(BirdoTheme.Fonts.bodySmall)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -838,13 +859,31 @@ struct ProfileView: View {
     // MARK: - Actions
 
     private func signOut() {
-        // MR-179 (review of #616): a deletion on hold is cancelled by signing
-        // out, so that one case asks first.
+        guard !checkingSignOut else { return }
+        // MR-179 (review of #616): a deletion on hold changes what signing out
+        // means, so that one case asks first.
         if authVM.pendingDeletion != nil {
+            signOutListAnswered = true
             showSignOutHoldConfirm = true
             return
         }
-        performSignOut()
+        // MR-179 (hold origin): no hold known yet, e.g. a tap before Profile's
+        // opening list read answered. Read it first (at most 3 s), so a fast
+        // tap cannot skip the warning. Nothing waits: one tap, as before. A
+        // hold, or a read that failed: the confirmation says which.
+        checkingSignOut = true
+        Task {
+            let answered = await SignOutHold.check(current: { authVM.heldDeletion },
+                                                   read: { [authVM] in await authVM.readHeldDeletionForSignOut() })
+            checkingSignOut = false
+            guard authVM.isLoggedIn else { return }
+            if authVM.heldDeletion.signOutNotice(listAnswered: answered) == .nothingWaiting {
+                performSignOut()
+            } else {
+                signOutListAnswered = answered
+                showSignOutHoldConfirm = true
+            }
+        }
     }
 
     private func performSignOut() {

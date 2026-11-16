@@ -158,6 +158,9 @@ enum HostKeychainItem: String, CaseIterable, Sendable {
     case deviceId = "device_id"
     case anonymousId = "anonymous_id"
     case signInMethod = "sign_in_method"
+    /// MR-179 (hold origin): the id of the deletion hold this session filed.
+    /// Session-scoped like the sign-in method.
+    case heldDeletionFiledHere = "held_deletion_filed_here"
     /// LEGACY (MR-703 / MR-1742): the static ML-KEM-1024 keypair, `pk || sk`, that
     /// builds before per-connect keys kept here. Nothing writes it any more;
     /// `BirdoPQManager` only deletes it. The case stays so the delete can name it.
@@ -167,7 +170,8 @@ enum HostKeychainItem: String, CaseIterable, Sendable {
     /// cannot touch the session (BirdoPQManager).
     var service: String {
         switch self {
-        case .accessToken, .refreshToken, .userEmail, .deviceId, .anonymousId, .signInMethod:
+        case .accessToken, .refreshToken, .userEmail, .deviceId, .anonymousId, .signInMethod,
+             .heldDeletionFiledHere:
             return "app.birdo.vpn"
         case .pqKeypair:
             return "app.birdo.vpn.pq"
