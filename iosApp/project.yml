@@ -321,6 +321,10 @@ targets:
       # (no app types), pinned by DynamicTypeTests at .large and at the
       # accessibility sizes.
       - path: iosApp/Theme/BirdoTheme.swift
+      # MR-1796: the confirm dialog's card (scrolling content over pinned
+      # buttons). SwiftUI + BirdoTheme only, pinned by DialogLayoutTests at
+      # the accessibility sizes on an iPhone SE-sized space.
+      - path: iosApp/Views/Components/BirdoDialogCard.swift
       # A-L24 / MR-2241: the keychain write's single retry for a freshly minted
       # session. Foundation-only, pinned by SessionPersistenceTests.
       - path: iosApp/Services/SessionPersistence.swift

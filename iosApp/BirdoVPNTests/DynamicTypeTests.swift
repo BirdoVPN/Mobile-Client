@@ -121,6 +121,10 @@ final class DynamicTypeTests: XCTestCase {
                            accuracy: 0.5, "\(size)")
         }
         XCTAssertGreaterThan(height(FontValueProbe(), .accessibility3), height(FontValueProbe(), .large) * 1.3)
+        // With a cap it stops where the capped modifier does.
+        XCTAssertEqual(height(CappedFontValueProbe(), .accessibility5),
+                       height(Text("Hg").birdoFont(14, max: 18), .accessibility5), accuracy: 0.5)
+        XCTAssertEqual(height(CappedFontValueProbe(), .large), height(FontValueProbe(), .large), accuracy: 0.5)
     }
     #endif
 
@@ -140,5 +144,11 @@ final class DynamicTypeTests: XCTestCase {
 /// One `Text` styled through `@BirdoScaledFontValue`, as a prompt is.
 private struct FontValueProbe: View {
     @BirdoScaledFontValue(14) private var font: Font
+    var body: some View { Text("Hg").font(font) }
+}
+
+/// The same, capped at 18pt.
+private struct CappedFontValueProbe: View {
+    @BirdoScaledFontValue(14, max: 18) private var font: Font
     var body: some View { Text("Hg").font(font) }
 }

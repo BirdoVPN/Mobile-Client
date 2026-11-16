@@ -19,6 +19,9 @@ struct BirdoVPNApp: App {
     @StateObject private var storeVM = StoreKitService.shared
 
     init() {
+        // No UIApplication exists yet when the App is initialised, so this
+        // styles the bar with the default traits; `.onAppear` below restyles
+        // it for the text size the application reports (MR-1796).
         Self.styleTabBar()
     }
 
@@ -34,10 +37,11 @@ struct BirdoVPNApp: App {
                     .environmentObject(storeVM)
                     .preferredColorScheme(.dark)
                     #if os(iOS)
-                    // MR-1796: the tab bar's labels follow a text-size change
-                    // made while the app is running, not only at launch.
+                    // MR-1796: the tab bar's labels are sized for the text size
+                    // the app runs at, and follow a change made while it runs.
+                    .onAppear { Self.restyleTabBarForTextSize() }
                     .onReceive(NotificationCenter.default.publisher(for: UIContentSizeCategory.didChangeNotification)) { _ in
-                        Self.styleTabBar(includingLiveBars: true)
+                        Self.restyleTabBarForTextSize()
                     }
                     #endif
                     // macOS 1.4.23 was rejected under guideline 4 for "windows
@@ -139,18 +143,35 @@ struct BirdoVPNApp: App {
     /// at the default text size, growing with Dynamic Type to at most 14pt so
     /// they stay inside the bar (MR-1796; `BirdoTheme.tabBarLabelFont`).
     /// SwiftUI's TabView takes its chrome from UITabBarAppearance, so this is
-    /// configured at launch, and again when the text size changes while the
-    /// app runs (`includingLiveBars`): the appearance proxy only styles tab
-    /// bars created after it is set, so a bar already on screen is given the
-    /// new appearance directly.
+    /// configured at launch, then again for the application's own text size
+    /// once the scene is up and whenever that size changes
+    /// (`restyleTabBarForTextSize`).
     @MainActor
-    private static func styleTabBar(includingLiveBars: Bool = false) {
+    private static func styleTabBar() {
         // iOS only: UITabBarAppearance does not exist on macOS, where
         // SwiftUI renders TabView as a native segmented/sidebar control
         // that takes its chrome from the system rather than from an
         // appearance proxy. There is nothing to configure, so this is a
         // no-op there rather than an approximation.
         #if os(iOS)
+        applyTabBarAppearance(traits: nil, includingLiveBars: false)
+        #endif
+    }
+
+    #if os(iOS)
+    /// Restyle for `UIApplication.preferredContentSizeCategory`, the text size
+    /// the app runs at, rather than whatever trait collection is current. The
+    /// appearance proxy only styles tab bars created after it is set, so bars
+    /// already on screen get the new appearance directly.
+    @MainActor
+    private static func restyleTabBarForTextSize() {
+        let category = UIApplication.shared.preferredContentSizeCategory
+        applyTabBarAppearance(traits: UITraitCollection(preferredContentSizeCategory: category),
+                              includingLiveBars: true)
+    }
+
+    @MainActor
+    private static func applyTabBarAppearance(traits: UITraitCollection?, includingLiveBars: Bool) {
         let appearance = UITabBarAppearance()
         appearance.configureWithOpaqueBackground()
         // BirdoTheme.surface #0B0B10
@@ -168,12 +189,12 @@ struct BirdoVPNApp: App {
             item.selected.iconColor = accent
             item.selected.titleTextAttributes = [
                 .foregroundColor: accent,
-                .font: BirdoTheme.tabBarLabelFont(selected: true),
+                .font: BirdoTheme.tabBarLabelFont(selected: true, compatibleWith: traits),
             ]
             item.normal.iconColor = muted
             item.normal.titleTextAttributes = [
                 .foregroundColor: muted,
-                .font: BirdoTheme.tabBarLabelFont(selected: false),
+                .font: BirdoTheme.tabBarLabelFont(selected: false, compatibleWith: traits),
             ]
         }
 
@@ -189,10 +210,8 @@ struct BirdoVPNApp: App {
                 }
             }
         }
-        #endif
     }
 
-    #if os(iOS)
     /// Every UITabBar under `view` (SwiftUI's TabView hosts one).
     @MainActor
     private static func tabBars(in view: UIView) -> [UITabBar] {

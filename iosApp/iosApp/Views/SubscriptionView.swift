@@ -33,6 +33,9 @@ struct SubscriptionView: View {
     @EnvironmentObject var settingsVM: SettingsViewModel
 
     @Environment(\.openURL) private var openURL
+    /// MR-1796: the hero and plan-card headers stack at the accessibility
+    /// sizes instead of sharing a row that breaks words mid-way.
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     /// 0 = Monthly, 1 = Yearly. Defaults to yearly (Android parity).
     @State private var billingIndex = 1
@@ -161,35 +164,52 @@ struct SubscriptionView: View {
                          horizontalPadding: 18,
                          verticalPadding: 18) {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 12) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
-                            .fill(accent.opacity(0.15))
-                            .frame(width: 44, height: 44)
-                        Image(systemName: "crown.fill")
-                            .birdoFont(22, max: 28)
-                            .foregroundStyle(accent)
+                let crown = ZStack {
+                    RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
+                        .fill(accent.opacity(0.15))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "crown.fill")
+                        .birdoFont(22, max: 28)
+                        .foregroundStyle(accent)
+                }
+                .accessibilityHidden(true)
+                let name = VStack(alignment: .leading, spacing: 2) {
+                    Text(sub.plan.uppercased())
+                        .birdoFont(16, weight: .bold)
+                        .foregroundStyle(BirdoTheme.onSurface)
+                        .lineLimit(1)
+                        // On its own line at the accessibility sizes it has the
+                        // card's width, so a long name shrinks rather than cut.
+                        .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 0.5 : 0.8)
+                    Text(isActive ? "Active subscription" : "Inactive")
+                        .font(BirdoTheme.Fonts.bodySmall)
+                        .foregroundStyle(isActive ? BirdoTheme.green : BirdoTheme.white60)
+                }
+                let pill = StatusBadgePill(isActive ? "ACTIVE" : "INACTIVE",
+                                           tone: isActive ? .success : .neutral)
+
+                if dynamicTypeSize.isAccessibilitySize {
+                    // Crown and pill on one row, the name under them.
+                    HStack(spacing: 12) {
+                        crown
+                        Spacer(minLength: 8)
+                        pill
                     }
-                    .accessibilityHidden(true)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(sub.plan.uppercased())
-                            .birdoFont(16, weight: .bold)
-                            .foregroundStyle(BirdoTheme.onSurface)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                        Text(isActive ? "Active subscription" : "Inactive")
-                            .font(BirdoTheme.Fonts.bodySmall)
-                            .foregroundStyle(isActive ? BirdoTheme.green : BirdoTheme.white60)
+                    name
+                } else {
+                    HStack(spacing: 12) {
+                        crown
+                        name
+                        Spacer(minLength: 8)
+                        pill
                     }
-
-                    Spacer(minLength: 8)
-
-                    StatusBadgePill(isActive ? "ACTIVE" : "INACTIVE",
-                                    tone: isActive ? .success : .neutral)
                 }
 
-                HStack(spacing: 0) {
+                // Three columns; one under the other at the accessibility sizes.
+                let metrics = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+                    : AnyLayout(HStackLayout(spacing: 0))
+                metrics {
                     heroMetric("Devices", "\(sub.activeConnections)/\(sub.maxConnections)")
                     heroMetric("Bandwidth", sub.hasBandwidthCap
                                ? "\(Self.formatGb(sub.bandwidthLimitGb)) GB"
@@ -467,31 +487,49 @@ struct SubscriptionView: View {
 
         return BirdoCard(horizontalPadding: 20, verticalPadding: 20) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 8) {
-                            Text(plan.name)
-                                .birdoFont(16, weight: .bold)
-                                .foregroundStyle(BirdoTheme.onSurface)
-                            if plan.isPopular {
-                                planChip("POPULAR", color: accent)
-                            }
-                            if isCurrent {
-                                planChip("CURRENT", color: BirdoTheme.green)
+                let name = Text(plan.name)
+                    .birdoFont(16, weight: .bold)
+                    .foregroundStyle(BirdoTheme.onSurface)
+                let tagline = Text(plan.tagline)
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.white60)
+                let price = Text(priceLabel(for: plan, product: product))
+                    .birdoFont(18, weight: .bold)
+                    .foregroundStyle(plan.slug == "RECON"
+                                     ? BirdoTheme.white60
+                                     : BirdoTheme.onSurface)
+
+                if dynamicTypeSize.isAccessibilitySize {
+                    // One per line: a shared row breaks the name and the price
+                    // mid-word at these sizes. The chips wrap under each other
+                    // if they do not fit side by side.
+                    VStack(alignment: .leading, spacing: 6) {
+                        name
+                        if plan.isPopular || isCurrent {
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 8) { planChips(plan, accent: accent, isCurrent: isCurrent) }
+                                VStack(alignment: .leading, spacing: 6) {
+                                    planChips(plan, accent: accent, isCurrent: isCurrent)
+                                }
                             }
                         }
-                        Text(plan.tagline)
-                            .font(BirdoTheme.Fonts.bodySmall)
-                            .foregroundStyle(BirdoTheme.white60)
+                        tagline
+                        price
                     }
+                } else {
+                    HStack(alignment: .top, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 8) {
+                                name
+                                planChips(plan, accent: accent, isCurrent: isCurrent)
+                            }
+                            tagline
+                        }
 
-                    Spacer(minLength: 8)
+                        Spacer(minLength: 8)
 
-                    Text(priceLabel(for: plan, product: product))
-                        .birdoFont(18, weight: .bold)
-                        .foregroundStyle(plan.slug == "RECON"
-                                         ? BirdoTheme.white60
-                                         : BirdoTheme.onSurface)
+                        price
+                    }
                 }
 
                 // 2.3.2: a paid plan's feature list must say, in words, that
@@ -627,6 +665,16 @@ struct SubscriptionView: View {
                 .birdoFont(12)
                 .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 .padding(.top, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func planChips(_ plan: PlanCardModel, accent: Color, isCurrent: Bool) -> some View {
+        if plan.isPopular {
+            planChip("POPULAR", color: accent)
+        }
+        if isCurrent {
+            planChip("CURRENT", color: BirdoTheme.green)
         }
     }
 

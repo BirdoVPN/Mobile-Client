@@ -20,6 +20,10 @@ struct LimitView: View {
     @EnvironmentObject var store: StoreKitService
 
     @State private var showSubscription = false
+    /// MR-1796: the plan header and the stat row stack at the accessibility
+    /// sizes; the stat dividers grow with the text below them.
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .subheadline) private var statDividerHeight: CGFloat = 30
 
     private var stats: VpnStats? { vpnVM.subscription }
     private var limitGb: Double { stats?.bandwidthLimitGb ?? 0 }
@@ -129,11 +133,18 @@ struct LimitView: View {
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
                 .padding(.leading, 4)
                 .accessibilityAddTraits(.isHeader)
-            HStack(alignment: .center) {
+            // Name and allowance pill side by side; the pill goes under the
+            // name at the accessibility sizes, where one row breaks both.
+            let row = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                : AnyLayout(HStackLayout(alignment: .center))
+            row {
                 Text(isGuest ? "No account" : BirdoTheme.planDisplayName(vpnVM.currentPlan))
                     .birdoFont(22, weight: .bold)
                     .foregroundStyle(BirdoTheme.onSurface)
-                Spacer()
+                if !dynamicTypeSize.isAccessibilitySize {
+                    Spacer()
+                }
                 if stats != nil && !isGuest {
                     Text(hasCap ? "\(Self.wholeGb(limitGb)) GB / month" : "Unlimited")
                         .birdoFont(12, weight: .semibold)
@@ -245,12 +256,17 @@ struct LimitView: View {
                 .frame(height: 1)
                 .padding(.vertical, 14)
 
-            // Used / Left / Resets — equal columns with hairline separators.
-            HStack(spacing: 0) {
+            // Used / Left / Resets — equal columns with hairline separators;
+            // one under the other, with no separators, at the accessibility sizes.
+            let stacked = dynamicTypeSize.isAccessibilitySize
+            let cells = stacked
+                ? AnyLayout(VStackLayout(spacing: 12))
+                : AnyLayout(HStackLayout(spacing: 0))
+            cells {
                 statCell("Used", Self.formatGb(usedGb), meterColor)
-                statDivider
+                if !stacked { statDivider }
                 statCell("Left", Self.formatGb(max(0, limitGb - usedGb)), BirdoTheme.onSurface)
-                statDivider
+                if !stacked { statDivider }
                 statCell("Resets",
                          Self.formatResetDate(stats?.bandwidthPeriodEnd) ?? "Monthly",
                          BirdoTheme.onSurface)
@@ -295,7 +311,7 @@ struct LimitView: View {
     private var statDivider: some View {
         Rectangle()
             .fill(BirdoTheme.hairlineSoft)
-            .frame(width: 1, height: 30)
+            .frame(width: 1, height: statDividerHeight)
     }
 
     // MARK: - Plan card (§4.3)
@@ -544,7 +560,7 @@ private struct SpeedDialGauge: View {
         .overlay(alignment: .bottom) {
             // Percentage sits in the bottom gap of the arc.
             Text(percentLabel)
-                .birdoFont(13, weight: .semibold, design: .monospaced, max: 18)
+                .birdoFont(13, weight: .semibold, design: .monospaced, max: 22)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)

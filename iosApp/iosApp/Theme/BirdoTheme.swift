@@ -374,8 +374,10 @@ struct BirdoScaledFontValue: DynamicProperty {
     init(_ size: CGFloat,
          weight: Font.Weight = .regular,
          design: Font.Design = .default,
-         relativeTo textStyle: Font.TextStyle? = nil) {
-        let token = BirdoFontToken(size: size, weight: weight, design: design, relativeTo: textStyle)
+         relativeTo textStyle: Font.TextStyle? = nil,
+         max maxSize: CGFloat? = nil) {
+        let token = BirdoFontToken(size: size, weight: weight, design: design,
+                                   relativeTo: textStyle, maxSize: maxSize)
         self.token = token
         _scaledSize = ScaledMetric(wrappedValue: token.size, relativeTo: token.textStyle)
     }

@@ -26,6 +26,7 @@ struct BirdoConfirmDialog<Extra: View>: View {
     @ViewBuilder var extra: () -> Extra
 
     @State private var appeared = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(title: String,
          message: String,
@@ -60,23 +61,33 @@ struct BirdoConfirmDialog<Extra: View>: View {
                     if !isWorking { onCancel() }
                 }
 
-            VStack(spacing: 12) {
-                Image(systemName: icon)
-                    .birdoFont(36)
-                    .foregroundStyle(iconColor)
-                Text(title)
-                    .font(BirdoTheme.Fonts.titleLarge)
-                    .foregroundStyle(BirdoTheme.onSurface)
-                    .multilineTextAlignment(.center)
-                Text(message)
-                    .font(BirdoTheme.Fonts.bodyMedium)
-                    .foregroundStyle(BirdoTheme.white60)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+            // MR-1796: the message, the icon and any extra fields scroll; the
+            // buttons are pinned below them, so Cancel and Confirm stay on
+            // screen at every text size (BirdoDialogCard).
+            BirdoDialogCard {
+                VStack(spacing: 12) {
+                    Image(systemName: icon)
+                        .birdoFont(36, max: 56)
+                        .foregroundStyle(iconColor)
+                    Text(title)
+                        .font(BirdoTheme.Fonts.titleLarge)
+                        .foregroundStyle(BirdoTheme.onSurface)
+                        .multilineTextAlignment(.center)
+                    Text(message)
+                        .font(BirdoTheme.Fonts.bodyMedium)
+                        .foregroundStyle(BirdoTheme.white60)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                extra()
-
-                HStack(spacing: 10) {
+                    extra()
+                }
+            } footer: {
+                // Side by side; stacked at the accessibility sizes, where
+                // half the card is too narrow for a label.
+                let buttons = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(spacing: 10))
+                    : AnyLayout(HStackLayout(spacing: 10))
+                buttons {
                     dialogButton(cancelLabel,
                                  fill: BirdoTheme.white05,
                                  border: BirdoTheme.hairlineSoft,
@@ -85,19 +96,11 @@ struct BirdoConfirmDialog<Extra: View>: View {
                     }
                     confirmButton
                 }
-                .padding(.top, 8)
             }
-            .padding(24)
-            .frame(maxWidth: 384)
-            .background(
-                RoundedRectangle(cornerRadius: BirdoTheme.Radius.card, style: .continuous)
-                    .fill(BirdoTheme.surfaceRaised)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: BirdoTheme.Radius.card, style: .continuous)
-                    .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
-            )
             .padding(.horizontal, 24)
+            // Never taller than the screen: the card keeps 24pt clear above
+            // and below, and its content scrolls inside what is left.
+            .padding(.vertical, 24)
             .scaleEffect(appeared ? 1 : 0.92)
             .opacity(appeared ? 1 : 0)
             .accessibilityAddTraits(.isModal)
