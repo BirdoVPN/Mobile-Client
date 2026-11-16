@@ -258,9 +258,15 @@ class WireGuardConfigBuilderTest {
 
     @Test
     fun `BirdoShield is in effect only while Custom DNS is off`() {
-        assertTrue(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = true, customDnsEnabled = false))
-        assertFalse(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = true, customDnsEnabled = true))
-        assertFalse(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = false, customDnsEnabled = false))
+        assertTrue(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = true, customDnsEnabled = false, fleetGateOn = true))
+        assertFalse(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = true, customDnsEnabled = true, fleetGateOn = true))
+        assertFalse(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = false, customDnsEnabled = false, fleetGateOn = true))
+    }
+
+    /** Owner 2026-11-13: a preference set while the gate was on is not SENT while the gate is off or unknown. */
+    @Test
+    fun `BirdoShield is not sent while the fleet gate is not known to be on`() {
+        assertFalse(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = true, customDnsEnabled = false, fleetGateOn = false))
     }
 
     // ── A1-025: strict Private DNS overrides the tunnel's DNS ──────────

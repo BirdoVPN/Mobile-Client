@@ -44,6 +44,12 @@ fun SignOutConfirmDialog(
     isAnonymousAccount: Boolean,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
+    /**
+     * MR-179: when the account's deletion is on hold, the local date and time
+     * it takes effect. Signing out of the app that filed it cancels it
+     * (birdo-web #883), so the dialog says so before the user confirms.
+     */
+    pendingDeletionAt: String? = null,
 ) {
     val palette = BirdoColors.current
     var signingOut by rememberSaveable { mutableStateOf(false) }
@@ -63,6 +69,14 @@ fun SignOutConfirmDialog(
                 if (isAnonymousAccount) {
                     Spacer(Modifier.height(10.dp))
                     Text(stringResource(R.string.sign_out_anonymous_reminder), fontWeight = FontWeight.SemiBold)
+                }
+                if (pendingDeletionAt != null) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        stringResource(R.string.sign_out_cancels_pending_deletion, pendingDeletionAt),
+                        color = BirdoRed,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
             }
         },

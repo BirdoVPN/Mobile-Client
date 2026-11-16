@@ -198,9 +198,13 @@ fun BirdoNavGraph(
 
     // Signed out, for any reason (the button, a deletion, a dead session):
     // drop the previous account's servers, plan and selection so the next
-    // account on this device never sees them (A2-003).
+    // account on this device never sees them (A2-003), and the billing rail's
+    // refusal memory, purchase list and banners with them (F-967-10).
     LaunchedEffect(authState.isLoggedIn) {
-        if (!authState.isLoggedIn) vpnViewModel.resetForSignOut()
+        if (!authState.isLoggedIn) {
+            vpnViewModel.resetForSignOut()
+            billingViewModel.onSignedOut()
+        }
     }
 
     // The server accepted an entitlement: re-read the plan snapshot AND the
@@ -566,6 +570,7 @@ fun BirdoNavGraph(
                         trafficStats = vpnViewModel.trafficStats.collectAsState().value,
                         accountLabel = accountLabel(authState.user),
                         isAnonymousAccount = isAnonymousUser(authState.user),
+                        pendingDeletion = authState.pendingDeletion,
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
                         multiHop = vpnViewModel.multiHop.collectAsState().value,
@@ -659,7 +664,16 @@ fun BirdoNavGraph(
                             vpnViewModel.disconnectForSignOut { authViewModel.logout() }
                         },
                         onOpenUrl = { settingsViewModel.openUrl(it) },
-                        onDeleteAccount = { password, code -> authViewModel.deleteAccount(password, code) },
+                        onDeleteAccount = { password, code, number, mailed ->
+                            authViewModel.deleteAccount(password, code, number, mailed)
+                        },
+                        deleteRequiresAccountNumber = authState.deleteRequiresAccountNumber,
+                        deleteRequiresEmailCode = authState.deleteRequiresEmailCode,
+                        deleteStepUpEnforced = authState.deleteStepUpEnforced,
+                        deleteEmailCodeSent = authState.deleteEmailCodeSent,
+                        deleteEmailCodeSentTo = authState.deleteEmailCodeSentTo,
+                        isSendingDeleteCode = authState.isSendingDeleteCode,
+                        onSendDeletionCode = { authViewModel.sendDeletionCode() },
                         isDeletingAccount = authState.isDeletingAccount,
                         deleteAccountError = authState.deleteAccountError,
                         deleteErrorField = authState.deleteErrorField,
@@ -672,6 +686,15 @@ fun BirdoNavGraph(
                         onClearDeleteError = { authViewModel.clearDeleteAccountError() },
                         deletionPreflight = authState.deletionPreflight,
                         onDeleteDialogOpened = { authViewModel.loadDeletionPreflight() },
+                        // MR-179 hold fallback: no sign-out, no teardown.
+                        onRequestDeletionHold = { password, code -> authViewModel.requestDeletionHold(password, code) },
+                        deletionHoldFiled = authState.deletionHoldFiled,
+                        onDeletionHoldShown = { authViewModel.onDeletionHoldShown() },
+                        pendingDeletion = authState.pendingDeletion,
+                        isCancellingPendingDeletion = authState.isCancellingPendingDeletion,
+                        pendingDeletionError = authState.pendingDeletionError,
+                        onCancelPendingDeletion = { authViewModel.cancelPendingDeletion() },
+                        onRefreshPendingDeletion = { authViewModel.refreshPendingDeletion() },
                     )
                 }
             }

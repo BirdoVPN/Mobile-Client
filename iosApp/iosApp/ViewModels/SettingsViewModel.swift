@@ -135,6 +135,9 @@ final class SettingsViewModel: ObservableObject {
         // not say", not "off", so it must not overwrite anything either.
         guard let available = config.dnsFilteringAvailable else { return }
         if dnsFilteringAvailable != available { dnsFilteringAvailable = available }
+        // The dial reads the gate from UserDefaults (APIClient cannot see this
+        // view model): only a fetch that SAID so turns the flag on.
+        UserDefaults.standard.set(available, forKey: ConnectWire.dnsFilteringGateDefaultsKey)
     }
 
     // MARK: - DNS

@@ -153,12 +153,29 @@ extension RefreshTokensResponse: CredentialRedacting {
 // MARK: - Account deletion
 
 extension DeleteAccountBody: CredentialRedacting {
-    /// Which of the three was sent still shows; none of their values do.
+    /// Which of them was sent still shows; none of their values do.
     var redactedFields: [(label: String, value: String)] {
         [
             ("password", Redaction.optional(password)),
             ("twoFactorCode", Redaction.optional(twoFactorCode)),
             ("appleAuthorizationCode", Redaction.optional(appleAuthorizationCode)),
+            ("accountNumber", Redaction.optional(accountNumber)),
+            ("emailCode", Redaction.optional(emailCode)),
+            ("appleIdentityToken", Redaction.optional(appleIdentityToken)),
+            ("appleNonce", Redaction.optional(appleNonce)),
+            // MR-179 hold fallback: the method is not a secret.
+            ("stepUpMethod", Redaction.plain(stepUpMethod)),
+        ]
+    }
+}
+
+extension DeletionAppleProof: CredentialRedacting {
+    /// MR-179: the Apple re-sign-in proof for a deletion. Never printed.
+    var redactedFields: [(label: String, value: String)] {
+        [
+            ("authorizationCode", Redaction.optional(authorizationCode)),
+            ("identityToken", Redaction.optional(identityToken)),
+            ("nonce", Redaction.optional(nonce)),
         ]
     }
 }

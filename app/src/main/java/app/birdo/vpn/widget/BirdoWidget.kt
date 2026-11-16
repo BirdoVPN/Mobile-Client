@@ -1,5 +1,6 @@
 package app.birdo.vpn.widget
 
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.util.Log
@@ -204,7 +205,19 @@ class WidgetToggleAction : ActionCallback {
                 joinsResume = manager.claimTapForResume(),
             )
             when (action) {
-                QuickToggle.Action.DISCONNECT -> manager.requestDisconnect()
+                // F-968-01: a widget can sit on the lock screen or a launcher
+                // shown over it, and (unlike the tile) cannot ask for an
+                // unlock. Drop the tunnel / release the fail-closed block only
+                // from an unlocked device, as the notification action does.
+                QuickToggle.Action.DISCONNECT ->
+                    if (isDeviceLocked(context)) {
+                        // The tile asks for the unlock; the widget cannot, so it
+                        // opens the app, which brings up the system unlock.
+                        Log.i("BirdoWidget", "Widget disconnect refused: the device is locked")
+                        openApp(context)
+                    } else {
+                        manager.requestDisconnect()
+                    }
                 QuickToggle.Action.OPEN_APP -> openApp(context)
                 QuickToggle.Action.NONE -> Unit
                 QuickToggle.Action.CONNECT -> {
@@ -242,6 +255,10 @@ class WidgetToggleAction : ActionCallback {
             openApp(context)
         }
     }
+
+    private fun isDeviceLocked(context: Context): Boolean =
+        // Fail closed: no KeyguardManager means the lock state is unknown.
+        (context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isDeviceLocked != false
 
     private fun openApp(context: Context) {
         val intent = Intent(context, MainActivity::class.java).apply {
