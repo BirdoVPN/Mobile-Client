@@ -329,4 +329,90 @@ final class HeartbeatHTTPTests: XCTestCase {
                            "pieces of \(pieceSize)")
         }
     }
+
+    // MARK: - Real-shaped answers (re-review LOW-5)
+
+    /// The head the heartbeat answer really carries: Cloudflare's edge in
+    /// front of the Express backend (Helmet's headers, the rate limiter, the
+    /// privacy header), in the edge's mixed case. Every value is a dummy; the
+    /// strict head must accept all of them.
+    private static let edgeHeaders: [String] = [
+        "Date: Mon, 16 Nov 2026 02:00:00 GMT",
+        "content-type: application/json; charset=utf-8",
+        "connection: close",
+        #"alt-svc: h3=":443"; ma=86400"#,
+        "cf-cache-status: DYNAMIC",
+        "cf-ray: 0000000000000000-XXX",
+        #"nel: {"success_fraction":0,"report_to":"cf-nel","max_age":604800}"#,
+        #"report-to: {"endpoints":[{"url":"https:\/\/a.nel.example.com\/report\/v4?s=AAAAAAAAAAAAAAAAAAAA"}],"group":"cf-nel","max_age":604800}"#,
+        "Server: cloudflare",
+        "Content-Security-Policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests",
+        "Cross-Origin-Opener-Policy: same-origin",
+        "Cross-Origin-Resource-Policy: same-origin",
+        "Origin-Agent-Cluster: ?1",
+        "Referrer-Policy: no-referrer",
+        "Strict-Transport-Security: max-age=31536000; includeSubDomains",
+        "X-Content-Type-Options: nosniff",
+        "X-DNS-Prefetch-Control: off",
+        "X-Download-Options: noopen",
+        "X-Frame-Options: SAMEORIGIN",
+        "X-Permitted-Cross-Domain-Policies: none",
+        "X-XSS-Protection: 0",
+        "x-ratelimit-limit: 120",
+        "x-ratelimit-remaining: 119",
+        "x-ratelimit-reset: 60",
+        "X-Privacy-Policy: https://example.com/privacy",
+        "Vary: Origin, Accept-Encoding",
+        #"ETag: W/"22-AAAAAAAAAAAAAAAAAAAAAAAAAAA""#,
+    ]
+
+    /// The two answers the provider acts on: alive, and revoked.
+    private static let edgeBodies = [
+        #"{"valid":true,"serverOnline":true}"#,
+        #"{"valid":false,"serverOnline":true,"message":"Connection revoked"}"#,
+    ]
+
+    private func read(_ raw: Data, inPiecesOf pieceSize: Int) throws -> HeartbeatHTTP.Response? {
+        var reader = HeartbeatHTTP.ResponseReader()
+        var offset = 0
+        while offset < raw.count {
+            let end = min(offset + pieceSize, raw.count)
+            reader.append(raw.subdata(in: offset..<end))
+            offset = end
+            if let answer = try reader.response(atEOF: false) { return answer }
+        }
+        return try reader.response(atEOF: true)
+    }
+
+    func testARealShapedContentLengthAnswerParses() throws {
+        for body in Self.edgeBodies {
+            let head = ["HTTP/1.1 200 OK"] + Self.edgeHeaders + ["Content-Length: \(body.utf8.count)"]
+            let raw = Data((head.joined(separator: "\r\n") + "\r\n\r\n" + body).utf8)
+            let expected = HeartbeatHTTP.Response(statusCode: 200, body: Data(body.utf8))
+            XCTAssertEqual(try HeartbeatHTTP.parse(raw, atEOF: false), expected, body)
+            for pieceSize in [1, 7, 1_400] {
+                XCTAssertEqual(try read(raw, inPiecesOf: pieceSize), expected, "\(body), pieces of \(pieceSize)")
+            }
+            // What the provider then reads out of it.
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: expected.body) as? [String: Any])
+            XCTAssertEqual(json["valid"] as? Bool, body.contains(#""valid":true"#))
+        }
+    }
+
+    func testARealShapedChunkedAnswerParses() throws {
+        for body in Self.edgeBodies {
+            let bytes = Array(body.utf8)
+            let half = bytes.count / 2
+            let chunks = String(half, radix: 16) + "\r\n" + String(decoding: bytes[..<half], as: UTF8.self) + "\r\n"
+                + String(bytes.count - half, radix: 16) + "\r\n" + String(decoding: bytes[half...], as: UTF8.self)
+                + "\r\n0\r\n\r\n"
+            let head = ["HTTP/1.1 200 OK"] + Self.edgeHeaders + ["Transfer-Encoding: chunked"]
+            let raw = Data((head.joined(separator: "\r\n") + "\r\n\r\n" + chunks).utf8)
+            let expected = HeartbeatHTTP.Response(statusCode: 200, body: Data(body.utf8))
+            XCTAssertEqual(try HeartbeatHTTP.parse(raw, atEOF: false), expected, body)
+            for pieceSize in [1, 7, 1_400] {
+                XCTAssertEqual(try read(raw, inPiecesOf: pieceSize), expected, "\(body), pieces of \(pieceSize)")
+            }
+        }
+    }
 }
