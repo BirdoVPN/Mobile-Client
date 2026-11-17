@@ -768,6 +768,15 @@
     <!-- Server: signing out of the app that filed the hold cancels it. -->
     <string name="delete_hold_signout_cancels">Stay signed in on this device until then; signing out cancels the deletion.</string>
     <string name="sign_out_cancels_pending_deletion">Signing out cancels the deletion of your account that is scheduled for %1$s.</string>
+    <!-- MR-2378 (common wording, Android / iOS / Desktop): a hold this session did not file, or whose origin is unknown. The server voids only a hold whose filing session ends. Names no origin: after a restart or a 409 it may be this device's own. -->
+    <string name="sign_out_keeps_pending_deletion">Your account will be deleted on %1$s. Signing out of this app may not cancel this deletion. To keep your account, cancel the deletion.</string>
+    <!-- MR-2378: the pending-changes read failed or timed out; no promise either way. -->
+    <string name="sign_out_pending_deletion_unknown">We couldn\'t check whether a deletion is waiting. Signing out may not cancel it. To keep your account, stay signed in and cancel it once you\'re online.</string>
+    <string name="sign_out_stay_signed_in">Stay signed in</string>
+    <!-- MR-2378: sign-out cancels this device's own hold first; that cancel failed. -->
+    <string name="sign_out_hold_cancel_failed">The deletion scheduled for your account could not be cancelled, so you are still signed in. If you sign out anyway, the deletion may still go ahead.</string>
+    <string name="sign_out_anyway">Sign out anyway</string>
+    <string name="delete_hold_signout_keeps">Signing out of this app may not cancel this deletion. To keep your account, cancel the deletion.</string>
     <string name="profile_pending_deletion_body">Your account will be deleted on %1$s.</string>
     <string name="profile_pending_deletion_cancel">Cancel deletion</string>
     <string name="profile_pending_deletion_cancelling">Cancelling…</string>

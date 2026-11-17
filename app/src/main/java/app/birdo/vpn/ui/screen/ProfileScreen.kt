@@ -168,11 +168,23 @@ fun ProfileScreen(
     onDeletionHoldShown: () -> Unit = {},
     /** The account's deletion on hold, shown at the top with Cancel; null for none. */
     pendingDeletion: PendingDeletion? = null,
+    /** Review of #616: this session filed the hold, so signing out cancels it; otherwise it does not. */
+    pendingDeletionFiledHere: Boolean = false,
     isCancellingPendingDeletion: Boolean = false,
     pendingDeletionError: String? = null,
     onCancelPendingDeletion: () -> Unit = {},
     /** Re-read the hold: when the screen opens and every time the app resumes onto it. */
     onRefreshPendingDeletion: () -> Unit = {},
+    /** MR-2378: the hold could not be read (failed, or past its 3 s cap). */
+    pendingDeletionUnknown: Boolean = false,
+    /** MR-2378: this session's hold could not be cancelled before signing out; the reason. */
+    signOutBlockedReason: String? = null,
+    onSignOutAnyway: () -> Unit = {},
+    /** The sign-out confirmation is asked for (the hold is read first) and closed. */
+    onSignOutOpened: () -> Unit = {},
+    onSignOutDismissed: () -> Unit = {},
+    /** MR-2378: the hold is being read (at most 3 s); the confirmation waits for it. */
+    isCheckingBeforeSignOut: Boolean = false,
     // Google Play build: hide the "Manage on web" row, which links out to the
     // billing dashboard (external-purchase steering), and the "Redeem voucher"
     // row, since vouchers are sold only on the web (LR22, showsVoucherEntry).
@@ -221,6 +233,7 @@ fun ProfileScreen(
         if (pendingDeletion != null) {
             PendingDeletionBanner(
                 pending = pendingDeletion,
+                filedHere = pendingDeletionFiledHere,
                 isCancelling = isCancellingPendingDeletion,
                 error = pendingDeletionError,
                 onCancel = onCancelPendingDeletion,
@@ -286,7 +299,10 @@ fun ProfileScreen(
             subtitle = signOutSubtitle,
             // Confirmed, as on the Connect tab (A2-006): the same one tap loses
             // an anonymous account whose number was never saved.
-            onClick = { showSignOutConfirm = true },
+            onClick = {
+                showSignOutConfirm = true
+                onSignOutOpened()
+            },
             destructive = true,
         )
         ProfileActionRow(
@@ -322,6 +338,10 @@ fun ProfileScreen(
             isSendingCode = isSendingDeleteCode,
             onSendCode = onSendDeletionCode,
             preflight = deletionPreflight,
+            // MR-2378: with a hold already waiting, a second hold request can
+            // only be a 409 for it, and the step's "signing out cancels it"
+            // may not be true of that hold: the step is not offered.
+            holdWaiting = pendingDeletion != null,
             // MR-179: an anonymous account is told it is the lost number.
             holdForLostNumber = isAnonymousAccount || deletionPreflight?.stepUp?.needsAccountNumber == true,
             onRequestHold = onRequestDeletionHold,
@@ -343,14 +363,27 @@ fun ProfileScreen(
         )
     }
 
-    if (showSignOutConfirm) {
+    // MR-2378: not before the hold was read (or its 3 s cap passed), so the
+    // confirmation never opens with no word about a scheduled deletion.
+    if (showSignOutConfirm && !isCheckingBeforeSignOut) {
         SignOutConfirmDialog(
             isConnected = isConnected,
             isAnonymousAccount = isAnonymousAccount,
             onConfirm = onLogout,
-            onDismiss = { showSignOutConfirm = false },
-            // MR-179: signing out of this app cancels the deletion on hold.
+            onDismiss = {
+                showSignOutConfirm = false
+                onSignOutDismissed()
+            },
+            // MR-179: what signing out does to the deletion on hold depends
+            // on who filed it (review of #616, MR-2378).
             pendingDeletionAt = pendingDeletion?.let { pendingDeletionWhen(it.applyAfter) },
+            pendingDeletionFiledHere = pendingDeletionFiledHere,
+            pendingDeletionUnknown = pendingDeletionUnknown,
+            isCancellingPendingDeletion = isCancellingPendingDeletion,
+            pendingDeletionError = pendingDeletionError,
+            onCancelPendingDeletion = onCancelPendingDeletion,
+            signOutBlockedReason = signOutBlockedReason,
+            onSignOutAnyway = onSignOutAnyway,
         )
     }
 }
@@ -897,8 +930,13 @@ private fun parseRenewalDay(raw: String?): LocalDate? {
  * when the preflight said `holdAvailable: true`. Loading, failed, an older
  * server (no field): not offered.
  */
-internal fun offersDeletionHold(preflight: DeletionPreflightResponse?): Boolean =
-    preflight?.stepUp?.holdAvailable == true
+internal fun offersDeletionHold(preflight: DeletionPreflightResponse?, holdWaiting: Boolean = false): Boolean =
+    !holdWaiting && preflight?.stepUp?.holdAvailable == true
+
+/** The banner's line on what signing out does to the hold (review of #616): see [signOutHoldNotice]. */
+@androidx.annotation.StringRes
+internal fun pendingDeletionSignOutLine(filedHere: Boolean): Int =
+    if (filedHere) R.string.delete_hold_signout_cancels else R.string.delete_hold_signout_keeps
 
 /** When a held deletion takes effect, in the device's zone and locale (date and time). */
 internal fun pendingDeletionWhen(
@@ -918,6 +956,7 @@ internal fun pendingDeletionWhen(
 @Composable
 private fun PendingDeletionBanner(
     pending: PendingDeletion,
+    filedHere: Boolean,
     isCancelling: Boolean,
     error: String?,
     onCancel: () -> Unit,
@@ -945,10 +984,12 @@ private fun PendingDeletionBanner(
                         .semantics { liveRegion = LiveRegionMode.Assertive },
                 )
             }
-            // Review of #616: the server cancels the hold when this app signs
-            // out, so a user who signs out to "leave" would keep the account.
+            // Review of #616: the server cancels a hold when the session that
+            // filed it signs out, so a user who signs out to "leave" would keep
+            // the account. A hold filed on the website or another device
+            // survives a sign-out here, and the banner must not promise otherwise.
             Text(
-                stringResource(R.string.delete_hold_signout_cancels),
+                stringResource(pendingDeletionSignOutLine(filedHere)),
                 style = MaterialTheme.typography.bodySmall,
                 color = palette.onSurfaceMuted,
             )
@@ -992,6 +1033,7 @@ private fun DeleteAccountDialog(
     isSendingCode: Boolean,
     onSendCode: () -> Unit,
     preflight: DeletionPreflightResponse?,
+    holdWaiting: Boolean,
     holdForLostNumber: Boolean,
     onRequestHold: (password: String, twoFactorCode: String?) -> Unit,
     isDeletingAccount: Boolean,
@@ -1223,7 +1265,7 @@ private fun DeleteAccountDialog(
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                     )
                 }
-                if (offersDeletionHold(preflight)) {
+                if (offersDeletionHold(preflight, holdWaiting)) {
                     // MR-179 hold fallback (birdo-web #883): without the number
                     // (or the e-mailed code), deletion waits 24 hours instead.
                     // The password and 2FA code are still sent where asked for.

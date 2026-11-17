@@ -64,6 +64,7 @@ class AuthViewModelTest {
         coEvery { repository.getProfile() } returns ApiResult.Error("Unauthorized", 401)
         // Default: no deletion on hold (read at session start, MR-2367).
         coEvery { repository.pendingDeletion() } returns ApiResult.Success(null)
+        io.mockk.every { tokenManager.getDeletionHoldFiledHere() } returns null
     }
 
     @After

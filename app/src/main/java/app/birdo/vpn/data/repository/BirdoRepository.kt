@@ -215,6 +215,9 @@ class BirdoRepository @Inject constructor(
 
         /** The status [deleteAccount] reports when the server held the deletion instead (MR-179). */
         internal const val HTTP_ACCEPTED = 202
+
+        /** The status [deleteAccount] reports for a hold that was already waiting (409 change_already_pending). */
+        internal const val HTTP_CONFLICT = 409
         private const val HTTP_OK = 200
 
         /** `algorithm` of the only proof-of-work the server issues. */
@@ -746,8 +749,12 @@ class BirdoRepository @Inject constructor(
             is DeletionAnswer.Refused -> answer.error
             is DeletionAnswer.Deleted -> ApiResult.Success(answer.response)
             // MR-179: a 202 hold is never a deletion, whatever asked for it.
-            // Nothing local was cleared; the caller re-reads the holds.
-            is DeletionAnswer.Held -> errors.unexpected().copy(code = HTTP_ACCEPTED)
+            // Nothing local was cleared; the caller re-reads the holds. A
+            // hold that was ALREADY waiting (409 change_already_pending) may
+            // have been filed elsewhere (the website, another device), so it
+            // keeps its 409: only a 202 is a hold this session just filed,
+            // and only that one does signing out cancel (review of #616).
+            is DeletionAnswer.Held -> errors.unexpected().copy(code = HoldOrigin.statusFor(answer.held))
         }
 
     /**

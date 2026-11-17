@@ -34,6 +34,47 @@ sealed interface DeletionHoldResult {
 }
 
 /**
+ * MR-2378 (review of #616): who filed a deletion hold, which decides what a
+ * sign-out does to it. The server voids a hold only when the session that
+ * FILED it ends; a hold filed on the website (no session) or by another
+ * device survives a sign-out here. Pure, so the mapping is unit tested.
+ *
+ * Only a 202 `change_pending` to THIS session's own request makes a hold
+ * "filed here". A 409 `change_already_pending` names a hold that was already
+ * waiting: this session's own only if this session had already marked it.
+ * Nothing else (a lost answer, a list read, a restart) ever claims a hold.
+ */
+internal object HoldOrigin {
+    /** The status [BirdoRepository.deleteAccount] reports for a hold it was answered with. */
+    fun statusFor(held: DeletionHoldResult.Held): Int =
+        if (held.alreadyPending) BirdoRepository.HTTP_CONFLICT else BirdoRepository.HTTP_ACCEPTED
+
+    /** Did this status, answering this session's own request, file a NEW hold? Only a 202. */
+    fun filedByThisRequest(status: Int): Boolean = status == BirdoRepository.HTTP_ACCEPTED
+
+    /**
+     * The marker after a hold request was answered with [held]: a new hold
+     * (202) is this session's; a hold already waiting (409) keeps whatever
+     * marker this session had ([mine]), so it is ours only if it was already.
+     */
+    fun markerAfterHoldAnswer(mine: String?, held: DeletionHoldResult.Held): String? =
+        if (held.alreadyPending) mine?.takeIf { it == held.pending.id } else held.pending.id
+
+    /**
+     * The marker after the list said [listed]: claimed only when the read
+     * follows this session's own 202 ([filedByThisRequest]), kept while the
+     * same hold is listed, gone once that hold is (only one account deletion
+     * waits at a time, so a different id is not this session's).
+     */
+    fun markerAfterRead(mine: String?, listed: PendingDeletion?, filedByThisRequest: Boolean): String? = when {
+        listed == null -> null
+        filedByThisRequest -> listed.id
+        listed.id == mine -> mine
+        else -> null
+    }
+}
+
+/**
  * The wire rules of the hold, kept pure so they are unit tested on the JVM.
  *
  * `stepUp` is polymorphic on the deletion route: an OBJECT

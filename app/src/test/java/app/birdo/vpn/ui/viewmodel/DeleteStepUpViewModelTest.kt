@@ -60,6 +60,7 @@ class DeleteStepUpViewModelTest {
         every { tokenManager.getPendingAnonymousId() } returns null
         // No deletion on hold (read at session start, MR-2367).
         coEvery { repository.pendingDeletion() } returns ApiResult.Success(null)
+        io.mockk.every { tokenManager.getDeletionHoldFiledHere() } returns null
     }
 
     @After

@@ -569,6 +569,18 @@ fun BirdoNavGraph(
                         accountLabel = accountLabel(authState.user),
                         isAnonymousAccount = isAnonymousUser(authState.user),
                         pendingDeletion = authState.pendingDeletion,
+                        pendingDeletionFiledHere = authState.pendingDeletionFiledHere,
+                        isCancellingPendingDeletion = authState.isCancellingPendingDeletion,
+                        pendingDeletionError = authState.pendingDeletionError,
+                        onCancelPendingDeletion = { authViewModel.cancelPendingDeletion() },
+                        pendingDeletionUnknown = authState.pendingDeletionUnknown,
+                        signOutBlockedReason = authState.signOutHoldCancelError,
+                        onSignOutAnyway = {
+                            authViewModel.signOutAnyway { vpnViewModel.disconnectForSignOut { authViewModel.logout() } }
+                        },
+                        onSignOutOpened = { authViewModel.checkBeforeSignOut() },
+                        onSignOutDismissed = { authViewModel.dismissSignOutHoldError() },
+                        isCheckingBeforeSignOut = authState.isCheckingBeforeSignOut,
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
                         multiHop = vpnViewModel.multiHop.collectAsState().value,
@@ -590,8 +602,10 @@ fun BirdoNavGraph(
                                 restoreState = true
                             }
                         },
+                        // MR-2378: this session's own hold is cancelled
+                        // first; the teardown and sign-out follow it.
                         onLogout = {
-                            vpnViewModel.disconnectForSignOut { authViewModel.logout() }
+                            authViewModel.signOut { vpnViewModel.disconnectForSignOut { authViewModel.logout() } }
                         },
                         onOpenSettings = {
                             navController.navigate(Screen.Settings.route) {
@@ -658,8 +672,10 @@ fun BirdoNavGraph(
                                 settingsViewModel.openUrl("https://dashboard.birdo.app/")
                             }
                         },
+                        // MR-2378: this session's own hold is cancelled
+                        // first; the teardown and sign-out follow it.
                         onLogout = {
-                            vpnViewModel.disconnectForSignOut { authViewModel.logout() }
+                            authViewModel.signOut { vpnViewModel.disconnectForSignOut { authViewModel.logout() } }
                         },
                         onOpenUrl = { settingsViewModel.openUrl(it) },
                         onDeleteAccount = { password, code, number, mailed ->
@@ -689,10 +705,19 @@ fun BirdoNavGraph(
                         deletionHoldFiled = authState.deletionHoldFiled,
                         onDeletionHoldShown = { authViewModel.onDeletionHoldShown() },
                         pendingDeletion = authState.pendingDeletion,
+                        pendingDeletionFiledHere = authState.pendingDeletionFiledHere,
                         isCancellingPendingDeletion = authState.isCancellingPendingDeletion,
                         pendingDeletionError = authState.pendingDeletionError,
                         onCancelPendingDeletion = { authViewModel.cancelPendingDeletion() },
                         onRefreshPendingDeletion = { authViewModel.refreshPendingDeletion() },
+                        pendingDeletionUnknown = authState.pendingDeletionUnknown,
+                        signOutBlockedReason = authState.signOutHoldCancelError,
+                        onSignOutAnyway = {
+                            authViewModel.signOutAnyway { vpnViewModel.disconnectForSignOut { authViewModel.logout() } }
+                        },
+                        onSignOutOpened = { authViewModel.checkBeforeSignOut() },
+                        onSignOutDismissed = { authViewModel.dismissSignOutHoldError() },
+                        isCheckingBeforeSignOut = authState.isCheckingBeforeSignOut,
                     )
                 }
             }
