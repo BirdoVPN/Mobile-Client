@@ -385,16 +385,9 @@ final class AuthViewModel: ObservableObject {
     /// A filed hold: the banner carries it; the dialog closes (`deletionHoldFiled`).
     /// `filedHere` only for this session's own 202 (MR-179 hold origin): a 409
     /// or a list read names a hold that may come from the website or another
-    /// device, which this app's sign-out does not cancel.
+    /// device, which this app's sign-out may not cancel.
     private func showDeletionHold(_ pending: PendingDeletion, filedHere: Bool) {
-        pendingDeletionEpoch += 1
-        updateHeldDeletion { record in
-            if filedHere {
-                record.filed(pending)
-            } else {
-                record.named(pending)
-            }
-        }
+        heldDeletions.show(filedHere ? .filed(pending) : .alreadyPending(pending))
         pendingDeletionError = nil
         deleteError = nil
         deleteHoldError = nil
@@ -406,17 +399,36 @@ final class AuthViewModel: ObservableObject {
         deletionHoldFiled = false
     }
 
-    /// Bumped whenever this app itself changes the hold (filed, cancelled):
-    /// a list read that started before then is stale and must not put an old
-    /// hold back on screen (review of #616).
-    private var pendingDeletionEpoch = 0
+    /// MR-179 (hold origin): every read, write and cancel of the held deletion
+    /// goes through `HeldDeletionController` (read ordering, the single cancel
+    /// in flight, the keychain copy of the id this session filed).
+    /// `heldDeletion` and `isCancellingPendingDeletion` mirror it for the views.
+    private lazy var heldDeletions: HeldDeletionController = {
+        let api = self.api
+        let controller = HeldDeletionController(
+            server: HeldDeletionController.Server(
+                list: { try await api.pendingDeletion() },
+                cancel: { id in try await api.cancelPendingChange(id: id) }),
+            store: keychain,
+            endsSession: { [weak self] error in self?.logoutIfUnauthorized(error) ?? false },
+            isSignedIn: { [weak self] in self?.isLoggedIn ?? false })
+        controller.onChange = { [weak self, weak controller] in
+            guard let self, let controller else { return }
+            if heldDeletion != controller.record { heldDeletion = controller.record }
+            if isCancellingPendingDeletion != controller.isCancelling {
+                isCancellingPendingDeletion = controller.isCancelling
+            }
+        }
+        return controller
+    }()
 
-    /// MR-179: re-read the deletion on hold. Called when Profile opens and
-    /// when the app becomes active. A hold the server cancelled by itself
-    /// (sign-out elsewhere, number rotation, a password or 2FA change) or
-    /// swept simply leaves the list: no error. A failure keeps what is shown;
-    /// a definitive 401 is the ordinary sign-out, never taken for a deletion.
-    /// Skipped while a cancel is in flight, whose own answer decides.
+    /// MR-179: re-read the deletion on hold. Called when Profile opens, when
+    /// the app becomes active and after a number rotation. A hold the server
+    /// cancelled by itself (sign-out elsewhere, number rotation, a password or
+    /// 2FA change) or swept simply leaves the list: no error. A failure keeps
+    /// what is shown; a definitive 401 is the ordinary sign-out, never taken
+    /// for a deletion. Skipped while a cancel is in flight, whose own answer
+    /// decides. An answer older than one already applied is dropped.
     func refreshPendingDeletion() {
         guard isLoggedIn, !isCancellingPendingDeletion else { return }
         pendingDeletionTask?.cancel()
@@ -425,92 +437,46 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
-    /// True when the server answered (the record now says what waits).
+    /// True when what is known is at least as fresh as the server's answer.
     @discardableResult
     private func reloadPendingDeletion() async -> Bool {
-        let epoch = pendingDeletionEpoch
-        do {
-            let listed = try await api.pendingDeletion()
-            guard !Task.isCancelled, isLoggedIn, epoch == pendingDeletionEpoch,
-                  !isCancellingPendingDeletion else { return false }
-            // The list never says which session filed it: `filedHere`
-            // survives only while it names the same hold.
-            updateHeldDeletion { $0.listed(listed) }
-            return true
-        } catch {
-            logoutIfUnauthorized(error)
-            return false
-        }
+        await heldDeletions.read()
     }
 
     /// MR-179 (hold origin): the list read a sign-out confirmation waits for
-    /// when no hold is known (`SignOutHold.check`). True when the server
-    /// answered.
+    /// (`SignOutHold.check`, `cancelThenRecheck`). True when the server answered.
     func readHeldDeletionForSignOut() async -> Bool {
-        guard isLoggedIn, !isCancellingPendingDeletion else { return false }
-        return await reloadPendingDeletion()
+        await reloadPendingDeletion()
     }
 
-    /// Every change to the hold goes through here, so the id this session
-    /// filed is in the keychain exactly while the record holds it.
-    private func updateHeldDeletion(_ change: (inout HeldDeletionRecord) -> Void) {
-        var next = heldDeletion
-        change(&next)
-        if next.filedHereId != heldDeletion.filedHereId {
-            keychain.setHeldDeletionFiledHere(next.filedHereId)
-        }
-        heldDeletion = next
-    }
-
-    /// MR-179: cancel the deletion on hold (the Profile banner). A 404 means
-    /// it is already gone (cancelled elsewhere, or applied). Either way the
-    /// list is read again. A list read already in flight is dropped first, so
-    /// it cannot bring the hold back.
+    /// MR-179: cancel the deletion on hold (the Profile banner), then read the
+    /// list again. A 404 means it is already gone (cancelled elsewhere, or
+    /// applied). A list read already in flight is dropped, so it cannot bring
+    /// the hold back.
     func cancelPendingDeletion() {
-        guard let pending = pendingDeletion, beginCancellingHeldDeletion() else { return }
+        guard let pending = pendingDeletion, !isCancellingPendingDeletion else { return }
         Task { [weak self] in
-            _ = await self?.finishCancellingHeldDeletion(pending)
+            guard let self else { return }
+            switch await cancelHeldDeletion(id: pending.id) {
+            case .cancelled, .alreadyGone:
+                refreshPendingDeletion()
+            case .failed, .sessionEnded:
+                break
+            }
         }
     }
 
     /// The same cancel, awaited: the sign-out confirmations' "Cancel deletion"
     /// and the cancel a sign-out makes first for a hold filed here
-    /// (`SignOutHold.prepareSignOut`). Only `.cancelled` / `.alreadyGone` are
-    /// the server's word that the hold is gone.
-    func cancelHeldDeletion(_ pending: PendingDeletion) async -> HeldDeletionCancelOutcome {
-        guard beginCancellingHeldDeletion() else {
-            return .failed("The deletion is already being cancelled. Please wait.")
-        }
-        return await finishCancellingHeldDeletion(pending)
-    }
-
-    private func beginCancellingHeldDeletion() -> Bool {
-        guard !isCancellingPendingDeletion else { return false }
+    /// (`SignOutHold.prepareSignOut`). One at a time: a second call for the
+    /// same id waits for the first. Only `.cancelled` / `.alreadyGone` are the
+    /// server's word that the hold is gone. The caller reads the list again.
+    func cancelHeldDeletion(id: String) async -> HeldDeletionCancelOutcome {
         pendingDeletionTask?.cancel()
-        pendingDeletionEpoch += 1
-        isCancellingPendingDeletion = true
         pendingDeletionError = nil
-        return true
-    }
-
-    private func finishCancellingHeldDeletion(_ pending: PendingDeletion) async -> HeldDeletionCancelOutcome {
-        do {
-            let cancelled = try await api.cancelPendingChange(id: pending.id)
-            pendingDeletionEpoch += 1
-            updateHeldDeletion { $0.cancelled() }
-            isCancellingPendingDeletion = false
-            // Then the list says what is left.
-            await reloadPendingDeletion()
-            return cancelled ? .cancelled : .alreadyGone
-        } catch {
-            isCancellingPendingDeletion = false
-            if logoutIfUnauthorized(error) { return .sessionEnded }
-            let message = error is URLError
-                ? "Unable to reach server. Check your connection."
-                : "The deletion could not be cancelled. Please try again."
-            pendingDeletionError = message
-            return .failed(message)
-        }
+        let outcome = await heldDeletions.cancel(id: id)
+        if case .failed(let message) = outcome { pendingDeletionError = message }
+        return outcome
     }
 
     private static let holdFailedMessage = "Nothing was deleted. Please try again."
@@ -662,7 +628,7 @@ final class AuthViewModel: ObservableObject {
             userEmail = keychain.userEmail
             // MR-179 (hold origin): the hold this session filed, if any. Shown
             // as filed here only once a list read names the same hold.
-            heldDeletion = HeldDeletionRecord(restoredFiledHereId: keychain.heldDeletionFiledHereId)
+            heldDeletions.restore()
             if RootRoute.decide(hasConsented: storedConsent, consentDeferred: storedDeferral) == .shell {
                 Task { [weak self] in
                     await self?.hydrateOnColdStart()
@@ -1425,7 +1391,7 @@ final class AuthViewModel: ObservableObject {
         // MR-179: a hold belongs to the account that filed it, and "filed
         // here" to this session (the keychain copy went with the wipe above).
         pendingDeletionTask?.cancel()
-        updateHeldDeletion { $0.sessionEnded() }
+        heldDeletions.endSession()
         pendingDeletionError = nil
         deleteHoldError = nil
         isCancellingPendingDeletion = false
@@ -1747,9 +1713,9 @@ final class AuthViewModel: ObservableObject {
         // replaced by any other method), so deletion knows to re-authenticate
         // with Apple. /auth/me does not say whether an account is Apple-linked.
         keychain.setSignedInWithApple(context == .apple)
-        // MR-179 (hold origin): a new session has filed nothing.
-        heldDeletion = HeldDeletionRecord()
-        keychain.setHeldDeletionFiledHere(nil)
+        // MR-179 (hold origin): a new session has filed nothing, whatever an
+        // earlier one left in the keychain.
+        heldDeletions.startSession()
         // Hydration — login NEVER blocks on the profile call: a failure still
         // lands on Home with `user == nil`.
         if let profile = try? await api.fetchProfile() {

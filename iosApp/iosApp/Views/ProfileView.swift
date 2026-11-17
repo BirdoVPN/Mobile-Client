@@ -33,6 +33,8 @@ struct ProfileView: View {
     @State private var checkingSignOut = false
     /// Whether that read answered (the confirmation's input).
     @State private var signOutListAnswered = false
+    /// That read and its decision; cancelled when Profile goes away.
+    @State private var signOutCheckTask: Task<Void, Never>?
     @State private var deletePassword = ""
     /// Local empty-password guard message ("Please enter your password") —
     /// applied ONLY when the account has a password. Server-side results
@@ -161,6 +163,11 @@ struct ProfileView: View {
         }
         .onDisappear {
             copyToastTask?.cancel()
+            // MR-179: a sign-out still waiting for the list read must not act
+            // once Profile is gone.
+            signOutCheckTask?.cancel()
+            signOutCheckTask = nil
+            checkingSignOut = false
         }
         .onChange(of: scenePhase) { _, phase in
             // MR-1094: a revealed number is masked again once the app leaves
@@ -628,10 +635,15 @@ struct ProfileView: View {
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(DeletionHold.signOutCancels)
-                .font(BirdoTheme.Fonts.bodySmall)
-                .foregroundStyle(BirdoTheme.onSurface)
-                .fixedSize(horizontal: false, vertical: true)
+            // MR-179 (hold origin): only while no hold is known. With one
+            // waiting, this request is answered 409 for a hold this session
+            // may not have filed.
+            if let note = DeletionHold.holdStepSignOutNote(holdKnown: authVM.pendingDeletion != nil) {
+                Text(note)
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurface)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Button(authVM.deletionHoldIsForLostNumber
                    ? "Delete in 24 hours (I lost my account number)"
                    : "Delete in 24 hours instead") {
@@ -874,11 +886,13 @@ struct ProfileView: View {
         // tap cannot skip the warning. Nothing waits: one tap, as before. A
         // hold, or a read that failed: the confirmation says which.
         checkingSignOut = true
-        Task {
+        signOutCheckTask = Task {
             let answered = await SignOutHold.check(current: { authVM.heldDeletion },
                                                    read: { [authVM] in await authVM.readHeldDeletionForSignOut() })
             checkingSignOut = false
-            guard authVM.isLoggedIn else { return }
+            // Profile went away meanwhile (onDisappear cancels this task):
+            // nothing signs out, nothing opens.
+            guard !Task.isCancelled, authVM.isLoggedIn else { return }
             if authVM.heldDeletion.signOutNotice(listAnswered: answered) == .nothingWaiting {
                 performSignOut()
             } else {

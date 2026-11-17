@@ -8,8 +8,9 @@ import SwiftUI
 /// session that FILED it signs out, and never one filed on the website (no
 /// session) or by another device. So the line comes from
 /// `HeldDeletionRecord.signOutNotice`: "cancels" only for a hold this
-/// session's own 202 filed; otherwise "does not cancel ... cancel the
-/// deletion". Either way "Cancel deletion" is offered right here.
+/// session's own 202 filed; otherwise "may not cancel ... cancel the
+/// deletion". Either way "Cancel deletion" is offered right here. The texts
+/// and the decisions are `SignOutHold`'s (pinned by HeldDeletionOriginTests).
 ///
 /// With no hold known (a tap right after a cold start, before the list read
 /// answered), the list is read first, for at most `SignOutHold.readWait`, and
@@ -35,9 +36,13 @@ struct SignOutConfirmation: View {
 
     /// The list read for this opening is still out.
     @State private var checking: Bool
-    /// The server answered that read (or one the caller made).
+    /// The server answered the last read (this opening's, or the caller's).
     @State private var listAnswered: Bool
+    /// Signing out (with its cancel-first) is under way.
     @State private var busy = false
+    /// "Cancel deletion" is under way. Set in the button's action, before any
+    /// task starts, so Sign out and Cancel deletion cannot both start one.
+    @State private var cancelInFlight = false
     @State private var blocked: SignOutHold.Blocked?
     @State private var cancelError: String?
     @State private var cancelNote: String?
@@ -66,16 +71,21 @@ struct SignOutConfirmation: View {
 
     var body: some View {
         let notice = self.notice
+        let text = SignOutHold.dialogText(opening: message,
+                                          signOutLabel: confirmLabel,
+                                          notice: notice,
+                                          checking: checking,
+                                          blocked: blocked)
         BirdoConfirmDialog(
             title: title,
-            message: fullMessage(notice),
-            confirmLabel: confirmButtonLabel,
-            cancelLabel: notice.offersCancelDeletion ? "Stay signed in" : "Cancel",
+            message: text.message,
+            confirmLabel: text.confirmLabel,
+            cancelLabel: text.dismissLabel,
             isWorking: busy,
             onConfirm: { confirm() },
             onCancel: { onClose() }
         ) {
-            holdActions(notice)
+            holdActions(text, notice: notice)
         }
         .task {
             guard checking else { return }
@@ -90,19 +100,8 @@ struct SignOutConfirmation: View {
         }
     }
 
-    private var confirmButtonLabel: String {
-        if checking { return "Checking\u{2026}" }
-        return blocked == nil ? confirmLabel : "Try again"
-    }
-
-    private func fullMessage(_ notice: SignOutHoldNotice) -> String {
-        if checking { return message }
-        guard let line = notice.message() else { return message }
-        return message + "\n\n" + line
-    }
-
     @ViewBuilder
-    private func holdActions(_ notice: SignOutHoldNotice) -> some View {
+    private func holdActions(_ text: SignOutHold.DialogText, notice: SignOutHoldNotice) -> some View {
         VStack(spacing: 8) {
             if checking {
                 HStack(spacing: 8) {
@@ -114,13 +113,7 @@ struct SignOutConfirmation: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if let blocked {
-                Text(DeletionHold.signOutCancelFailed(reason: blocked.reason,
-                                                      applyAfter: blocked.hold.applyAfter))
-                    .font(BirdoTheme.Fonts.bodySmall)
-                    .foregroundStyle(BirdoTheme.red)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+            if text.offersSignOutAnyway {
                 Button("Sign out anyway") { signOutAnyway() }
                     .birdoFont(14, weight: .semibold)
                     .foregroundStyle(BirdoTheme.red)
@@ -128,15 +121,16 @@ struct SignOutConfirmation: View {
                     .frame(minHeight: 44) // touch target
                     .disabled(busy)
                     .accessibilityIdentifier("sign_out_anyway_button")
-            } else if notice.offersCancelDeletion {
-                Button(authVM.isCancellingPendingDeletion ? "Cancelling\u{2026}" : "Cancel deletion") {
-                    cancelDeletion()
+            }
+            if text.offersCancelDeletion, let id = notice.cancellableId {
+                Button(cancelInFlight ? "Cancelling\u{2026}" : "Cancel deletion") {
+                    cancelDeletion(id)
                 }
                 .birdoFont(14, weight: .semibold)
                 .foregroundStyle(BirdoTheme.accent)
                 .buttonStyle(.plain)
                 .frame(minHeight: 44) // touch target
-                .disabled(busy || authVM.isCancellingPendingDeletion)
+                .disabled(busy || cancelInFlight || authVM.isCancellingPendingDeletion)
                 .accessibilityIdentifier("sign_out_cancel_deletion_button")
             }
             if let cancelError {
@@ -160,15 +154,18 @@ struct SignOutConfirmation: View {
 
     /// Sign out (or, after a failed cancel, try the cancel and sign-out again).
     private func confirm() {
-        guard !checking, !busy, !authVM.isCancellingPendingDeletion else { return }
+        guard !checking, !busy, !cancelInFlight else { return }
         let notice = self.notice
         busy = true
         blocked = nil
         cancelError = nil
+        cancelNote = nil
         Task { @MainActor in
-            let step = await SignOutHold.prepareSignOut(notice) { hold in
-                await authVM.cancelHeldDeletion(hold)
-            }
+            let step = await SignOutHold.prepareSignOut(
+                notice,
+                current: { authVM.heldDeletion },
+                cancel: { id in await authVM.cancelHeldDeletion(id: id) },
+                read: { [authVM] in await authVM.readHeldDeletionForSignOut() })
             switch step {
             case .signOut:
                 await signOut()
@@ -178,6 +175,11 @@ struct SignOutConfirmation: View {
                 // Nobody is signed out: the deletion is still scheduled.
                 busy = false
                 blocked = refused
+            case .reconsider(let answered):
+                // The cancel went through, but the read after it did not say
+                // that nothing waits: show what is known now.
+                listAnswered = answered
+                busy = false
             case .sessionEnded:
                 busy = false
                 onClose()
@@ -197,19 +199,27 @@ struct SignOutConfirmation: View {
         }
     }
 
-    /// "Cancel deletion": the app's cancel, then the list is read again.
-    private func cancelDeletion() {
-        guard let hold = authVM.pendingDeletion, !busy, !authVM.isCancellingPendingDeletion else { return }
+    /// "Cancel deletion": the app's cancel, then the list is read again (at
+    /// most `SignOutHold.readWait`). Only a read that answered may say that
+    /// nothing waits any more.
+    private func cancelDeletion(_ id: String) {
+        guard !busy, !cancelInFlight else { return }
+        cancelInFlight = true
         cancelError = nil
         cancelNote = nil
         Task { @MainActor in
-            switch await authVM.cancelHeldDeletion(hold) {
+            let result = await SignOutHold.cancelThenRecheck(
+                id,
+                cancel: { id in await authVM.cancelHeldDeletion(id: id) },
+                read: { [authVM] in await authVM.readHeldDeletionForSignOut() })
+            cancelInFlight = false
+            switch result.outcome {
             case .cancelled:
                 // The server confirmed it: only now is anything said.
-                listAnswered = true
+                listAnswered = result.listAnswered
                 cancelNote = "The deletion is cancelled."
             case .alreadyGone:
-                listAnswered = true
+                listAnswered = result.listAnswered
                 cancelNote = "That deletion was no longer waiting."
             case .failed(let reason):
                 cancelError = reason

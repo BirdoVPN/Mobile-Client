@@ -518,18 +518,23 @@ final class APIClient: @unchecked Sendable {
                     // The proof refusals first, then the hold's own 409 / 429
                     // / 503 (#883 final), each told apart by status and code.
                     if let refusal = DeletionRefusal.classify(status: status, body: data) { return refusal }
+                    // A 409 `change_already_pending` that names the hold is
+                    // an answer (`DeletionHold.holdRequestAnswer`), not filed
+                    // by this request.
+                    if let named = DeletionHold.holdRequestAnswer(status: status, body: data) {
+                        return DeletionHoldNamed(answer: named)
+                    }
                     return DeletionHold.classifyRefusal(status: status, body: data)
                 }
             )
-        } catch DeletionHoldRefusal.alreadyPending(let pending?) {
-            // Not filed by this request: the server's sign-out of this
-            // session may not void it.
-            return .alreadyPending(pending)
+        } catch let named as DeletionHoldNamed {
+            return named.answer
         }
-        guard let pending = DeletionHold.holdAnswer(status: answer.status, body: answer.data) else {
+        // A 2xx naming a hold: this request filed it (`.filed`).
+        guard let filed = DeletionHold.holdRequestAnswer(status: answer.status, body: answer.data) else {
             throw DeletionHoldRefusal.unexpectedAnswer
         }
-        return .filed(pending)
+        return filed
     }
 
     /// MR-179: the account's deletion on hold (`GET /auth/pending-changes`,

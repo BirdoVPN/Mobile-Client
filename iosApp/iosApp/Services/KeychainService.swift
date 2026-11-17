@@ -139,7 +139,8 @@ final class KeychainService: @unchecked Sendable {
         }
     }
 
-    /// Record (or, with nil, forget) the hold this session filed (MR-179).
+    /// Record (or, with nil, forget) the hold this session filed (MR-179,
+    /// `HeldDeletionIdStore`).
     func setHeldDeletionFiledHere(_ id: String?) {
         if let id, !id.isEmpty {
             write(.heldDeletionFiledHere, value: id)
@@ -400,6 +401,10 @@ extension KeychainService: InstallIdentityStore {
     /// tunnel's shared secrets.
     func clearSession() { clear() }
 }
+
+/// MR-179 (hold origin): where `HeldDeletionController` keeps the id of the
+/// hold this session filed, with the session (`clear()` drops it).
+extension KeychainService: HeldDeletionIdStore {}
 
 /// MR-1729: the live keychain behind `HostOnlyKeychain`. `group == nil` sends no
 /// `kSecAttrAccessGroup`, exactly as every host-only query here did before; the
