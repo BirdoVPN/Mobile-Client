@@ -403,7 +403,10 @@ final class AuthViewModel: ObservableObject {
     /// goes through `HeldDeletionController` (read ordering, the single cancel
     /// in flight, the keychain copy of the id this session filed).
     /// `heldDeletion` and `isCancellingPendingDeletion` mirror it for the views.
-    private lazy var heldDeletions: HeldDeletionController = {
+    /// Built first thing in `init` (`makeHeldDeletions`), never nil after.
+    private var heldDeletions: HeldDeletionController!
+
+    private func makeHeldDeletions() -> HeldDeletionController {
         let api = self.api
         let controller = HeldDeletionController(
             server: HeldDeletionController.Server(
@@ -420,7 +423,7 @@ final class AuthViewModel: ObservableObject {
             }
         }
         return controller
-    }()
+    }
 
     /// MR-179: re-read the deletion on hold. Called when Profile opens, when
     /// the app becomes active and after a number rotation. A hold the server
@@ -575,6 +578,9 @@ final class AuthViewModel: ObservableObject {
     init(api: APIClient = .shared, keychain: KeychainService = .shared) {
         self.api = api
         self.keychain = keychain
+        // MR-179 (hold origin): every other stored property has its default,
+        // so the controller's closures may capture self (weakly) from here.
+        heldDeletions = makeHeldDeletions()
 
         // MR-703 / MR-1742: delete the legacy BirdoPQ keypair item BEFORE the
         // migration below, which would otherwise re-write it into the host

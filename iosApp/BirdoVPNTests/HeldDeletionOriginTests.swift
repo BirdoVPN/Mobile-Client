@@ -696,25 +696,29 @@ private final class MemoryHoldStore: HeldDeletionIdStore {
 /// A signed-in session: the controller as AuthViewModel builds it, over the fakes.
 @MainActor
 private final class Harness {
-    let server = FakePendingChanges()
+    let server: FakePendingChanges
     let store: MemoryHoldStore
     private(set) var signedIn = true
     private(set) var sessionsEnded = 0
-    private(set) lazy var controller: HeldDeletionController = HeldDeletionController(
-        server: HeldDeletionController.Server(
-            list: { [server] in try await server.list() },
-            cancel: { [server] id in try await server.cancel(id) }),
-        store: store,
-        endsSession: { [unowned self] error in
-            guard error is FakeUnauthorized else { return false }
-            self.sessionsEnded += 1
-            self.signedIn = false
-            return true
-        },
-        isSignedIn: { [unowned self] in self.signedIn })
+    /// Built in `init`, as AuthViewModel builds its own (no lazy initializer).
+    private(set) var controller: HeldDeletionController!
 
     init(stored: String? = nil) {
+        let server = FakePendingChanges()
+        self.server = server
         store = MemoryHoldStore(stored)
+        controller = HeldDeletionController(
+            server: HeldDeletionController.Server(
+                list: { try await server.list() },
+                cancel: { id in try await server.cancel(id) }),
+            store: store,
+            endsSession: { [unowned self] error in
+                guard error is FakeUnauthorized else { return false }
+                self.sessionsEnded += 1
+                self.signedIn = false
+                return true
+            },
+            isSignedIn: { [unowned self] in self.signedIn })
     }
 
     func check(wait: Duration = SignOutHold.readWait) async -> Bool {
