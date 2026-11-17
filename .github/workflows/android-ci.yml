@@ -505,6 +505,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
+    # The emulator job's wait outlasts this (its build_timeout_min): keep in step.
     timeout-minutes: 40
     permissions:
       contents: read
@@ -654,8 +655,9 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
-    # 30 as before, plus the wait for "Build APK" (bounded at 30 below).
-    timeout-minutes: 60
+    # 30 as before, plus the wait for "Build APK". That wait ends at the latest
+    # 45 minutes after "Build APK" starts: its 40-minute timeout, plus 5.
+    timeout-minutes: 75
     permissions:
       contents: read
       # Read this run's artifact list and "Build APK"'s state while waiting.
@@ -765,64 +767,112 @@ jobs:
       # that job to end without them (then this job fails: a build that failed
       # is nothing tested, never a pass). The gate's verdict is not awaited
       # here: it is the required check's to give.
+      #
+      # Matched by run AND attempt (ANDROID-CI-619-LOWS). A run's artifact list
+      # spans all its attempts, and an artifact records no attempt number. So
+      # on "Re-run all jobs", the names alone matched the previous attempt's
+      # APKs at once, and the download by name then tested those. Now an APK
+      # counts only if it was uploaded after the start of the "Build APK" that
+      # this attempt reports, and it is downloaded by that artifact's id, never
+      # by name.
+      # On "Re-run failed jobs", a "Build APK" that passed is not re-run, and
+      # this attempt reports it with its original start time (seen in run
+      # 44154693443, attempt 2). Its APKs, which are that job's, are then the
+      # ones tested.
+      #
+      # The deadline is anchored to that job's start and outlasts its own
+      # timeout-minutes (build_timeout_min below: keep the two in step). A slow
+      # but healthy build is never cut off. Before, 30 minutes from this step's
+      # start could end the wait while "Build APK" still had time left.
       - name: Wait for the APKs "Build APK" uploads
+        id: apks
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           run="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          # 0: both uploaded; 1: not (yet); 2: the API could not be read.
-          have_both() {
-            local names
-            names=$(gh api "$run/artifacts?per_page=100" --jq '.artifacts[] | select(.expired | not) | .name') || return 2
-            grep -qx 'debug-apk' <<< "$names" && grep -qx 'debug-android-test-apk' <<< "$names"
+          build_timeout_min=40   # = jobs.build.timeout-minutes
+          # Prints the id of the newest unexpired artifact named $1 that was
+          # uploaded at or after $2 (ISO 8601 UTC, so the strings compare).
+          # 0: found; 1: none (yet); 2: the API could not be read.
+          apk_id() {
+            local json id
+            json=$(gh api "$run/artifacts?name=$1&per_page=100") || return 2
+            id=$(jq -r --arg since "$2" '[.artifacts[]
+                   | select((.expired | not) and .created_at >= $since)]
+                   | max_by(.id) | .id // empty' <<< "$json") || return 2
+            [ -n "$id" ] || return 1
+            printf '%s\n' "$id"
           }
-          deadline=$((SECONDS + 1800))
           errors=0
-          while :; do
-            rc=0; have_both || rc=$?
-            if [ "$rc" -eq 0 ]; then
-              echo "Both APKs are uploaded (waited ${SECONDS}s)"
-              break
-            fi
-            if [ "$rc" -eq 1 ]; then
-              errors=0
-              state=$(gh api "$run/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
-                --jq '.jobs[] | select(.name == "Build APK") | .status + " " + (.conclusion // "")') || state=""
-              if [ "${state%% *}" = completed ]; then
-                # An upload may have landed between the two reads.
-                rc=0; have_both || rc=$?
-                if [ "$rc" -eq 0 ]; then
-                  echo "Both APKs are uploaded"
-                  break
-                fi
-                echo "::error::Build APK ended ($state) without uploading both APKs, so there is nothing to test."
-                exit 1
-              fi
-            else
-              errors=$((errors + 1))
-              if [ "$errors" -ge 6 ]; then
-                echo "::error::the GitHub API failed 6 times in a row: this run's artifacts cannot be read"
-                exit 1
-              fi
-            fi
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::error::Build APK uploaded no APKs within 30 minutes"
+          api_failed() {
+            errors=$((errors + 1))
+            if [ "$errors" -ge 6 ]; then
+              echo "::error::the GitHub API failed 6 times in a row: this run's jobs or artifacts cannot be read"
               exit 1
+            fi
+          }
+          missing=0
+          while :; do
+            # "Build APK" as THIS attempt reports it.
+            if ! job=$(gh api "$run/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+                 --jq '[.jobs[] | select(.name == "Build APK")]
+                       | if length == 1
+                         then .[0] | [.status, (.conclusion // "-"), (.started_at // "-")] | @tsv
+                         else "missing" end'); then
+              api_failed; sleep 10; continue
+            fi
+            if [ "$job" = missing ]; then
+              missing=$((missing + 1))
+              if [ "$missing" -ge 30 ]; then
+                echo "::error::attempt $GITHUB_RUN_ATTEMPT lists no single job named \"Build APK\" (renamed?), so its APKs cannot be matched"
+                exit 1
+              fi
+              sleep 10; continue
+            fi
+            read -r status conclusion started <<< "$job"
+            # The artifacts are read AFTER the job's state, so when that state
+            # was "completed", every upload the job made is already listed.
+            if [ "$started" != "-" ]; then
+              rc=0; app_id=$(apk_id debug-apk "$started") || rc=$?
+              if [ "$rc" -eq 0 ]; then
+                test_id=$(apk_id debug-android-test-apk "$started") || rc=$?
+              fi
+              if [ "$rc" -eq 0 ]; then
+                echo "Both APKs are uploaded by the \"Build APK\" that started $started (attempt $GITHUB_RUN_ATTEMPT; artifacts $app_id and $test_id; waited ${SECONDS}s)"
+                { echo "app_id=$app_id"; echo "test_id=$test_id"; } >> "$GITHUB_OUTPUT"
+                break
+              fi
+              if [ "$rc" -eq 2 ]; then
+                api_failed; sleep 10; continue
+              fi
+            fi
+            errors=0
+            if [ "$status" = completed ]; then
+              echo "::error::Build APK ended ($conclusion) without uploading both APKs after its start ($started), so there is nothing to test. (If only this job was re-run more than 7 days later, its APKs have expired: re-run all jobs.)"
+              exit 1
+            fi
+            if [ "$status" = in_progress ] && [ "$started" != "-" ]; then
+              limit=$(( $(date -u -d "$started" +%s) + (build_timeout_min + 5) * 60 ))
+              if [ "$(date -u +%s)" -ge "$limit" ]; then
+                echo "::error::Build APK started at $started, is past its ${build_timeout_min}-minute timeout plus 5 minutes and still uploaded no APKs"
+                exit 1
+              fi
             fi
             sleep 10
           done
 
+      # By id: the exact artifacts matched above, never the newest by name.
       - name: Download the debug APK
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: debug-apk
+          artifact-ids: ${{ steps.apks.outputs.app_id }}
           path: ${{ runner.temp }}/apk/app
 
       - name: Download the androidTest APK
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: debug-android-test-apk
+          artifact-ids: ${{ steps.apks.outputs.test_id }}
           path: ${{ runner.temp }}/apk/test
 
       # `am instrument` exits 0 whatever happened, so the verdict comes from
