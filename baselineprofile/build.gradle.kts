@@ -99,6 +99,6 @@ baselineProfile {
 dependencies {
     implementation("androidx.test.ext:junit:1.3.0")
     implementation("androidx.test.espresso:espresso-core:3.7.0")
-    implementation("androidx.test.uiautomator:uiautomator:2.4.0")
+    implementation("androidx.test.uiautomator:uiautomator:2.4.1")
     implementation("androidx.benchmark:benchmark-macro-junit4:1.5.0")
 }
