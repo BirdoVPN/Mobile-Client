@@ -75,39 +75,14 @@ jobs:
         run: |
           set -euo pipefail
           # The apt package (2.2.1) ships an old androguard that cannot parse
-          # modern AAPT2 resource tables ("res1 must be zero!"), so install the
-          # current fdroidserver from pip into a venv instead.
-          # Bounded for the same reason as .github/actions/pq-cpu-proof: a
-          # stalled Ubuntu mirror must fail in minutes, not eat the job timeout.
-          # The image's own apt Retries/Timeout are left alone (they drive its
-          # mirror failover); `timeout` is the ceiling they cannot provide.
-          sudo timeout -k 30 300 apt-get update || {
-            echo "::error::apt-get update failed or ran past 5 min: an Ubuntu mirror problem, not this change. Re-run the job."
-            exit 1
-          }
-          sudo timeout -k 30 600 apt-get install -y libmagic1 python3-venv || {
-            echo "::error::apt-get install failed or ran past 10 min: an Ubuntu mirror problem, not this change. Re-run the job."
-            exit 1
-          }
-          python3 -m venv "$HOME/fdroid-venv"
-          # This job holds the repo signing keystore, so the installer and every
-          # package it pulls in are pinned by hash (MR-2102):
-          #  1. pip, wheel and setuptools (the build backend) from
-          #     requirements-build.txt, --require-hashes.
-          #  2. fdroidserver 2.4.5 and its full dependency closure from
-          #     requirements.txt, --require-hashes. fdroidserver, args, clint and
-          #     sdkmanager are sdists, so --no-build-isolation makes pip build them
-          #     with the hashed setuptools above rather than fetching unpinned
-          #     build requirements. --no-deps is NOT used: pip must see every
-          #     dependency in the file or it refuses the install.
-          # To bump fdroidserver (after a workflow_dispatch test), regenerate both
-          # files as described in .github/fdroid/requirements.txt.
-          "$HOME/fdroid-venv/bin/python" -m pip install --quiet --require-hashes \
-            -r .github/fdroid/requirements-build.txt
-          "$HOME/fdroid-venv/bin/python" -m pip install --quiet --require-hashes --no-build-isolation \
-            -r .github/fdroid/requirements.txt
+          # modern AAPT2 resource tables, so the current fdroidserver goes into a
+          # venv from pip. This job holds the repo signing keystore, so the
+          # installer and every package it pulls in are pinned by hash (MR-2102).
+          # The install lives in one script that the pull-request check
+          # (fdroid-deps.yml) also runs, so a requirements change is installed
+          # on its PR, not first by a publish. The details are in the script.
+          bash .github/fdroid/install-fdroidserver.sh "$HOME/fdroid-venv"
           echo "$HOME/fdroid-venv/bin" >> "$GITHUB_PATH"
-          "$HOME/fdroid-venv/bin/fdroid" --version
 
       - name: Materialise repo signing keystore
         env:
