@@ -45,7 +45,10 @@ class AroundTunnelWiringTest {
     /** What the bypass client's server answers; null fails the call like the dead tunnel. */
     private var bypassAnswer: String? = null
 
-    private fun call(answer: String?): Call = mockk(relaxed = true) {
+    /** The bypass answer's HTTP status. */
+    private var bypassStatus = 200
+
+    private fun call(answer: String?, status: Int = 200): Call = mockk(relaxed = true) {
         every { enqueue(any()) } answers {
             val callback = firstArg<Callback>()
             val call = self as Call
@@ -57,8 +60,8 @@ class AroundTunnelWiringTest {
                     Response.Builder()
                         .request(Request.Builder().url("https://api.birdo.app/").build())
                         .protocol(Protocol.HTTP_1_1)
-                        .code(200)
-                        .message("OK")
+                        .code(status)
+                        .message("test")
                         .body(answer.toResponseBody("application/json".toMediaType()))
                         .build(),
                 )
@@ -69,7 +72,7 @@ class AroundTunnelWiringTest {
     private fun client(record: MutableList<Request>, answer: () -> String?): OkHttpClient = mockk {
         every { newCall(any()) } answers {
             record += firstArg<Request>()
-            call(answer())
+            call(answer(), if (record === bypassRequests) bypassStatus else 200)
         }
         every { connectionPool } returns mockk(relaxed = true)
     }
@@ -98,6 +101,43 @@ class AroundTunnelWiringTest {
         assertEquals("evicted", (probe as ApiResult.Success).data.reason)
         assertEquals(listOf("/vpn/heartbeat/key-1"), tunnelRequests.map { it.url.encodedPath })
         assertEquals(listOf("/vpn/heartbeat/key-1"), bypassRequests.map { it.url.encodedPath })
+    }
+
+    /**
+     * MR-2378 (iOS #624 review): the call site that turns the deletion
+     * route's 202 and 409 BODIES into "a new hold" and "a hold already
+     * waiting", through Retrofit, the real converter and the real
+     * repository. Only the 202 may become "filed here" (HoldOrigin).
+     */
+    @Test
+    fun `a 202 hold and a 409 change_already_pending reach the app as a new hold and a waiting one`() = runTest {
+        val applyAfter = "2026-11-18T12:00:00.000Z"
+        bypassStatus = 202
+        bypassAnswer = """{"success":true,"pending":true,"code":"change_pending","message":"x",
+            "stepUp":{"methods":["hold"],"pendingChangeId":"p1","applyAfter":"$applyAfter"}}"""
+
+        val filed = repository.requestDeletionHold(null) as ApiResult.Success
+        val heldInstead = repository.deleteAccount("pw") as ApiResult.Error
+
+        assertEquals("p1", filed.data.pending.id)
+        assertEquals(false, filed.data.alreadyPending)
+        assertEquals(BirdoRepository.HTTP_ACCEPTED, heldInstead.code)
+        assertTrue(app.birdo.vpn.data.repository.HoldOrigin.filedByThisRequest(heldInstead.code))
+
+        bypassStatus = 409
+        bypassAnswer = """{"statusCode":409,"error":"change_already_pending","message":"x",
+            "stepUp":{"methods":["hold"],"pendingChangeId":"p0","applyAfter":"$applyAfter"}}"""
+
+        val waiting = repository.requestDeletionHold(null) as ApiResult.Success
+        val waitingInstead = repository.deleteAccount("pw") as ApiResult.Error
+
+        assertEquals("p0", waiting.data.pending.id)
+        assertEquals(true, waiting.data.alreadyPending)
+        assertEquals(BirdoRepository.HTTP_CONFLICT, waitingInstead.code)
+        assertEquals(false, app.birdo.vpn.data.repository.HoldOrigin.filedByThisRequest(waitingInstead.code))
+        // Neither is an erasure.
+        verify(exactly = 0) { tokenManager.clearAll() }
+        assertEquals(listOf("DELETE /api/v1/gdpr/delete"), bypassRequests.map { "${it.method} ${it.url.encodedPath}" }.distinct())
     }
 
     @Test

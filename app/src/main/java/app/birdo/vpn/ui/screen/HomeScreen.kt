@@ -129,6 +129,8 @@ fun HomeScreen(
     holdCancelNote: app.birdo.vpn.ui.viewmodel.HoldCancelNote? = null,
     /** MR-2378: a sign-out stopped after its cancel-first; the confirmation stays. */
     signOutReconsidered: Int = 0,
+    /** MR-2378: the sign-out itself has begun; until then the confirmation can be dismissed. */
+    isSignOutProceeding: Boolean = false,
 ) {
     val palette = BirdoColors.current
     // What the screen says and offers is decided by the pure functions in
@@ -633,6 +635,7 @@ fun HomeScreen(
             pendingDeletionCancellable = pendingDeletionCancellable,
             holdCancelNote = holdCancelNote,
             signOutReconsidered = signOutReconsidered,
+            isSignOutProceeding = isSignOutProceeding,
         )
     }
 

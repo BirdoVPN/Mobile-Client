@@ -44,6 +44,7 @@ class SignOutHoldNoticeTest {
     private var cancels = 0
     private var confirms = 0
     private var anyway = 0
+    private var dismissals = 0
 
     private fun show(
         filedHere: Boolean,
@@ -53,6 +54,7 @@ class SignOutHoldNoticeTest {
         unknown: Boolean = false,
         blocked: String? = null,
         cancellable: Boolean = hold != null,
+        proceeding: Boolean = false,
     ) {
         rule.setContent {
             MaterialTheme {
@@ -60,7 +62,7 @@ class SignOutHoldNoticeTest {
                     isConnected = false,
                     isAnonymousAccount = false,
                     onConfirm = { confirms++ },
-                    onDismiss = {},
+                    onDismiss = { dismissals++ },
                     pendingDeletionAt = hold,
                     pendingDeletionFiledHere = filedHere,
                     pendingDeletionUnknown = unknown,
@@ -70,6 +72,7 @@ class SignOutHoldNoticeTest {
                     signOutBlockedReason = blocked,
                     onSignOutAnyway = { anyway++ },
                     pendingDeletionCancellable = cancellable,
+                    isSignOutProceeding = proceeding,
                 )
             }
         }
@@ -231,6 +234,26 @@ class SignOutHoldNoticeTest {
             "Stay signed in on this device until then; signing out cancels the deletion.",
             StringsXml.text("delete_hold_signout_cancels"),
         )
+    }
+
+    /** iOS #624 residual R2: while the cancel-first is out the dialog can still be closed. */
+    @Test
+    fun `Stay signed in works while the cancel-first is out, not once the sign-out began`() {
+        show(filedHere = true)
+        rule.onNodeWithText(text(R.string.sign_out)).performClick()
+        assertEquals(1, confirms)
+
+        rule.onNodeWithText(text(R.string.sign_out_stay_signed_in)).performClick()
+        assertEquals(1, dismissals)
+    }
+
+    @Test
+    fun `once the sign-out itself began the dialog stays`() {
+        show(filedHere = false, hold = null, proceeding = true)
+        rule.onNodeWithText(text(R.string.sign_out)).performClick()
+
+        rule.onNodeWithText(text(R.string.sign_out_stay_signed_in)).performClick()
+        assertEquals(0, dismissals)
     }
 
     @Test

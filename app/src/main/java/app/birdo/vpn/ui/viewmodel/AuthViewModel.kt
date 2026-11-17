@@ -133,6 +133,18 @@ data class AuthUiState(
      */
     val signOutReconsidered: Int = 0,
     /**
+     * MR-2378: the sign-out itself (teardown, then the server call) has
+     * begun. Until then, a cancel-first included, the confirmation can be
+     * dismissed, and dismissing it means staying signed in.
+     */
+    val isSignOutProceeding: Boolean = false,
+    /**
+     * MR-2378: a pending-changes read has answered in this session, so "no
+     * hold" is known rather than assumed. The deletion dialog's hold step
+     * says "signing out cancels the deletion" only then.
+     */
+    val pendingDeletionListAnswered: Boolean = false,
+    /**
      * One-shot: a hold request was just answered with a hold. The deletion
      * dialog closes; Profile's banner says when. Acknowledged by
      * [AuthViewModel.onDeletionHoldShown].
@@ -238,6 +250,13 @@ class AuthViewModel @Inject constructor(
          * unknown and the sign-out confirmation says only what is certain.
          */
         internal const val PENDING_DELETION_READ_TIMEOUT_MS = 3_000L
+
+        /**
+         * MR-2378 (iOS #624 residual R2): the cap on one hold cancel, a token
+         * refresh inside it included. Past it the cancel failed, and a
+         * sign-out waiting on it stops with Try again / Sign out anyway.
+         */
+        internal const val HOLD_CANCEL_TIMEOUT_MS = 10_000L
 
         /** The failures that count toward the client-side sign-in throttle. */
         private val CREDENTIAL_REJECTIONS = setOf(
@@ -1025,17 +1044,12 @@ class AuthViewModel @Inject constructor(
             val result = withTimeoutOrNull(PENDING_DELETION_READ_TIMEOUT_MS) { repository.pendingDeletion() }
             when (result) {
                 is ApiResult.Success -> {
-                    if (_uiState.value.isLoggedIn && epoch == pendingDeletionEpoch &&
-                        !_uiState.value.isCancellingPendingDeletion
-                    ) {
-                        // A late claim for a hold this app already cancelled
-                        // is no claim (MR-2378).
-                        val listed = result.data?.takeUnless { it.id in cancelledHoldIds }
-                        _uiState.value = _uiState.value.copy(
-                            pendingDeletion = listed,
-                            deletionHoldFiledHereId = filedHereAfterRead(listed, filedByThisRequest),
-                            pendingDeletionUnknown = false,
-                        )
+                    // A read that started before a cancel still applies while
+                    // that cancel is out: the epoch moves only when a cancel
+                    // SUCCEEDS (iOS #624 residual R3), so a failed cancel
+                    // leaves this answer standing.
+                    if (_uiState.value.isLoggedIn && epoch == pendingDeletionEpoch) {
+                        applyListed(result.data, filedByThisRequest)
                     }
                 }
                 is ApiResult.Error -> {
@@ -1048,6 +1062,17 @@ class AuthViewModel @Inject constructor(
                 null -> if (epoch == pendingDeletionEpoch) markPendingDeletionUnknown()
             }
         }
+    }
+
+    /** A list answer: a late one for a hold this app already cancelled is no hold (MR-2378). */
+    private fun applyListed(data: PendingDeletion?, filedByThisRequest: Boolean) {
+        val listed = data?.takeUnless { it.id in cancelledHoldIds }
+        _uiState.value = _uiState.value.copy(
+            pendingDeletion = listed,
+            deletionHoldFiledHereId = filedHereAfterRead(listed, filedByThisRequest),
+            pendingDeletionUnknown = false,
+            pendingDeletionListAnswered = true,
+        )
     }
 
     /** A failed or timed-out read: a hold already on screen stays; none known is "unknown". */
@@ -1101,12 +1126,26 @@ class AuthViewModel @Inject constructor(
      * out may not cancel a deletion.
      */
     fun signOut(proceed: () -> Unit) {
+        val generation = ++signOutGeneration
         val ownId = _uiState.value.deletionHoldFiledHereId
         if (ownId == null) {
-            proceed()
+            proceedSignOut(generation, proceed)
             return
         }
-        cancelHold(ownId, thenSignOut = proceed)
+        cancelHold(ownId, thenSignOut = { proceedSignOut(generation, proceed) })
+    }
+
+    /**
+     * Bumped by each sign-out attempt and by the confirmation closing: a
+     * cancel-first or a read after it that finishes for an attempt the user
+     * walked away from ("Stay signed in") signs nobody out.
+     */
+    private var signOutGeneration = 0
+
+    private fun proceedSignOut(generation: Int, proceed: () -> Unit) {
+        if (generation != signOutGeneration || !_uiState.value.isLoggedIn) return
+        _uiState.value = _uiState.value.copy(isSignOutProceeding = true)
+        proceed()
     }
 
     /**
@@ -1136,11 +1175,14 @@ class AuthViewModel @Inject constructor(
     /** MR-2378: the user chose to sign out although this session's hold could not be cancelled. */
     fun signOutAnyway(proceed: () -> Unit) {
         _uiState.value = _uiState.value.copy(signOutHoldCancelError = null)
-        proceed()
+        proceedSignOut(++signOutGeneration, proceed)
     }
 
     /** The sign-out confirmation closed: a failed cancel's message and a cancel's note go with it. */
     fun dismissSignOutHoldError() {
+        // "Stay signed in" during a cancel-first: the cancel may still land,
+        // but nobody is signed out for it.
+        signOutGeneration++
         if (_uiState.value.signOutHoldCancelError != null || _uiState.value.holdCancelNote != null) {
             _uiState.value = _uiState.value.copy(signOutHoldCancelError = null, holdCancelNote = null)
         }
@@ -1162,22 +1204,35 @@ class AuthViewModel @Inject constructor(
      * the confirmation shows what is known now ([AuthUiState.signOutReconsidered]).
      */
     private fun signOutIfNothingWaits(proceed: () -> Unit) {
-        refreshPendingDeletion()
-        val job = pendingDeletionJob ?: return proceed()
-        job.invokeOnCompletion {
-            val state = _uiState.value
-            if (state.isLoggedIn && state.pendingDeletion == null && !state.pendingDeletionUnknown) {
-                proceed()
-            } else if (state.isLoggedIn) {
-                _uiState.value = state.copy(signOutReconsidered = state.signOutReconsidered + 1)
+        pendingDeletionJob?.cancel()
+        val epoch = pendingDeletionEpoch
+        pendingDeletionJob = viewModelScope.launch {
+            val result = withTimeoutOrNull(PENDING_DELETION_READ_TIMEOUT_MS) { repository.pendingDeletion() }
+            if (!_uiState.value.isLoggedIn || epoch != pendingDeletionEpoch) return@launch
+            when {
+                result is ApiResult.Success -> {
+                    applyListed(result.data, filedByThisRequest = false)
+                    if (_uiState.value.pendingDeletion == null) {
+                        proceed()
+                    } else {
+                        // Another hold waits: show it, sign nobody out.
+                        val state = _uiState.value
+                        _uiState.value = state.copy(signOutReconsidered = state.signOutReconsidered + 1)
+                    }
+                }
+                result is ApiResult.Error && result.code == 401 -> onSessionExpired()
+                // iOS #624 residual R1: the hold this session filed IS
+                // cancelled (the note says so); a slow or failed read after it
+                // is no reason to stop, or to ask for a second tap.
+                else -> proceed()
             }
         }
     }
 
     private fun cancelHold(holdId: String, thenSignOut: (() -> Unit)?) {
         if (_uiState.value.isCancellingPendingDeletion) return
-        pendingDeletionJob?.cancel()
-        pendingDeletionEpoch++
+        // Not here: the read-order epoch, and any read in flight. They move
+        // only when the cancel SUCCEEDS (iOS #624 residual R3).
         _uiState.value = _uiState.value.copy(
             isCancellingPendingDeletion = true,
             pendingDeletionError = null,
@@ -1185,8 +1240,12 @@ class AuthViewModel @Inject constructor(
             holdCancelNote = null,
         )
         viewModelScope.launch {
-            when (val result = repository.cancelPendingChange(holdId)) {
+            // iOS #624 residual R2: capped, a token refresh inside included.
+            val result = withTimeoutOrNull(HOLD_CANCEL_TIMEOUT_MS) { repository.cancelPendingChange(holdId) }
+                ?: ApiResult.Error(strings.get(R.string.hold_cancel_unreachable), 0, FailureReason.UNREACHABLE)
+            when (result) {
                 is ApiResult.Success -> {
+                    pendingDeletionJob?.cancel()
                     pendingDeletionEpoch++
                     cancelledHoldIds += holdId
                     _uiState.value = _uiState.value.copy(
@@ -1196,13 +1255,16 @@ class AuthViewModel @Inject constructor(
                         // Cancelled (or already gone): no hold of this session's is left.
                         deletionHoldFiledHereId = filedHereAfterRead(null, filedByThisRequest = false),
                     )
+                    // What happened is said either way: during a sign-out too,
+                    // so the dialog reads "The deletion is cancelled." while
+                    // it signs out (iOS #624 residual R1).
+                    _uiState.value = _uiState.value.copy(
+                        holdCancelNote = if (result.data) HoldCancelNote.CANCELLED else HoldCancelNote.ALREADY_GONE,
+                    )
                     if (thenSignOut != null) {
                         signOutIfNothingWaits(thenSignOut)
-                    } else {
-                        _uiState.value = _uiState.value.copy(
-                            holdCancelNote = if (result.data) HoldCancelNote.CANCELLED else HoldCancelNote.ALREADY_GONE,
-                        )
-                        if (!result.data) refreshPendingDeletion()
+                    } else if (!result.data) {
+                        refreshPendingDeletion()
                     }
                 }
                 is ApiResult.Error -> {

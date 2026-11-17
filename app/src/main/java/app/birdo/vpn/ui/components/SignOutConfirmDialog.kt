@@ -112,6 +112,12 @@ fun SignOutConfirmDialog(
      * list still names a hold, or could not be read): the buttons come back.
      */
     signOutReconsidered: Int = 0,
+    /**
+     * MR-2378 (iOS #624 residual R2): the sign-out itself has begun. Until
+     * then, a cancel-first in flight included, the dialog can be dismissed
+     * ("Stay signed in"), and the VM then signs nobody out.
+     */
+    isSignOutProceeding: Boolean = false,
 ) {
     val palette = BirdoColors.current
     var signingOut by rememberSaveable { mutableStateOf(false) }
@@ -122,8 +128,9 @@ fun SignOutConfirmDialog(
     }
     val blocked = signOutBlockedReason != null && !signingOut
     val checking = isChecking && !signingOut
+    val dismissible = !(signingOut && isSignOutProceeding)
     BirdoAlertDialog(
-        onDismissRequest = { if (!signingOut) onDismiss() },
+        onDismissRequest = { if (dismissible) onDismiss() },
         containerColor = palette.surfaceElevated,
         titleContentColor = palette.onSurface,
         textContentColor = palette.onSurfaceMuted,
@@ -208,7 +215,8 @@ fun SignOutConfirmDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = !signingOut && !checking,
+                // Not while a "Cancel deletion" is out: one cancel at a time.
+                enabled = !signingOut && !checking && !isCancellingPendingDeletion,
                 onClick = {
                     signingOut = true
                     onConfirm()
@@ -245,7 +253,7 @@ fun SignOutConfirmDialog(
         dismissButton = {
             Row {
                 // MR-2378 common wording: "Cancel" would read as cancelling the deletion.
-                TextButton(onClick = onDismiss, enabled = !signingOut) {
+                TextButton(onClick = onDismiss, enabled = dismissible) {
                     Text(stringResource(R.string.sign_out_stay_signed_in), color = palette.onSurfaceMuted)
                 }
                 if (blocked && onSignOutAnyway != null) {

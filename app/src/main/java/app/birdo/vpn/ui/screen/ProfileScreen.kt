@@ -191,6 +191,14 @@ fun ProfileScreen(
     holdCancelNote: app.birdo.vpn.ui.viewmodel.HoldCancelNote? = null,
     /** MR-2378: a sign-out stopped after its cancel-first; the confirmation stays. */
     signOutReconsidered: Int = 0,
+    /** MR-2378: the sign-out itself has begun; until then the confirmation can be dismissed. */
+    isSignOutProceeding: Boolean = false,
+    /**
+     * MR-2378: the pending-changes list has answered in this session. Until
+     * it has, a hold may exist unseen, and the hold step must not say that
+     * signing out cancels "the deletion".
+     */
+    pendingDeletionListAnswered: Boolean = false,
     // Google Play build: hide the "Manage on web" row, which links out to the
     // billing dashboard (external-purchase steering), and the "Redeem voucher"
     // row, since vouchers are sold only on the web (LR22, showsVoucherEntry).
@@ -348,6 +356,10 @@ fun ProfileScreen(
             // only be a 409 for it, and the step's "signing out cancels it"
             // may not be true of that hold: the step is not offered.
             holdWaiting = pendingDeletion != null,
+            holdStepSignOutNote = holdStepSaysSignOutCancels(
+                listAnswered = pendingDeletionListAnswered,
+                holdWaiting = pendingDeletion != null,
+            ),
             // MR-179: an anonymous account is told it is the lost number.
             holdForLostNumber = isAnonymousAccount || deletionPreflight?.stepUp?.needsAccountNumber == true,
             onRequestHold = onRequestDeletionHold,
@@ -394,6 +406,7 @@ fun ProfileScreen(
             pendingDeletionCancellable = pendingDeletionCancellable,
             holdCancelNote = holdCancelNote,
             signOutReconsidered = signOutReconsidered,
+            isSignOutProceeding = isSignOutProceeding,
         )
     }
 }
@@ -943,6 +956,14 @@ private fun parseRenewalDay(raw: String?): LocalDate? {
 internal fun offersDeletionHold(preflight: DeletionPreflightResponse?, holdWaiting: Boolean = false): Boolean =
     !holdWaiting && preflight?.stepUp?.holdAvailable == true
 
+/**
+ * MR-2378 (iOS #624 residual): the hold step's "signing out cancels the
+ * deletion" is true of the hold that step would file, and only if no other
+ * waits; so it is said only once the list has answered that none does.
+ */
+internal fun holdStepSaysSignOutCancels(listAnswered: Boolean, holdWaiting: Boolean): Boolean =
+    listAnswered && !holdWaiting
+
 /** The banner's line on what signing out does to the hold (review of #616): see [signOutHoldNotice]. */
 @androidx.annotation.StringRes
 internal fun pendingDeletionSignOutLine(filedHere: Boolean): Int =
@@ -1044,6 +1065,7 @@ private fun DeleteAccountDialog(
     onSendCode: () -> Unit,
     preflight: DeletionPreflightResponse?,
     holdWaiting: Boolean,
+    holdStepSignOutNote: Boolean,
     holdForLostNumber: Boolean,
     onRequestHold: (password: String, twoFactorCode: String?) -> Unit,
     isDeletingAccount: Boolean,
@@ -1285,12 +1307,14 @@ private fun DeleteAccountDialog(
                         style = MaterialTheme.typography.bodySmall,
                         color = BirdoWhite60,
                     )
-                    Text(
-                        stringResource(R.string.delete_hold_signout_cancels),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = BirdoWhite80,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    if (holdStepSignOutNote) {
+                        Text(
+                            stringResource(R.string.delete_hold_signout_cancels),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = BirdoWhite80,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                     TextButton(
                         onClick = { onRequestHold(password, twoFactorCode.takeIf { requiresTwoFactor }) },
                         enabled = (!requiresPassword || password.isNotBlank()) &&
