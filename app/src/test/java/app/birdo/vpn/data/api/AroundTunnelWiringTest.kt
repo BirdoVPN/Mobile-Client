@@ -107,7 +107,7 @@ class AroundTunnelWiringTest {
      * MR-2378 (iOS #624 review): the call site that turns the deletion
      * route's 202 and 409 BODIES into "a new hold" and "a hold already
      * waiting", through Retrofit, the real converter and the real
-     * repository. Only the 202 may become "filed here" (HoldOrigin).
+     * repository, and what HoldOrigin then makes of each.
      */
     @Test
     fun `a 202 hold and a 409 change_already_pending reach the app as a new hold and a waiting one`() = runTest {
@@ -122,7 +122,9 @@ class AroundTunnelWiringTest {
         assertEquals("p1", filed.data.pending.id)
         assertEquals(false, filed.data.alreadyPending)
         assertEquals(BirdoRepository.HTTP_ACCEPTED, heldInstead.code)
-        assertTrue(app.birdo.vpn.data.repository.HoldOrigin.filedByThisRequest(heldInstead.code))
+        // The hold request's readable 202 is the one answer that marks a hold
+        // "filed here"; the plain route's 202 is only shown (iOS #624).
+        assertEquals("p1", app.birdo.vpn.data.repository.HoldOrigin.markerAfterHoldAnswer(null, filed.data))
 
         bypassStatus = 409
         bypassAnswer = """{"statusCode":409,"error":"change_already_pending","message":"x",
@@ -134,7 +136,9 @@ class AroundTunnelWiringTest {
         assertEquals("p0", waiting.data.pending.id)
         assertEquals(true, waiting.data.alreadyPending)
         assertEquals(BirdoRepository.HTTP_CONFLICT, waitingInstead.code)
-        assertEquals(false, app.birdo.vpn.data.repository.HoldOrigin.filedByThisRequest(waitingInstead.code))
+        // A 409 is not claimed, unless this session had already marked that hold.
+        assertEquals(null, app.birdo.vpn.data.repository.HoldOrigin.markerAfterHoldAnswer(null, waiting.data))
+        assertEquals("p0", app.birdo.vpn.data.repository.HoldOrigin.markerAfterHoldAnswer("p0", waiting.data))
         // Neither is an erasure.
         verify(exactly = 0) { tokenManager.clearAll() }
         assertEquals(listOf("DELETE /api/v1/gdpr/delete"), bypassRequests.map { "${it.method} ${it.url.encodedPath}" }.distinct())

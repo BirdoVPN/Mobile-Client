@@ -72,7 +72,7 @@ class SignOutHoldNoticeTest {
                     signOutBlockedReason = blocked,
                     onSignOutAnyway = { anyway++ },
                     pendingDeletionCancellable = cancellable,
-                    isSignOutProceeding = proceeding,
+                    isSigningOut = proceeding,
                 )
             }
         }
@@ -236,24 +236,71 @@ class SignOutHoldNoticeTest {
         )
     }
 
-    /** iOS #624 residual R2: while the cancel-first is out the dialog can still be closed. */
+    /**
+     * Review of #623 (MEDIUM), as iOS #624: while the cancel-first is out the
+     * dialog cannot be dismissed. A cancel that landed after "Stay signed in"
+     * left a user who believed the deletion still scheduled.
+     */
     @Test
-    fun `Stay signed in works while the cancel-first is out, not once the sign-out began`() {
+    fun `Stay signed in is not available while the cancel-first is out`() {
         show(filedHere = true)
         rule.onNodeWithText(text(R.string.sign_out)).performClick()
         assertEquals(1, confirms)
 
         rule.onNodeWithText(text(R.string.sign_out_stay_signed_in)).performClick()
-        assertEquals(1, dismissals)
+        assertEquals(0, dismissals)
     }
 
     @Test
-    fun `once the sign-out itself began the dialog stays`() {
+    fun `nor while the view model says a sign-out is under way`() {
         show(filedHere = false, hold = null, proceeding = true)
-        rule.onNodeWithText(text(R.string.sign_out)).performClick()
 
         rule.onNodeWithText(text(R.string.sign_out_stay_signed_in)).performClick()
         assertEquals(0, dismissals)
+    }
+
+    @Test
+    fun `Stay signed in closes it when nothing is under way`() {
+        show(filedHere = false)
+
+        rule.onNodeWithText(text(R.string.sign_out_stay_signed_in)).performClick()
+        assertEquals(1, dismissals)
+    }
+
+    /** Review of #623 (nit): a cancel's note is about its hold, not one the list named since. */
+    @Test
+    fun `a cancel note is not shown under a hold listed since`() {
+        rule.setContent {
+            MaterialTheme {
+                SignOutConfirmDialog(
+                    isConnected = false,
+                    isAnonymousAccount = false,
+                    onConfirm = {},
+                    onDismiss = {},
+                    pendingDeletionAt = at,
+                    holdCancelNote = app.birdo.vpn.ui.viewmodel.HoldCancelNote.CANCELLED,
+                )
+            }
+        }
+
+        rule.onAllNodes(hasText(text(R.string.hold_cancelled_note))).assertCountEquals(0)
+    }
+
+    @Test
+    fun `a cancel note shows once no hold is listed`() {
+        rule.setContent {
+            MaterialTheme {
+                SignOutConfirmDialog(
+                    isConnected = false,
+                    isAnonymousAccount = false,
+                    onConfirm = {},
+                    onDismiss = {},
+                    holdCancelNote = app.birdo.vpn.ui.viewmodel.HoldCancelNote.CANCELLED,
+                )
+            }
+        }
+
+        rule.onNodeWithText(text(R.string.hold_cancelled_note)).assertIsDisplayed()
     }
 
     @Test

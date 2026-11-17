@@ -191,8 +191,8 @@ fun ProfileScreen(
     holdCancelNote: app.birdo.vpn.ui.viewmodel.HoldCancelNote? = null,
     /** MR-2378: a sign-out stopped after its cancel-first; the confirmation stays. */
     signOutReconsidered: Int = 0,
-    /** MR-2378: the sign-out itself has begun; until then the confirmation can be dismissed. */
-    isSignOutProceeding: Boolean = false,
+    /** MR-2378: a sign-out has started; the confirmation cannot be dismissed meanwhile. */
+    isSigningOut: Boolean = false,
     /**
      * MR-2378: the pending-changes list has answered in this session. Until
      * it has, a hold may exist unseen, and the hold step must not say that
@@ -406,7 +406,7 @@ fun ProfileScreen(
             pendingDeletionCancellable = pendingDeletionCancellable,
             holdCancelNote = holdCancelNote,
             signOutReconsidered = signOutReconsidered,
-            isSignOutProceeding = isSignOutProceeding,
+            isSigningOut = isSigningOut,
         )
     }
 }

@@ -1,9 +1,7 @@
 package app.birdo.vpn.data.repository
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
 
@@ -25,12 +23,6 @@ class HoldOriginTest {
     }
 
     @Test
-    fun `only a 202 files a hold here`() {
-        assertTrue(HoldOrigin.filedByThisRequest(202))
-        for (status in listOf(409, 200, 0, 500, 401)) assertFalse("$status", HoldOrigin.filedByThisRequest(status))
-    }
-
-    @Test
     fun `a 202 makes the hold this session's`() {
         assertEquals("p1", HoldOrigin.markerAfterHoldAnswer(null, DeletionHoldResult.Held(p1, alreadyPending = false)))
         assertEquals("p1", HoldOrigin.markerAfterHoldAnswer("p0", DeletionHoldResult.Held(p1, alreadyPending = false)))
@@ -45,13 +37,13 @@ class HoldOriginTest {
         assertNull(HoldOrigin.markerAfterHoldAnswer("p0", DeletionHoldResult.Held(p1, alreadyPending = true)))
     }
 
+    /** Review of #623: a list read never claims a hold, whatever request came before it (iOS #624). */
     @Test
-    fun `a list read keeps the mark for the same hold only, and claims only after this session's 202`() {
-        assertEquals("p1", HoldOrigin.markerAfterRead("p1", p1, filedByThisRequest = false))
-        assertNull("another id is not this session's", HoldOrigin.markerAfterRead("p1", p2, filedByThisRequest = false))
-        assertNull("a listed hold is never claimed by a plain read", HoldOrigin.markerAfterRead(null, p1, filedByThisRequest = false))
-        assertNull("the hold is gone", HoldOrigin.markerAfterRead("p1", null, filedByThisRequest = false))
-        assertEquals("p2", HoldOrigin.markerAfterRead("p1", p2, filedByThisRequest = true))
-        assertNull(HoldOrigin.markerAfterRead("p1", null, filedByThisRequest = true))
+    fun `a list read keeps the mark for the same hold only, and never claims one`() {
+        assertEquals("p1", HoldOrigin.markerAfterRead("p1", p1))
+        assertNull("another id is not this session's", HoldOrigin.markerAfterRead("p1", p2))
+        assertNull("a listed hold is never claimed by a read", HoldOrigin.markerAfterRead(null, p1))
+        assertNull("the hold is gone", HoldOrigin.markerAfterRead("p1", null))
+        assertNull(HoldOrigin.markerAfterRead(null, null))
     }
 }

@@ -113,11 +113,13 @@ fun SignOutConfirmDialog(
      */
     signOutReconsidered: Int = 0,
     /**
-     * MR-2378 (iOS #624 residual R2): the sign-out itself has begun. Until
-     * then, a cancel-first in flight included, the dialog can be dismissed
-     * ("Stay signed in"), and the VM then signs nobody out.
+     * MR-2378: a sign-out has started (its cancel-first, the read after it,
+     * or the sign-out itself). The dialog cannot be dismissed meanwhile, as
+     * on iOS #624: a cancel that landed after "Stay signed in" would leave the
+     * user believing the deletion still scheduled. It is bounded (10 s cancel,
+     * 3 s read), then the dialog says what happened.
      */
-    isSignOutProceeding: Boolean = false,
+    isSigningOut: Boolean = false,
 ) {
     val palette = BirdoColors.current
     var signingOut by rememberSaveable { mutableStateOf(false) }
@@ -128,7 +130,7 @@ fun SignOutConfirmDialog(
     }
     val blocked = signOutBlockedReason != null && !signingOut
     val checking = isChecking && !signingOut
-    val dismissible = !(signingOut && isSignOutProceeding)
+    val dismissible = !signingOut && !isSigningOut
     BirdoAlertDialog(
         onDismissRequest = { if (dismissible) onDismiss() },
         containerColor = palette.surfaceElevated,
@@ -200,7 +202,10 @@ fun SignOutConfirmDialog(
                                 )
                             }
                         }
-                        val note = pendingDeletionError ?: holdCancelNote?.let { stringResource(holdCancelNoteText(it)) }
+                        // A cancel's note is about the hold it cancelled: not
+                        // shown under another hold the list has named since.
+                        val note = pendingDeletionError
+                            ?: holdCancelNote?.takeIf { pendingDeletionAt == null }?.let { stringResource(holdCancelNoteText(it)) }
                         if (note != null) {
                             Spacer(Modifier.height(6.dp))
                             Text(
