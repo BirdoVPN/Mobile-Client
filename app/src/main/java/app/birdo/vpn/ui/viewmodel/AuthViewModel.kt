@@ -306,6 +306,24 @@ class AuthViewModel @Inject constructor(
     )
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
 
+    /**
+     * Holds this app cancelled (MR-2378). A 202 or a list read that arrives
+     * after the cancel names one of these; it is late, and is not adopted.
+     * Declared before init: the cold-start read runs from init, at once
+     * on Main.immediate, and reads it.
+     */
+    private val cancelledHoldIds = mutableSetOf<String>()
+
+    /** The hold read in flight. Declared before init, like [cancelledHoldIds]: init starts one. */
+    private var pendingDeletionJob: Job? = null
+
+    /**
+     * Bumped whenever this app itself changes the hold (filed, cancelled):
+     * a list read that started before then is stale and must not put an old
+     * hold back on screen (review of #616).
+     */
+    private var pendingDeletionEpoch = 0
+
     init {
         // Not before the CURRENT consent is accepted (audit D-12, A2-028): GET
         // auth/me is a request from this device's IP, and the consent screen
@@ -968,14 +986,6 @@ class AuthViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(deletionHoldFiled = false)
     }
 
-    private var pendingDeletionJob: Job? = null
-
-    /**
-     * Bumped whenever this app itself changes the hold (filed, cancelled):
-     * a list read that started before then is stale and must not put an old
-     * hold back on screen (review of #616).
-     */
-    private var pendingDeletionEpoch = 0
 
     /**
      * MR-179: re-read the account's deletion on hold (`GET auth/pending-changes`).
@@ -1032,12 +1042,6 @@ class AuthViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(pendingDeletionUnknown = true)
         }
     }
-
-    /**
-     * Holds this app cancelled (MR-2378). A 202 or a list read that arrives
-     * after the cancel names one of these; it is late, and is not adopted.
-     */
-    private val cancelledHoldIds = mutableSetOf<String>()
 
     /**
      * The marker of this session's own hold after the list says [listed]:
