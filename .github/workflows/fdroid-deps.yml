@@ -1,0 +1,50 @@
+name: F-Droid deps
+
+# Installs the F-Droid repo job's hash-pinned Python requirements on every pull
+# request that changes them. fdroid.yml itself runs only on a release or a
+# dispatch, and a dispatch signs and publishes the repo to gh-pages, so without
+# this check a requirements change (a Dependabot bump in /.github/fdroid, for
+# example) was first installed by a real publish. Dependabot #598 shows why that
+# matters: wheel 0.46 needs `packaging`, which was not pinned, so pip with
+# --require-hashes would have refused the install mid-release.
+#
+# This job runs the SAME script as fdroid.yml's "Install fdroidserver" step. It
+# holds no secrets, no keystore and no write permission, and it publishes nothing.
+
+on:
+  pull_request:
+    paths:
+      - ".github/fdroid/**"
+      - ".github/workflows/fdroid.yml"
+      - ".github/workflows/fdroid-deps.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  install:
+    name: F-Droid deps install (hash-pinned)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install fdroidserver (same script as fdroid.yml)
+        run: |
+          set -euo pipefail
+          bash .github/fdroid/install-fdroidserver.sh "$RUNNER_TEMP/fdroid-venv"
+          echo "----- installed build tooling -----"
+          "$RUNNER_TEMP/fdroid-venv/bin/python" -m pip list --format=freeze \
+            | grep -i -E '^(babel|packaging|pip|setuptools|wheel|fdroidserver)=='
