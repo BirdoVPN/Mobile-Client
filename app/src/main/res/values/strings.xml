@@ -773,9 +773,20 @@
     <!-- MR-2378: the pending-changes read failed or timed out; no promise either way. -->
     <string name="sign_out_pending_deletion_unknown">We couldn\'t check whether a deletion is waiting. Signing out may not cancel it. To keep your account, stay signed in and cancel it once you\'re online.</string>
     <string name="sign_out_stay_signed_in">Stay signed in</string>
-    <!-- MR-2378: sign-out cancels this device's own hold first; that cancel failed. -->
-    <string name="sign_out_hold_cancel_failed">The deletion scheduled for your account could not be cancelled, so you are still signed in. If you sign out anyway, the deletion may still go ahead.</string>
+    <!-- MR-2378: sign-out cancels this session's own hold first, and that cancel failed. Word for word iOS #624 (DeletionHold.signOutCancelFailed): %1$s is the reason, %2$s the date. It replaces the hold's line. -->
+    <string name="sign_out_hold_cancel_failed_dated">%1$s You are still signed in, and your account is still scheduled to be deleted on %2$s. Try again, or sign out anyway: the deletion may then still go ahead.</string>
+    <!-- The same with no date known: a cold start that could not read the list. -->
+    <string name="sign_out_hold_cancel_failed_undated">%1$s You are still signed in, and the deletion you asked for on this device may still be scheduled. Try again, or sign out anyway: the deletion may then still go ahead.</string>
     <string name="sign_out_anyway">Sign out anyway</string>
+    <string name="sign_out_try_again">Try again</string>
+    <!-- MR-2378: while the confirmation waits for the list read (at most 3 s). iOS #624 wording. -->
+    <string name="sign_out_checking_label">Checking…</string>
+    <string name="sign_out_checking_deletion">Checking whether a deletion is waiting for this account…</string>
+    <!-- MR-2378: why a hold cancel failed, and what the confirmation's Cancel deletion did. iOS #624 wording. -->
+    <string name="hold_cancel_unreachable">Unable to reach server. Check your connection.</string>
+    <string name="hold_cancel_failed">The deletion could not be cancelled. Please try again.</string>
+    <string name="hold_cancelled_note">The deletion is cancelled.</string>
+    <string name="hold_already_gone_note">That deletion was no longer waiting.</string>
     <string name="delete_hold_signout_keeps">Signing out of this app may not cancel this deletion. To keep your account, cancel the deletion.</string>
     <string name="profile_pending_deletion_body">Your account will be deleted on %1$s.</string>
     <string name="profile_pending_deletion_cancel">Cancel deletion</string>

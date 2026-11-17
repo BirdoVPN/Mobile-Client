@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import app.birdo.vpn.R
 import app.birdo.vpn.ui.theme.BirdoColors
 import app.birdo.vpn.ui.theme.BirdoRed
+import app.birdo.vpn.ui.viewmodel.HoldCancelNote
 
 /**
  * What the sign-out confirmation says about a deletion on hold (review of
@@ -37,6 +38,13 @@ import app.birdo.vpn.ui.theme.BirdoRed
 @StringRes
 internal fun signOutHoldNotice(filedHere: Boolean): Int =
     if (filedHere) R.string.sign_out_cancels_pending_deletion else R.string.sign_out_keeps_pending_deletion
+
+/** What the confirmation's "Cancel deletion" did, in iOS #624's words. */
+@StringRes
+internal fun holdCancelNoteText(note: HoldCancelNote): Int = when (note) {
+    HoldCancelNote.CANCELLED -> R.string.hold_cancelled_note
+    HoldCancelNote.ALREADY_GONE -> R.string.hold_already_gone_note
+}
 
 /**
  * "Sign out?" confirmation, shared by the Connect tab and Profile (A2-006).
@@ -55,11 +63,12 @@ internal fun signOutHoldNotice(filedHere: Boolean): Int =
  *   it first, and if that fails the dialog stays with the reason, Retry and
  *   "Sign out anyway" ([signOutBlockedReason], [onSignOutAnyway]);
  * - not filed by this session, or origin unknown (a restart, a 409): says
- *   signing out of this app may not cancel it, naming no origin, and offers
- *   "Cancel deletion" ([onCancelPendingDeletion]);
+ *   signing out of this app may not cancel it, naming no origin;
  * - not checked (the read failed or timed out): says so, and that signing
- *   out may not cancel a deletion.
- * The dismiss button is "Stay signed in" (common wording).
+ *   out may not cancel a deletion;
+ * - while the hold is read (at most 3 s): "Checking…", nothing to confirm.
+ * "Cancel deletion" is offered whenever there is a hold to cancel. The
+ * dismiss button is "Stay signed in". The wording is iOS #624's, word for word.
  */
 @Composable
 fun SignOutConfirmDialog(
@@ -76,26 +85,43 @@ fun SignOutConfirmDialog(
     /**
      * Review of #616: the hold was filed by THIS session. Only then does
      * signing out cancel it (the server voids a hold when the session that
-     * filed it ends); one filed on the website or another device survives.
+     * filed it ends); any other hold may survive.
      */
     pendingDeletionFiledHere: Boolean = false,
     /** MR-2378: no hold is known because the read failed or timed out. */
     pendingDeletionUnknown: Boolean = false,
+    /**
+     * MR-2378: there is a hold to cancel: one listed, or (a cold start that
+     * could not read the list) the one this session filed. "Cancel deletion"
+     * is offered then, whoever filed it (iOS #624).
+     */
+    pendingDeletionCancellable: Boolean = pendingDeletionAt != null,
     isCancellingPendingDeletion: Boolean = false,
     pendingDeletionError: String? = null,
-    /** "Cancel deletion" for a hold this session did not file; null shows no button. */
+    /** "Cancel deletion"; null shows no button. */
     onCancelPendingDeletion: (() -> Unit)? = null,
+    /** MR-2378: what this dialog's "Cancel deletion" did, shown under it. */
+    holdCancelNote: HoldCancelNote? = null,
+    /** MR-2378: the hold is being read (at most 3 s): "Checking…", nothing to confirm yet. */
+    isChecking: Boolean = false,
     /** MR-2378: this session's hold could not be cancelled, so the sign-out stopped; the reason. */
     signOutBlockedReason: String? = null,
     onSignOutAnyway: (() -> Unit)? = null,
+    /**
+     * MR-2378: changes when a sign-out stopped after its cancel-first (the
+     * list still names a hold, or could not be read): the buttons come back.
+     */
+    signOutReconsidered: Int = 0,
 ) {
     val palette = BirdoColors.current
     var signingOut by rememberSaveable { mutableStateOf(false) }
-    // The sign-out stopped (its cancel-first failed): the buttons come back.
-    LaunchedEffect(signOutBlockedReason) {
-        if (signOutBlockedReason != null) signingOut = false
+    // The sign-out stopped (its cancel-first failed, or the list read after it
+    // did not say that nothing waits): the buttons come back.
+    LaunchedEffect(signOutBlockedReason, signOutReconsidered) {
+        if (signOutBlockedReason != null || signOutReconsidered > 0) signingOut = false
     }
     val blocked = signOutBlockedReason != null && !signingOut
+    val checking = isChecking && !signingOut
     BirdoAlertDialog(
         onDismissRequest = { if (!signingOut) onDismiss() },
         containerColor = palette.surfaceElevated,
@@ -113,56 +139,76 @@ fun SignOutConfirmDialog(
                     Spacer(Modifier.height(10.dp))
                     Text(stringResource(R.string.sign_out_anonymous_reminder), fontWeight = FontWeight.SemiBold)
                 }
-                if (pendingDeletionAt != null) {
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        stringResource(signOutHoldNotice(pendingDeletionFiledHere), pendingDeletionAt),
-                        color = BirdoRed,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    if (pendingDeletionError != null) {
-                        Spacer(Modifier.height(6.dp))
+                when {
+                    checking -> {
+                        Spacer(Modifier.height(10.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = palette.onSurfaceMuted,
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.sign_out_checking_deletion))
+                        }
+                    }
+                    // A failed cancel-first REPLACES the hold's line (iOS #624):
+                    // "signing out cancels the deletion" above "the deletion
+                    // may then still go ahead" would contradict itself.
+                    blocked -> {
+                        Spacer(Modifier.height(10.dp))
                         Text(
-                            pendingDeletionError,
+                            if (pendingDeletionAt != null) {
+                                stringResource(R.string.sign_out_hold_cancel_failed_dated, signOutBlockedReason.orEmpty(), pendingDeletionAt)
+                            } else {
+                                stringResource(R.string.sign_out_hold_cancel_failed_undated, signOutBlockedReason.orEmpty())
+                            },
                             color = BirdoRed,
+                            fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                         )
                     }
-                    if (!pendingDeletionFiledHere && onCancelPendingDeletion != null) {
-                        TextButton(
-                            onClick = onCancelPendingDeletion,
-                            enabled = !signingOut && !isCancellingPendingDeletion,
-                        ) {
+                    else -> {
+                        val line = when {
+                            pendingDeletionAt != null -> stringResource(signOutHoldNotice(pendingDeletionFiledHere), pendingDeletionAt)
+                            pendingDeletionUnknown -> stringResource(R.string.sign_out_pending_deletion_unknown)
+                            else -> null
+                        }
+                        if (line != null) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(line, color = BirdoRed, fontWeight = FontWeight.SemiBold)
+                        }
+                        if (pendingDeletionCancellable && onCancelPendingDeletion != null) {
+                            TextButton(
+                                onClick = onCancelPendingDeletion,
+                                enabled = !signingOut && !isCancellingPendingDeletion,
+                            ) {
+                                Text(
+                                    stringResource(
+                                        if (isCancellingPendingDeletion) R.string.profile_pending_deletion_cancelling
+                                        else R.string.profile_pending_deletion_cancel,
+                                    ),
+                                    color = palette.accent,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+                        val note = pendingDeletionError ?: holdCancelNote?.let { stringResource(holdCancelNoteText(it)) }
+                        if (note != null) {
+                            Spacer(Modifier.height(6.dp))
                             Text(
-                                stringResource(
-                                    if (isCancellingPendingDeletion) R.string.profile_pending_deletion_cancelling
-                                    else R.string.profile_pending_deletion_cancel,
-                                ),
-                                color = palette.accent,
-                                fontWeight = FontWeight.SemiBold,
+                                note,
+                                color = if (pendingDeletionError != null) BirdoRed else palette.onSurfaceMuted,
+                                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                             )
                         }
-                    }
-                } else if (pendingDeletionUnknown) {
-                    Spacer(Modifier.height(10.dp))
-                    Text(stringResource(R.string.sign_out_pending_deletion_unknown), fontWeight = FontWeight.SemiBold)
-                }
-                if (blocked) {
-                    Spacer(Modifier.height(10.dp))
-                    Column(Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
-                        Text(
-                            stringResource(R.string.sign_out_hold_cancel_failed),
-                            color = BirdoRed,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(signOutBlockedReason.orEmpty(), color = BirdoRed)
                     }
                 }
             }
         },
         confirmButton = {
             TextButton(
-                enabled = !signingOut,
+                enabled = !signingOut && !checking,
                 onClick = {
                     signingOut = true
                     onConfirm()
@@ -183,7 +229,13 @@ fun SignOutConfirmDialog(
                     }
                 } else {
                     Text(
-                        stringResource(if (blocked) R.string.retry else R.string.sign_out),
+                        stringResource(
+                            when {
+                                checking -> R.string.sign_out_checking_label
+                                blocked -> R.string.sign_out_try_again
+                                else -> R.string.sign_out
+                            },
+                        ),
                         color = BirdoRed,
                         fontWeight = FontWeight.SemiBold,
                     )
@@ -192,6 +244,7 @@ fun SignOutConfirmDialog(
         },
         dismissButton = {
             Row {
+                // MR-2378 common wording: "Cancel" would read as cancelling the deletion.
                 TextButton(onClick = onDismiss, enabled = !signingOut) {
                     Text(stringResource(R.string.sign_out_stay_signed_in), color = palette.onSurfaceMuted)
                 }

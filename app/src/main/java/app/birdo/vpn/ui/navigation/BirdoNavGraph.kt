@@ -581,6 +581,10 @@ fun BirdoNavGraph(
                         onSignOutOpened = { authViewModel.checkBeforeSignOut() },
                         onSignOutDismissed = { authViewModel.dismissSignOutHoldError() },
                         isCheckingBeforeSignOut = authState.isCheckingBeforeSignOut,
+                        pendingDeletionCancellable = authState.pendingDeletion != null ||
+                            authState.deletionHoldFiledHereId != null,
+                        holdCancelNote = authState.holdCancelNote,
+                        signOutReconsidered = authState.signOutReconsidered,
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
                         multiHop = vpnViewModel.multiHop.collectAsState().value,
@@ -718,6 +722,10 @@ fun BirdoNavGraph(
                         onSignOutOpened = { authViewModel.checkBeforeSignOut() },
                         onSignOutDismissed = { authViewModel.dismissSignOutHoldError() },
                         isCheckingBeforeSignOut = authState.isCheckingBeforeSignOut,
+                        pendingDeletionCancellable = authState.pendingDeletion != null ||
+                            authState.deletionHoldFiledHereId != null,
+                        holdCancelNote = authState.holdCancelNote,
+                        signOutReconsidered = authState.signOutReconsidered,
                     )
                 }
             }

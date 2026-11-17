@@ -342,7 +342,8 @@ class DeleteHoldViewModelTest {
         vm.cancelPendingDeletion()
 
         assertEquals(held, vm.uiState.value.pendingDeletion)
-        assertEquals(StringsXml.text("error_unreachable"), vm.uiState.value.pendingDeletionError)
+        // iOS #624's sentence for a cancel with no answer.
+        assertEquals(StringsXml.text("hold_cancel_unreachable"), vm.uiState.value.pendingDeletionError)
     }
 
     // ── After applyAfter ────────────────────────────────────────
@@ -676,7 +677,7 @@ class DeleteHoldViewModelTest {
 
         assertEquals("a failed cancel is no sign-out", 0, signedOut)
         assertTrue(vm.uiState.value.isLoggedIn)
-        assertEquals(StringsXml.text("error_unreachable"), vm.uiState.value.signOutHoldCancelError)
+        assertEquals(StringsXml.text("hold_cancel_unreachable"), vm.uiState.value.signOutHoldCancelError)
         assertEquals(held, vm.uiState.value.pendingDeletion)
         assertTrue(vm.uiState.value.pendingDeletionFiledHere)
 
@@ -872,11 +873,12 @@ class DeleteHoldViewModelTest {
 
         coVerify(exactly = 1) { repository.cancelPendingChange("p1") }
         assertEquals("a failed cancel blocks the sign-out", 0, signedOut)
-        assertEquals(StringsXml.text("error_unreachable"), vm.uiState.value.signOutHoldCancelError)
+        assertEquals(StringsXml.text("hold_cancel_unreachable"), vm.uiState.value.signOutHoldCancelError)
         assertTrue(vm.uiState.value.pendingDeletionUnknown)
 
-        // Back online: Retry cancels it and signs out.
+        // Back online: Retry cancels it, the list answers that nothing waits, and it signs out.
         coEvery { repository.cancelPendingChange("p1") } returns ApiResult.Success(true)
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(null)
         vm.signOut { signedOut++ }
         assertEquals(1, signedOut)
         verify { tokenManager.clearDeletionHoldFiledHere() }
@@ -925,6 +927,115 @@ class DeleteHoldViewModelTest {
 
         assertFalse(vm.uiState.value.isCheckingBeforeSignOut)
         assertTrue(vm.uiState.value.pendingDeletionUnknown)
+    }
+
+    // ── MR-2378: matching iOS #624's flow ───────────────────────
+
+    /**
+     * iOS SignOutHold.prepareSignOut: after the cancel-first, the list is read
+     * again, and the sign-out goes on only if it answered that nothing waits.
+     */
+    @Test
+    fun `a cancel-first whose next read fails stops, and the next tap signs out`() = runTest {
+        val vm = viewModelWithOwnHold()
+        coEvery { repository.cancelPendingChange("p1") } returns ApiResult.Success(true)
+        coEvery { repository.pendingDeletion() } returns
+            ApiResult.Error(StringsXml.text("error_unreachable"), 0, FailureReason.UNREACHABLE)
+        var signedOut = 0
+
+        vm.signOut { signedOut++ }
+
+        assertEquals("nobody is signed out on an unanswered read", 0, signedOut)
+        assertEquals(1, vm.uiState.value.signOutReconsidered)
+        assertTrue(vm.uiState.value.pendingDeletionUnknown)
+        assertNull(vm.uiState.value.deletionHoldFiledHereId)
+
+        // Its own hold is gone: this time nothing is cancelled first.
+        vm.signOut { signedOut++ }
+        assertEquals(1, signedOut)
+        coVerify(exactly = 1) { repository.cancelPendingChange("p1") }
+    }
+
+    @Test
+    fun `a cancel-first after which another hold is listed stops`() = runTest {
+        val vm = viewModelWithOwnHold()
+        coEvery { repository.cancelPendingChange("p1") } returns ApiResult.Success(true)
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(PendingDeletion("p9", tomorrow))
+        var signedOut = 0
+
+        vm.signOut { signedOut++ }
+
+        assertEquals(0, signedOut)
+        assertEquals("p9", vm.uiState.value.pendingDeletion?.id)
+        assertFalse(vm.uiState.value.pendingDeletionFiledHere)
+        assertEquals(1, vm.uiState.value.signOutReconsidered)
+    }
+
+    @Test
+    fun `the check reads nothing when a hold is already known`() = runTest {
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(held)
+        val vm = viewModelFor(anon)
+
+        vm.checkBeforeSignOut()
+
+        assertFalse(vm.uiState.value.isCheckingBeforeSignOut)
+        coVerify(exactly = 1) { repository.pendingDeletion() }
+    }
+
+    @Test
+    fun `the confirmation's Cancel deletion says what it did`() = runTest {
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(held)
+        val vm = viewModelFor(anon)
+        coEvery { repository.cancelPendingChange("p1") } returns ApiResult.Success(true)
+
+        vm.cancelPendingDeletion()
+        assertEquals(HoldCancelNote.CANCELLED, vm.uiState.value.holdCancelNote)
+
+        vm.dismissSignOutHoldError()
+        assertNull(vm.uiState.value.holdCancelNote)
+
+        // p1 was cancelled above, so a list that still names it is late.
+        vm.refreshPendingDeletion()
+        assertNull(vm.uiState.value.pendingDeletion)
+    }
+
+    @Test
+    fun `an already gone hold says so`() = runTest {
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(held)
+        val vm = viewModelFor(anon)
+        coEvery { repository.cancelPendingChange("p1") } returns ApiResult.Success(false)
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(null)
+
+        vm.cancelPendingDeletion()
+
+        assertEquals(HoldCancelNote.ALREADY_GONE, vm.uiState.value.holdCancelNote)
+    }
+
+    @Test
+    fun `a refused cancel gives iOS's sentence`() = runTest {
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(held)
+        val vm = viewModelFor(anon)
+        coEvery { repository.cancelPendingChange("p1") } returns
+            ApiResult.Error("Server says no.", 500, FailureReason.SERVER_UNAVAILABLE)
+
+        vm.cancelPendingDeletion()
+
+        assertEquals(StringsXml.text("hold_cancel_failed"), vm.uiState.value.pendingDeletionError)
+    }
+
+    /** Offline cold start, no list: the confirmation's Cancel deletion cancels the kept id. */
+    @Test
+    fun `Cancel deletion with no list cancels this session's kept id`() = runTest {
+        every { tokenManager.getDeletionHoldFiledHere() } returns "p1"
+        coEvery { repository.pendingDeletion() } returns
+            ApiResult.Error(StringsXml.text("error_unreachable"), 0, FailureReason.UNREACHABLE)
+        val vm = viewModelFor(anon)
+        coEvery { repository.cancelPendingChange("p1") } returns ApiResult.Success(true)
+
+        vm.cancelPendingDeletion()
+
+        coVerify(exactly = 1) { repository.cancelPendingChange("p1") }
+        assertNull(vm.uiState.value.deletionHoldFiledHereId)
     }
 
     // ── The banner's date ───────────────────────────────────────

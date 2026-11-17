@@ -121,8 +121,14 @@ fun HomeScreen(
     /** The sign-out confirmation is asked for (the hold is read first) and closed. */
     onSignOutOpened: () -> Unit = {},
     onSignOutDismissed: () -> Unit = {},
-    /** MR-2378: the hold is being read (at most 3 s); the confirmation waits for it. */
+    /** MR-2378: the hold is being read (at most 3 s); the confirmation says "Checking…". */
     isCheckingBeforeSignOut: Boolean = false,
+    /** MR-2378: a hold to cancel exists (listed, or this session's kept id). */
+    pendingDeletionCancellable: Boolean = pendingDeletion != null,
+    /** MR-2378: what the confirmation's "Cancel deletion" did. */
+    holdCancelNote: app.birdo.vpn.ui.viewmodel.HoldCancelNote? = null,
+    /** MR-2378: a sign-out stopped after its cancel-first; the confirmation stays. */
+    signOutReconsidered: Int = 0,
 ) {
     val palette = BirdoColors.current
     // What the screen says and offers is decided by the pure functions in
@@ -604,9 +610,7 @@ fun HomeScreen(
         )
     }
 
-    // MR-2378: not before the hold was read (or its 3 s cap passed), so the
-    // confirmation never opens with no word about a scheduled deletion.
-    if (showSignOutConfirm && !isCheckingBeforeSignOut) {
+    if (showSignOutConfirm) {
         SignOutConfirmDialog(
             isConnected = isConnected,
             isAnonymousAccount = isAnonymousAccount,
@@ -623,6 +627,12 @@ fun HomeScreen(
             onCancelPendingDeletion = onCancelPendingDeletion,
             signOutBlockedReason = signOutBlockedReason,
             onSignOutAnyway = onSignOutAnyway,
+            // MR-2378: it says "Checking…" until the hold was read (at most
+            // 3 s), so it never asks to confirm with no word about a deletion.
+            isChecking = isCheckingBeforeSignOut,
+            pendingDeletionCancellable = pendingDeletionCancellable,
+            holdCancelNote = holdCancelNote,
+            signOutReconsidered = signOutReconsidered,
         )
     }
 

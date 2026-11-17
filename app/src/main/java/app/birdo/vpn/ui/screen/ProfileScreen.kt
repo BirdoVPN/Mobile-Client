@@ -183,8 +183,14 @@ fun ProfileScreen(
     /** The sign-out confirmation is asked for (the hold is read first) and closed. */
     onSignOutOpened: () -> Unit = {},
     onSignOutDismissed: () -> Unit = {},
-    /** MR-2378: the hold is being read (at most 3 s); the confirmation waits for it. */
+    /** MR-2378: the hold is being read (at most 3 s); the confirmation says "Checking…". */
     isCheckingBeforeSignOut: Boolean = false,
+    /** MR-2378: a hold to cancel exists (listed, or this session's kept id). */
+    pendingDeletionCancellable: Boolean = pendingDeletion != null,
+    /** MR-2378: what the confirmation's "Cancel deletion" did. */
+    holdCancelNote: app.birdo.vpn.ui.viewmodel.HoldCancelNote? = null,
+    /** MR-2378: a sign-out stopped after its cancel-first; the confirmation stays. */
+    signOutReconsidered: Int = 0,
     // Google Play build: hide the "Manage on web" row, which links out to the
     // billing dashboard (external-purchase steering), and the "Redeem voucher"
     // row, since vouchers are sold only on the web (LR22, showsVoucherEntry).
@@ -363,9 +369,7 @@ fun ProfileScreen(
         )
     }
 
-    // MR-2378: not before the hold was read (or its 3 s cap passed), so the
-    // confirmation never opens with no word about a scheduled deletion.
-    if (showSignOutConfirm && !isCheckingBeforeSignOut) {
+    if (showSignOutConfirm) {
         SignOutConfirmDialog(
             isConnected = isConnected,
             isAnonymousAccount = isAnonymousAccount,
@@ -384,6 +388,12 @@ fun ProfileScreen(
             onCancelPendingDeletion = onCancelPendingDeletion,
             signOutBlockedReason = signOutBlockedReason,
             onSignOutAnyway = onSignOutAnyway,
+            // MR-2378: it says "Checking…" until the hold was read (at most
+            // 3 s), so it never asks to confirm with no word about a deletion.
+            isChecking = isCheckingBeforeSignOut,
+            pendingDeletionCancellable = pendingDeletionCancellable,
+            holdCancelNote = holdCancelNote,
+            signOutReconsidered = signOutReconsidered,
         )
     }
 }

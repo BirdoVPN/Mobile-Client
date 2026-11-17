@@ -52,6 +52,7 @@ class SignOutHoldNoticeTest {
         hold: String? = at,
         unknown: Boolean = false,
         blocked: String? = null,
+        cancellable: Boolean = hold != null,
     ) {
         rule.setContent {
             MaterialTheme {
@@ -68,6 +69,7 @@ class SignOutHoldNoticeTest {
                     onCancelPendingDeletion = { cancels++ },
                     signOutBlockedReason = blocked,
                     onSignOutAnyway = { anyway++ },
+                    pendingDeletionCancellable = cancellable,
                 )
             }
         }
@@ -130,8 +132,8 @@ class SignOutHoldNoticeTest {
 
         rule.onNodeWithText(text(R.string.sign_out_cancels_pending_deletion, at)).assertIsDisplayed()
         rule.onAllNodes(hasText(text(R.string.sign_out_keeps_pending_deletion, at))).assertCountEquals(0)
-        // The sign-out cancels it first (AuthViewModel.signOut): no separate button.
-        rule.onAllNodes(hasText(text(R.string.profile_pending_deletion_cancel))).assertCountEquals(0)
+        // iOS #624: "Cancel deletion" is offered whenever there is a hold to cancel.
+        rule.onNodeWithText(text(R.string.profile_pending_deletion_cancel)).assertIsDisplayed()
     }
 
     @Test
@@ -153,19 +155,87 @@ class SignOutHoldNoticeTest {
     }
 
     @Test
-    fun `a failed cancel-first keeps the user signed in, with Retry and Sign out anyway`() {
-        show(filedHere = true, blocked = "No connection.")
+    fun `a failed cancel-first replaces the hold's line, with Try again and Sign out anyway`() {
+        val reason = text(R.string.hold_cancel_unreachable)
+        show(filedHere = true, blocked = reason)
 
-        rule.onNodeWithText(text(R.string.sign_out_hold_cancel_failed)).assertIsDisplayed()
-        rule.onNodeWithText("No connection.").assertIsDisplayed()
+        rule.onNodeWithText(text(R.string.sign_out_hold_cancel_failed_dated, reason, at)).assertIsDisplayed()
+        // It replaces "signing out cancels the deletion", which it would contradict.
+        rule.onAllNodes(hasText(text(R.string.sign_out_cancels_pending_deletion, at))).assertCountEquals(0)
+        rule.onAllNodes(hasText(text(R.string.profile_pending_deletion_cancel))).assertCountEquals(0)
 
-        rule.onNodeWithText(text(R.string.retry)).performClick()
+        rule.onNodeWithText(text(R.string.sign_out_try_again)).performClick()
         assertEquals(1, confirms)
     }
 
     @Test
+    fun `with no date known the failed cancel-first names the deletion asked for here`() {
+        val reason = text(R.string.hold_cancel_unreachable)
+        show(filedHere = false, hold = null, unknown = true, blocked = reason)
+
+        rule.onNodeWithText(text(R.string.sign_out_hold_cancel_failed_undated, reason)).assertIsDisplayed()
+    }
+
+    @Test
+    fun `while the hold is read the confirmation says Checking and confirms nothing`() {
+        rule.setContent {
+            MaterialTheme {
+                SignOutConfirmDialog(
+                    isConnected = false,
+                    isAnonymousAccount = false,
+                    onConfirm = { confirms++ },
+                    onDismiss = {},
+                    isChecking = true,
+                )
+            }
+        }
+
+        rule.onNodeWithText(text(R.string.sign_out_checking_deletion)).assertIsDisplayed()
+        rule.onNodeWithText(text(R.string.sign_out_checking_label)).performClick()
+        assertEquals(0, confirms)
+    }
+
+    @Test
+    fun `a cold start offline with this session's hold offers Cancel deletion under the unchecked line`() {
+        show(filedHere = false, hold = null, unknown = true, cancellable = true)
+
+        rule.onNodeWithText(text(R.string.sign_out_pending_deletion_unknown)).assertIsDisplayed()
+        rule.onNodeWithText(text(R.string.profile_pending_deletion_cancel)).performClick()
+        assertEquals(1, cancels)
+    }
+
+    /** Word for word iOS #624 at 1a7105d4 (AccountDeletion.swift, SignOutConfirmation.swift). */
+    @Test
+    fun `the remaining sign-out wording is iOS's`() {
+        assertEquals(
+            "%1\$s You are still signed in, and your account is still scheduled to be deleted on %2\$s. " +
+                "Try again, or sign out anyway: the deletion may then still go ahead.",
+            StringsXml.text("sign_out_hold_cancel_failed_dated"),
+        )
+        assertEquals(
+            "%1\$s You are still signed in, and the deletion you asked for on this device may still be scheduled. " +
+                "Try again, or sign out anyway: the deletion may then still go ahead.",
+            StringsXml.text("sign_out_hold_cancel_failed_undated"),
+        )
+        assertEquals("Try again", StringsXml.text("sign_out_try_again"))
+        assertEquals("Sign out anyway", StringsXml.text("sign_out_anyway"))
+        assertEquals("Checking…", StringsXml.text("sign_out_checking_label"))
+        assertEquals("Checking whether a deletion is waiting for this account…", StringsXml.text("sign_out_checking_deletion"))
+        assertEquals("Unable to reach server. Check your connection.", StringsXml.text("hold_cancel_unreachable"))
+        assertEquals("The deletion could not be cancelled. Please try again.", StringsXml.text("hold_cancel_failed"))
+        assertEquals("The deletion is cancelled.", StringsXml.text("hold_cancelled_note"))
+        assertEquals("That deletion was no longer waiting.", StringsXml.text("hold_already_gone_note"))
+        assertEquals("Cancel deletion", StringsXml.text("profile_pending_deletion_cancel"))
+        assertEquals("Cancelling…", StringsXml.text("profile_pending_deletion_cancelling"))
+        assertEquals(
+            "Stay signed in on this device until then; signing out cancels the deletion.",
+            StringsXml.text("delete_hold_signout_cancels"),
+        )
+    }
+
+    @Test
     fun `Sign out anyway signs out without the cancel`() {
-        show(filedHere = true, blocked = "No connection.")
+        show(filedHere = true, blocked = text(R.string.hold_cancel_unreachable))
 
         rule.onNodeWithText(text(R.string.sign_out_anyway)).performClick()
 
