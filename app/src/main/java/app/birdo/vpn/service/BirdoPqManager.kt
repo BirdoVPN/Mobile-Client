@@ -126,14 +126,30 @@ object BirdoPqManager {
     internal var elapsedMs: () -> Long = { SystemClock.elapsedRealtime() }
 
     /**
-     * BACKSTOP ONLY. A pair is normally ended by its own generation's
-     * decapsulation or [stop], or by its dial's [discardPending] when the
-     * service never heard of it. One that slips past all of them (a process
-     * path that names its key nowhere) would otherwise sit in memory until the
-     * next upload or sign-out. Five minutes is longer than any dial; the cap
-     * bounds how many such pairs can pile up.
+     * BACKSTOP ONLY, not a dial timeout (MR-2374: renamed from
+     * PENDING_PAIR_MAX_AGE_MS, which read like one). A pair is normally ended
+     * by its own generation's decapsulation or [stop], or by its dial's
+     * [discardPending] when the service never heard of it. One that slips past
+     * all of them (a process path that names its key nowhere) is wiped by
+     * [prunePending] once it is this old.
+     *
+     * There is no timer: [prunePending] runs only when a pair is uploaded
+     * ([getClientPublicKeyB64]) or a generation stops ([stop]), and wipes the
+     * pairs that are this old at that moment, whatever key they name. An
+     * abandoned pair therefore still waits for the next upload, stop or
+     * sign-out ([discardKeypair]); the age decides that one of those removes
+     * it even though nobody names it.
+     *
+     * The cost, by design: a dial whose OWN pair is this old when another
+     * generation uploads or stops finds it gone, and fails closed once with
+     * QUANTUM_FAILED (never a classical fallback); the next dial makes a new
+     * pair. No dial lives that long: VpnManager's watchdog ends one after 45 s
+     * for /connect plus 60 s for the service (CONNECT_API_TIMEOUT_MS,
+     * CONNECT_SERVICE_TIMEOUT_MS), and a live rebuild after 53 s
+     * (LIVE_REBUILD_TIMEOUT_MS). [PENDING_PAIR_MAX_COUNT] bounds how many
+     * pairs can wait at once; past it the oldest is wiped first.
      */
-    private const val PENDING_PAIR_MAX_AGE_MS = 5 * 60_000L
+    private const val ABANDONED_PAIR_AGE_MS = 5 * 60_000L
     private const val PENDING_PAIR_MAX_COUNT = 4
 
     /** Runs the sign-out purge off the caller's thread (Keystore deletes block). Tests run it inline. */
@@ -163,8 +179,11 @@ object BirdoPqManager {
      * `pq_client_public_key`) so the server can encapsulate against it, and call
      * this once per request: a retry of the SAME request re-sends the key it
      * already has (the server's ciphertext still fits it), while a new connect,
-     * rebuild or reconnect calls this again. Calling it replaces and zeroes any
-     * pair still in the hand-off.
+     * rebuild or reconnect calls this again. Calling it leaves the pairs other
+     * requests uploaded alone: each is keyed by its own public key and ended by
+     * its own generation ([performKeyExchange], [stop], [discardPending]),
+     * within the backstops of [prunePending] (age) and the cap here (the
+     * oldest of more than [PENDING_PAIR_MAX_COUNT] is zeroed).
      *
      * Returns `null` if the native lib isn't loaded or keypair generation
      * fails. Callers that requested quantum protection must fail closed rather
@@ -283,7 +302,7 @@ object BirdoPqManager {
         val it = pending.entries.iterator()
         while (it.hasNext()) {
             val e = it.next()
-            if (now - e.value.atMs >= PENDING_PAIR_MAX_AGE_MS) {
+            if (now - e.value.atMs >= ABANDONED_PAIR_AGE_MS) {
                 e.value.keypair.secretKey.fill(0)
                 it.remove()
             }
@@ -310,7 +329,9 @@ object BirdoPqManager {
      * Returns null when:
      *   - the native lib isn't loaded (built without Rust toolchain),
      *   - the server response doesn't include a ciphertext (`rosenpassPublicKey` field),
-     *   - we have no persisted client keypair AND can't generate one,
+     *   - there is no pair for [uploadedPk] (null, consumed, or wiped by
+     *     [stop], [discardPending] or a backstop): nothing is stored to fall
+     *     back to, and none is generated here (MR-2117),
      *   - the native call rejects the input (wrong-sized, etc.),
      *   - the derived PSK is wrong-sized (defensive).
      *

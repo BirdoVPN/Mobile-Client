@@ -10,6 +10,7 @@ import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.preferences.AppPreferences
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -563,11 +564,12 @@ class BirdoVpnServiceLifecycleTest {
         return (field("transitionGen") as AtomicLong).get()
     }
 
-    private fun liveRebuild(gen: Long, id: Long) {
+    private fun liveRebuild(gen: Long, id: Long, pqKey: String? = null) {
         val intent = mockk<Intent>(relaxed = true) {
             every { getLongExtra(BirdoVpnService.EXTRA_REBUILD_ID, any()) } returns id
             every { getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, any()) } returns true
             every { getStringArrayExtra(any()) } returns null
+            if (pqKey != null) every { getStringExtra(BirdoVpnService.EXTRA_PQ_UPLOADED_KEY) } returns pqKey
         }
         val handle = BirdoVpnService::class.java.getDeclaredMethod("handleLiveRebuild", Intent::class.java, Long::class.javaPrimitiveType)
         handle.isAccessible = true
@@ -687,6 +689,112 @@ class BirdoVpnServiceLifecycleTest {
         waitFor("the rebuild verdict") { outcome.isCompleted }
         assertEquals(LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED, kotlinx.coroutines.runBlocking { outcome.await() })
         waitFor("Connected") { BirdoVpnService.currentState == VpnState.Connected }
+    }
+
+    // ── MR-2374: the service half of one ML-KEM pair per connect ─────────
+    //
+    // VpnManager names the pair a dial uploaded in the START or LIVE_REBUILD
+    // extra (EXTRA_PQ_UPLOADED_KEY). The service decapsulates with exactly
+    // that pair, and the teardown of the session it set up names the same key
+    // (sessionPqKey), so a stale teardown never wipes a newer dial's pair.
+
+    /** BirdoPqManager as the service sees it; the decapsulation itself is BirdoPqManagerTest's. */
+    private fun recordPq() {
+        mockkObject(BirdoPqManager)
+        // 32 bytes of 0x03: a valid PSK shape with no entropy.
+        coEvery { BirdoPqManager.performKeyExchange(any(), any(), any()) } returns
+            "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM="
+        every { BirdoPqManager.stop(any()) } just Runs
+        every { BirdoPqManager.discardPending(any()) } just Runs
+    }
+
+    /** A quantum grant: the ciphertext and nonce only need to be present here. */
+    private fun quantumGrant(endpoint: String, keyId: String? = null) = ConnectResponse(
+        success = true,
+        keyId = keyId,
+        privateKey = PRIVATE_KEY,
+        serverPublicKey = SERVER_KEY,
+        endpoint = endpoint,
+        assignedIp = "10.100.0.9",
+        allowedIps = listOf("0.0.0.0/0", "::/0"),
+        quantumEnabled = true,
+        rosenpassPublicKey = "ciphertext",
+        rosenpassEndpoint = "nonce",
+    )
+
+    private fun cleanupStealthAndQuantum() {
+        val cleanup = BirdoVpnService::class.java.getDeclaredMethod("cleanupStealthAndQuantum")
+        cleanup.isAccessible = true
+        cleanup.invoke(service)
+    }
+
+    @Test
+    fun `a START's PQ key is the pair the service decapsulates with, and the one its teardown wipes`() {
+        arrangeTunnelStart(protectSucceeds = true)
+        every { prefs.quantumProtectionEnabled } returns true
+        recordPq()
+        BirdoVpnService.setConfig(quantumGrant("203.0.113.7:51820"))
+        val start = mockk<Intent>(relaxed = true) {
+            every { getStringExtra(BirdoVpnService.EXTRA_PQ_UPLOADED_KEY) } returns "pq-key-A"
+            every { getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, any()) } returns true
+            every { getBooleanExtra(BirdoVpnService.EXTRA_STEALTH_REQUESTED, any()) } returns false
+            every { getStringArrayExtra(any()) } returns null
+        }
+        val handleStart = BirdoVpnService::class.java
+            .getDeclaredMethod("handleStart", Intent::class.java, Long::class.javaPrimitiveType)
+        handleStart.isAccessible = true
+
+        handleStart.invoke(service, start, (field("transitionGen") as AtomicLong).get())
+
+        coVerify(exactly = 1) { BirdoPqManager.performKeyExchange(any(), any(), "pq-key-A") }
+        assertEquals("pq-key-A", field("sessionPqKey"))
+        waitFor("Connected") { BirdoVpnService.currentState == VpnState.Connected }
+
+        cleanupStealthAndQuantum()
+        verify(exactly = 1) { BirdoPqManager.stop("pq-key-A") }
+    }
+
+    @Test
+    fun `a live rebuild decapsulates with its LIVE_REBUILD key, and the swapped-in session's teardown names it`() {
+        val gen = arrangeLiveSession(mutableListOf())
+        every { prefs.quantumProtectionEnabled } returns true
+        recordPq()
+        BirdoVpnService.setRebuildConfig(quantumGrant("198.51.100.9:51820", keyId = "key-456"))
+        // The live session's pair, consumed when it connected; the rebuild uploaded B.
+        setField("sessionPqKey", "pq-key-A")
+        val outcome = BirdoVpnService.expectLiveRebuild(45L)
+
+        liveRebuild(gen, 45L, pqKey = "pq-key-B")
+
+        coVerify(exactly = 1) { BirdoPqManager.performKeyExchange(any(), any(), "pq-key-B") }
+        coVerify(exactly = 0) { BirdoPqManager.performKeyExchange(any(), any(), "pq-key-A") }
+        assertEquals("pq-key-B", field("sessionPqKey"))
+        waitFor("the rebuild verdict") { outcome.isCompleted }
+        assertEquals(LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED, kotlinx.coroutines.runBlocking { outcome.await() })
+        waitFor("Connected") { BirdoVpnService.currentState == VpnState.Connected }
+
+        cleanupStealthAndQuantum()
+        verify(exactly = 1) { BirdoPqManager.stop("pq-key-B") }
+        verify(exactly = 0) { BirdoPqManager.discardPending(any()) }
+    }
+
+    @Test
+    fun `a rebuild refused before the swap drops only its own pair, and the session keeps its key`() {
+        val gen = arrangeLiveSession(mutableListOf())
+        every { prefs.quantumProtectionEnabled } returns true
+        recordPq()
+        BirdoVpnService.setRebuildConfig(quantumGrant("198.51.100.9:51820", keyId = "key-456"))
+        setField("sessionPqKey", "pq-key-A")
+        every { anyConstructed<VpnService.Builder>().establish() } returns null
+        val outcome = BirdoVpnService.expectLiveRebuild(46L)
+
+        liveRebuild(gen, 46L, pqKey = "pq-key-B")
+
+        assertTrue(outcome.isCompleted)
+        assertEquals(LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP, kotlinx.coroutines.runBlocking { outcome.await() })
+        verify(exactly = 1) { BirdoPqManager.discardPending("pq-key-B") }
+        verify(exactly = 0) { BirdoPqManager.discardPending("pq-key-A") }
+        assertEquals("pq-key-A", field("sessionPqKey"))
     }
 
     @Test
