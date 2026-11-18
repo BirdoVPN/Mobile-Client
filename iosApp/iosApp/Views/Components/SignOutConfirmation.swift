@@ -159,7 +159,9 @@ struct SignOutConfirmation: View {
 
     /// Sign out (or, after a failed cancel, try the cancel and sign-out again).
     private func confirm() {
-        guard !checking, !busy, !cancelInFlight else { return }
+        // MR-2389 review (L1): not while ANY cancel is out (this dialog's, or
+        // the Profile banner's), as Android's signOut(): one cancel at a time.
+        guard !checking, !busy, !cancelInFlight, !authVM.isCancellingPendingDeletion else { return }
         let notice = self.notice
         busy = true
         blocked = nil

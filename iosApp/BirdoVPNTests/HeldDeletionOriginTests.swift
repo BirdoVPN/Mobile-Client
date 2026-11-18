@@ -707,6 +707,23 @@ final class HeldDeletionOriginTests: XCTestCase {
         XCTAssertTrue(next.controller.cancelledIds.isEmpty)
     }
 
+    /// Review of #632 (L1): the sign-out's slot release is capped, so the
+    /// confirmation that cannot be dismissed while signing out is truly
+    /// bounded (cancel 10 s + read 3 s + release 5 s); and Sign out does
+    /// nothing while any cancel is out, as Android's signOut().
+    func testTheSignOutIsBoundedAndWaitsForAnyCancel() throws {
+        let vpn = try source("iosApp/ViewModels/VpnViewModel.swift")
+        let release = member("func disconnectForSignOut() async {", in: vpn)
+        XCTAssertTrue(release.contains("try? await CappedCall.run(within: Self.signOutReleaseCap)"), release)
+        XCTAssertTrue(release.contains("try await api.disconnect(keyId: keyId)"))
+        XCTAssertFalse(release.contains("try? await api.disconnect(keyId: keyId)"), "an uncapped release again")
+        XCTAssertTrue(vpn.contains("static let signOutReleaseCap: Duration = .seconds(5)"))
+
+        let dialog = try source("iosApp/Views/Components/SignOutConfirmation.swift")
+        let confirm = member("private func confirm() {", in: dialog)
+        XCTAssertTrue(confirm.contains("guard !checking, !busy, !cancelInFlight, !authVM.isCancellingPendingDeletion else { return }"))
+    }
+
     /// Review of #632 (L2): the AuthViewModel claims nothing for a refused answer.
     func testAuthViewModelClaimsNothingForACancelledHold() throws {
         let auth = try source("iosApp/ViewModels/AuthViewModel.swift")
