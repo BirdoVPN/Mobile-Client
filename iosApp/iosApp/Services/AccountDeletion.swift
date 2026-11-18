@@ -770,6 +770,12 @@ final class HeldDeletionController {
     private var order = HeldDeletionReadOrder()
     private var inFlight: (id: String, task: Task<HeldDeletionCancelOutcome, Never>)?
     private let cancelTimeout: Duration
+    /// Review of #632 (L2, Android #623 `cancelledHoldIds`): the ids whose
+    /// cancel this session had answered 200 or 404. A list answer, or a hold
+    /// request's answer, that names one later is a stale view of a hold that
+    /// is gone, never a hold again: it is filtered out (`read`) or refused
+    /// (`show`). Kept for the session, dropped with it.
+    private(set) var cancelledIds: Set<String> = []
 
     static let unreachableMessage = "Unable to reach server. Check your connection."
     static let cancelFailedMessage = "The deletion could not be cancelled. Please try again."
@@ -799,6 +805,7 @@ final class HeldDeletionController {
     func restore() {
         record = HeldDeletionRecord(restoredFiledHereId: store.heldDeletionFiledHereId)
         listAnswered = false
+        cancelledIds = []
         onChange?()
     }
 
@@ -807,6 +814,7 @@ final class HeldDeletionController {
         order.wrote()
         record = HeldDeletionRecord()
         listAnswered = false
+        cancelledIds = []
         store.setHeldDeletionFiledHere(nil)
         onChange?()
     }
@@ -817,13 +825,20 @@ final class HeldDeletionController {
         inFlight = nil
         isCancelling = false
         listAnswered = false
+        cancelledIds = []
         update { $0.sessionEnded() }
     }
 
     /// A hold request named a hold. Filed here only for this session's own 202.
-    func show(_ answer: DeletionHoldAnswer) {
+    /// - Returns: false, changing nothing, when it names a hold this session
+    ///   already cancelled (L2): a late answer, not a new hold. The caller
+    ///   reads the list instead and claims nothing.
+    @discardableResult
+    func show(_ answer: DeletionHoldAnswer) -> Bool {
+        guard !cancelledIds.contains(answer.pending.id) else { return false }
         order.wrote()
         update { $0.apply(answer) }
+        return true
     }
 
     /// Read the list. True when what is known is now at least as fresh as its
@@ -844,7 +859,10 @@ final class HeldDeletionController {
             switch order.admit(ticket) {
             case .apply:
                 listAnswered = true
-                update { $0.listed(listed) }
+                // L2: a hold this session already cancelled is not listed
+                // back (an answer that raced the cancel, a replica behind).
+                let current = listed.flatMap { cancelledIds.contains($0.id) ? nil : $0 }
+                update { $0.listed(current) }
                 return true
             case .superseded:
                 return true
@@ -877,8 +895,10 @@ final class HeldDeletionController {
             let cancelled = try await CappedCall.run(within: cancelTimeout) { [self] in
                 try await server.cancel(id)
             }
-            // The server's word: every read started before now is stale.
+            // The server's word: every read started before now is stale, and
+            // this id never comes back (L2).
             order.wrote()
+            cancelledIds.insert(id)
             isCancelling = false
             update { $0.cancelled(id: id) }
             return cancelled ? .cancelled : .alreadyGone

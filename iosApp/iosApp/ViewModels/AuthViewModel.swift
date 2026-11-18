@@ -392,7 +392,13 @@ final class AuthViewModel: ObservableObject {
     /// or a list read names a hold that may come from the website or another
     /// device, which this app's sign-out may not cancel.
     private func showDeletionHold(_ pending: PendingDeletion, filedHere: Bool) {
-        heldDeletions.show(filedHere ? .filed(pending) : .alreadyPending(pending))
+        // Review of #632 (L2, Android #623): an answer naming a hold this
+        // session already cancelled is late, not a new hold. The list
+        // decides; nothing is claimed and the dialog stays as it is.
+        guard heldDeletions.show(filedHere ? .filed(pending) : .alreadyPending(pending)) else {
+            refreshPendingDeletion()
+            return
+        }
         pendingDeletionError = nil
         deleteError = nil
         deleteHoldError = nil

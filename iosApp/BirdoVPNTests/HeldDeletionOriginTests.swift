@@ -654,6 +654,69 @@ final class HeldDeletionOriginTests: XCTestCase {
         XCTAssertNil(h.store.heldDeletionFiledHereId)
     }
 
+    /// Review of #632 (L2, Android #623 `cancelledHoldIds`): a hold this
+    /// session cancelled (200 or 404) never comes back, whether a lagging
+    /// list names it or a late hold-request answer does.
+    @MainActor
+    func testACancelledHoldIsNeverShownAgain() async {
+        let h = Harness()
+        h.server.held = filedOnThisDevice
+        h.server.heldAfterCancel = filedOnThisDevice          // the list lags behind the cancel
+        h.controller.show(.filed(filedOnThisDevice))
+        let outcome = await h.controller.cancel(id: "app1")
+        XCTAssertEqual(outcome, .cancelled)
+        XCTAssertEqual(h.controller.cancelledIds, ["app1"])
+        let answered = await h.controller.read()
+        XCTAssertTrue(answered)
+        XCTAssertNil(h.controller.record.pending, "a lagging list does not bring the cancelled hold back")
+        XCTAssertNil(h.store.heldDeletionFiledHereId)
+        XCTAssertEqual(h.controller.record.signOutNotice(listAnswered: true), .nothingWaiting)
+
+        // A late 202 for the very hold: refused, nothing claimed, nothing stored.
+        let writes = h.store.writes.count
+        XCTAssertFalse(h.controller.show(.filed(filedOnThisDevice)))
+        XCTAssertNil(h.controller.record.pending)
+        XCTAssertEqual(h.store.writes.count, writes)
+        // Another hold is still a hold.
+        XCTAssertTrue(h.controller.show(.alreadyPending(filedElsewhere)))
+        XCTAssertEqual(h.controller.record.pending, filedElsewhere)
+
+        // A 404 is the server's word too.
+        let gone = Harness()
+        gone.server.held = filedOnThisDevice
+        gone.server.heldAfterCancel = filedOnThisDevice
+        gone.server.cancelSaysGone = true
+        gone.controller.show(.filed(filedOnThisDevice))
+        let step = await gone.prepareSignOut(.filedHere(filedOnThisDevice))
+        XCTAssertEqual(step, .signOut(cancelled: .alreadyGone), "the lagging list names only the cancelled id")
+        XCTAssertEqual(gone.controller.cancelledIds, ["app1"])
+
+        // A failed cancel tombstones nothing.
+        let failed = Harness()
+        failed.server.cancelError = URLError(.notConnectedToInternet)
+        failed.controller.show(.filed(filedOnThisDevice))
+        _ = await failed.controller.cancel(id: "app1")
+        XCTAssertTrue(failed.controller.cancelledIds.isEmpty)
+
+        // The tombstones belong to the session.
+        h.controller.endSession()
+        XCTAssertTrue(h.controller.cancelledIds.isEmpty)
+        let next = Harness()
+        _ = await next.controller.cancel(id: "app1")
+        next.controller.startSession()
+        XCTAssertTrue(next.controller.cancelledIds.isEmpty)
+    }
+
+    /// Review of #632 (L2): the AuthViewModel claims nothing for a refused answer.
+    func testAuthViewModelClaimsNothingForACancelledHold() throws {
+        let auth = try source("iosApp/ViewModels/AuthViewModel.swift")
+        let show = member("private func showDeletionHold(", in: auth)
+        XCTAssertTrue(show.contains("guard heldDeletions.show(filedHere ? .filed(pending) : .alreadyPending(pending)) else {"))
+        let guardEnd = try XCTUnwrap(show.range(of: "refreshPendingDeletion()\n            return\n        }"))
+        let claim = try XCTUnwrap(show.range(of: "deletionHoldFiled = true"))
+        XCTAssertLessThan(guardEnd.lowerBound, claim.lowerBound, "deletionHoldFiled must come after the refusal")
+    }
+
     /// MR-2389 nit: the hold step's "signing out cancels the deletion" needs a
     /// list read that answered in THIS session.
     @MainActor
