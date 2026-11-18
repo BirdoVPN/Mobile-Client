@@ -488,76 +488,64 @@ jobs:
         with:
           persist-credentials: false
 
-      # The proof's `apt-get install` fetches 54.8 MB of packages (qemu-user
+      # The proof's `apt-get install` downloads 54.8 MB of .debs (qemu-user
       # and the aarch64 cross toolchain). On a runner hosted in AWS us-east-2
       # the image's mirrors (us-east-2.ec2.archive.ubuntu.com,
       # security.ubuntu.com) served that at 100-224 kB/s: 4-9 minutes, in 6 of
       # 21 runs on 2026-11-17/18, against 2 s on every other runner (MR-2347).
-      # So the packages the last main run installed are handed to apt here, in
-      # its own archive directory. apt-get install reuses a file from there
-      # ONLY when its hashes match the package index that the action's own
-      # `apt-get update` has just fetched and verified; any other file is
-      # deleted and downloaded again. A cached package can save the download;
-      # it cannot change what is installed. Restored on every run, saved only
-      # from main, like the Go cache in "Build APK". The action itself stays
-      # cache-free: android.yml runs it before a release.
-      - name: Restore the QEMU proof's apt packages
+      # So the archives the last main run installed are restored and put in
+      # apt's archive directory, where the action's install finds them.
+      #
+      # apt reuses a file there on its NAME and SIZE alone, with no hash check
+      # (apt 2.7.x, pkgAcqArchive), so what .github/scripts/pq-apt-cache.sh
+      # protects is that directory: `plan` reads each archive's SHA-256 from
+      # the Packages index that `apt-get update` verified against the signed
+      # InRelease, and `stage` puts a restored file there only when it hashes
+      # to that value. Anything else apt downloads, as without a cache. The
+      # cache ENTRY is not verified as a whole (a missing or altered file is
+      # just not staged); it is trusted only because main alone writes it.
+      # Every failure leaves the cache out and the install as it was. The
+      # action is unchanged and stays cache-free: android.yml runs it before a
+      # release.
+      - name: Plan the .deb cache (apt-get update; each archive the proof installs, with its SHA-256 from the signed index)
+        id: apt-plan
+        run: bash .github/scripts/pq-apt-cache.sh plan
+
+      - name: Restore the .deb cache
         id: apt-restore
+        if: ${{ steps.apt-plan.outputs.key != '' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/pq-apt-archives
-          # Never an exact match: the newest entry under the prefix is used.
-          key: pq-apt-ubuntu-24.04-${{ github.run_id }}
-          restore-keys: pq-apt-ubuntu-24.04-
+          path: ~/.cache/birdo-pq-apt-archives
+          key: ${{ steps.apt-plan.outputs.key }}
+          restore-keys: ${{ steps.apt-plan.outputs.prefix }}
 
-      - name: Hand the restored packages to apt
-        run: |
-          set -euo pipefail
-          dir="$HOME/pq-apt-archives"
-          # On a cache miss the directory does not exist at all.
-          n=0
-          if [ -d "$dir" ]; then
-            n=$(find "$dir" -maxdepth 1 -type f -name '*.deb' | wc -l)
-          fi
-          if [ "$n" -eq 0 ]; then
-            echo "No cached packages: apt downloads every one."
-            exit 0
-          fi
-          sudo find "$dir" -maxdepth 1 -type f -name '*.deb' -exec cp -t /var/cache/apt/archives/ {} +
-          echo "$n cached package(s) handed to apt; each is used only if its hashes match the index"
+      - name: Self-test - the .deb cache stages only what the signed index vouches for
+        run: bash .github/scripts/pq-apt-cache-test.sh
+
+      - name: Stage the restored .debs that hash to the signed index (apt downloads the rest)
+        if: ${{ steps.apt-plan.outputs.key != '' }}
+        run: bash .github/scripts/pq-apt-cache.sh stage ~/.cache/birdo-pq-apt-archives
 
       # The same proof android.yml runs before any release is published.
       - uses: ./.github/actions/pq-cpu-proof
 
-      # Every package apt-get install used, keyed by the sorted file names.
-      # Those carry each package's version, so the key changes, and main saves
-      # a new entry, only when Ubuntu ships a new version of one of them.
-      - name: Collect the QEMU proof's apt packages
+      # Main only, and only when the exact archive set was not restored. Only
+      # the planned archives are collected -- the versions this run installed,
+      # each re-hashed against the plan -- so an entry never grows, and the
+      # key changes (a new, complete entry) only when Ubuntu ships a new
+      # version of one of them.
+      - name: Collect the installed .debs for the cache (main)
         id: apt-collect
-        run: |
-          set -euo pipefail
-          dir="$HOME/pq-apt-archives"
-          rm -rf "$dir"
-          mkdir -p "$dir"
-          find /var/cache/apt/archives -maxdepth 1 -type f -name '*.deb' -exec cp -t "$dir" {} +
-          n=$(find "$dir" -maxdepth 1 -type f -name '*.deb' | wc -l)
-          echo "n=$n" >> "$GITHUB_OUTPUT"
-          if [ "$n" -eq 0 ]; then
-            echo "apt kept no packages in /var/cache/apt/archives: nothing to cache."
-            exit 0
-          fi
-          key="pq-apt-ubuntu-24.04-$(find "$dir" -maxdepth 1 -type f -name '*.deb' -printf '%f\n' | LC_ALL=C sort | sha256sum | cut -c1-16)"
-          echo "key=$key" >> "$GITHUB_OUTPUT"
-          echo "$n package(s), $(du -sh "$dir" | cut -f1): $key (restored: ${RESTORED:-none})"
-        env:
-          RESTORED: ${{ steps.apt-restore.outputs.cache-matched-key }}
+        if: ${{ github.ref == 'refs/heads/main' && steps.apt-plan.outputs.key != '' && steps.apt-restore.outputs.cache-hit != 'true' }}
+        run: bash .github/scripts/pq-apt-cache.sh collect ~/.cache/birdo-pq-apt-archives
 
-      - name: Save the QEMU proof's apt packages
-        if: ${{ github.ref == 'refs/heads/main' && steps.apt-collect.outputs.n != '0' && steps.apt-collect.outputs.key != steps.apt-restore.outputs.cache-matched-key }}
+      - name: Save the .deb cache (main)
+        if: ${{ steps.apt-collect.outputs.complete == 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/pq-apt-archives
-          key: ${{ steps.apt-collect.outputs.key }}
+          path: ~/.cache/birdo-pq-apt-archives
+          key: ${{ steps.apt-plan.outputs.key }}
 
   # The debug APK -- the only Android artifact a pull request can produce --
   # with the real native payload, checked the way the release job checks its
