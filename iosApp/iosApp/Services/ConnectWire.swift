@@ -158,6 +158,14 @@ struct VPNConnectionConfig: Decodable {
     let rosenpassPublicKey: String?
     let rosenpassEndpoint: String?
 
+    /// MR-2374: the BirdoPQ public key THIS request uploaded. Injected by
+    /// `getConnectConfig`/`getMultiHopConfig` after decoding, like
+    /// `privateKey`, and never read from the wire (not in `CodingKeys`). The
+    /// dial that fetched this config hands it to
+    /// `BirdoPQManager.discardHandOff(publicKey:)` when it ends, so a pair
+    /// whose connect ends early is wiped then, not at the next upload.
+    var pqUploadedKey: String? = nil
+
     /// The warn-only version floor advisory, when this build is below it.
     /// See [ClientUpdateAdvisory] — OPEN-WORK H3.
     let clientUpdate: ClientUpdateAdvisory?
