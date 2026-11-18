@@ -140,8 +140,10 @@ App Signing key.
 - `gradle/verification-metadata.xml` (MR-1794): the SHA-256 of every dependency
   artifact, POM and Gradle module file. Gradle refuses one it does not list, in CI
   and on your machine. `.github/workflows/gradle-verification-metadata.yml` writes it
-  from fresh downloads (Linux with every CI and release task, then Windows and macOS
-  for their own `aapt2`) and fails a pull request whose committed file differs. After
+  from fresh downloads (Linux with every CI and release task, then Windows for its
+  own `aapt2`; no workflow builds the Android app on macOS, so a Gradle build on a Mac
+  first adds aapt2's osx entry, see the workflow header) and fails a pull request
+  whose committed file differs. After
   a dependency change, take that run's `verification-metadata` artifact, review the
   diff (new entries only for the versions that changed) and commit it; or run
   `gh workflow run gradle-verification-metadata.yml --ref <branch>`. Locally,
