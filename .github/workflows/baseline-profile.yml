@@ -78,10 +78,15 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
+      # Read-only on every branch, main included (MR-1794): this job runs Gradle
+      # with --dependency-verification lenient (see "Record the profile"), so
+      # a file it downloads is not held to gradle/verification-metadata.xml.
+      # What it fetches must not be saved into the cache the strict jobs
+      # restore.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-read-only: true
 
       # Hardware acceleration. Assert it rather than hope for it: a missing
       # /dev/kvm does not fail here, it fails 40 minutes later as an emulator
@@ -127,8 +132,16 @@ jobs:
       # nonMinifiedRelease/benchmarkRelease build types at the debug key
       # precisely so that recording a profile never depends on holding the
       # upload key.
+      #
+      # --dependency-verification lenient (MR-1794): the Gradle Managed Device
+      # run resolves test-platform artifacts while it executes, and
+      # gradle-verification-metadata.yml, which writes the checksums, cannot run
+      # a managed device. A checksum this job does not find is reported in the
+      # log instead of failing the monthly recording. What it produces is a
+      # profile text a pull request then reviews; every build that ships runs
+      # strict (Android CI, the release).
       - name: Record the profile
-        run: ./gradlew :app:generateReleaseBaselineProfile --no-daemon
+        run: ./gradlew :app:generateReleaseBaselineProfile --no-daemon --dependency-verification lenient
 
       # THE ACTUAL ASSERTION. Everything above is setup.
       #

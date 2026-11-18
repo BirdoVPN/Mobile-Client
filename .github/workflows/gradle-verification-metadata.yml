@@ -1,0 +1,357 @@
+name: Gradle verification metadata
+
+# MR-1794: gradle/verification-metadata.xml, written from fresh downloads, and
+# a check that the committed file is exactly what this build resolves.
+#
+# WHY. app/gradle.lockfile pins dependency VERSIONS (LockMode.STRICT). Gradle
+# checks the BYTES only against gradle/verification-metadata.xml: with that
+# file present, every Gradle build (CI, the release, a laptop) refuses an
+# artifact, POM or Gradle module file whose SHA-256 it does not list, so a
+# repository that serves different bytes under the same coordinates fails the
+# build instead of reaching the APK.
+#
+# WHAT IT RUNS. Bootstrapping resolves every resolvable configuration, but AGP
+# resolves some artifacts only while a task runs (aapt2, lint, bundletool), so
+# the tasks the other workflows run are run here too: Android CI's (lint, unit
+# tests, the debug and androidTest APKs; minifyReleaseWithR8 is part of
+# assembleRelease), the release's (assembleRelease, bundleRelease
+# -PplayBuild=true) and the native-libs action's (:app:buildRustLibs, before
+# the file exists). Each is run with the flags its own workflow passes, in
+# its own invocation: -PplayBuild=true flips BuildConfig.IS_PLAY_BUILD for
+# EVERY variant, and the unit tests assert the default build is not a Play
+# build (run 44216762860 ran them with it: 62 failed, then the worker OOMed).
+# aapt2 and the Kotlin/Native compiler (kotlin-native-prebuilt) are per-OS
+# artifacts, so the Windows job adds its own on top: a build there needs those
+# entries. It runs resource processing only. Lint and the unit tests resolve
+# no per-OS artifact on Linux, so a Windows run of them is expected to need
+# nothing more, but that is not exercised here (Windows minutes cost double);
+# a Windows build that does stop on a missing entry adds it with the local
+# command in BUILD-INSTRUCTIONS.md, reviewed like any other.
+#
+# No macOS job: nothing builds the Android app on macOS (apple-ci.yml, ios.yml
+# and macos.yml use no JDK and no Gradle), and the Mac build host has no JDK.
+# A macos-* runner here would also put every script this file names in
+# scripts/check_macos_bash_compat.sh's scope, and provision_xray_engines.sh
+# (named below for the Go cache key, run only on Linux) is bash 4. A Gradle
+# build on a Mac needs aapt2's osx entry: add it with
+# `./gradlew --write-verification-metadata sha256 help :app:processDebugResources`
+# there and review the diff, or bring a macOS job back.
+#
+# Not covered (BUILD-INSTRUCTIONS.md lists the same):
+#   - baseline-profile.yml records on a Gradle Managed Device, which this
+#     workflow cannot run; that job runs --dependency-verification lenient
+#     (it reports, it does not fail) with a read-only Gradle cache.
+#   - sources and javadoc jars: trusted, never shipped.
+#   - what is downloaded outside Gradle dependency resolution: Robolectric's
+#     android-all-instrumented jars (fetched by Robolectric at test time), SDK
+#     and NDK packages (sdkmanager) and managed-device system images.
+#
+# Every plugin and dependency resolves from exactly one repository: Google's
+# Maven (content-filtered) or Maven Central. settings.gradle.kts explains why
+# the Gradle Plugin Portal is not listed.
+#
+# WHEN. On a pull request that changes what Gradle resolves (build scripts,
+# lockfiles, properties, the wrapper, the native-libs action, this file or the
+# metadata), so a Dependabot bump fails HERE with the regenerated file
+# attached; and by hand on any branch:
+#
+#   gh workflow run gradle-verification-metadata.yml --ref <branch>
+#
+# Then download the `verification-metadata` artifact, REVIEW the diff (entries
+# only for the versions that changed; an existing entry must never change its
+# checksum), and commit it as gradle/verification-metadata.xml. Do not answer a
+# verification failure with --dependency-verification off.
+#
+# The release flags (-PallowMissingSentryDsn=true and an all-zero signing
+# fingerprint) are safe here for the reason they are safe in android-ci.yml's
+# r8 job: nothing this workflow builds is uploaded, only the XML.
+
+on:
+  pull_request:
+    paths:
+      - '**/*.gradle.kts'
+      - '**/gradle.lockfile'
+      - 'gradle.properties'
+      - 'gradle/wrapper/gradle-wrapper.properties'
+      - 'gradle/verification-metadata.xml'
+      - '.github/actions/android-native-libs/**'
+      - '.github/workflows/gradle-verification-metadata.yml'
+      - 'scripts/check_verification_metadata.py'
+      - 'scripts/tests/check_verification_metadata_test.py'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: 'temurin'
+  RELEASE_FLAGS: >-
+    -PallowMissingSentryDsn=true
+    -PbirdoSigningCertFingerprint=00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00
+
+jobs:
+  linux:
+    name: Write (Linux, every CI and release task)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Written from scratch every time, so an entry for a version nothing uses
+      # any more drops out. Set aside first: the native-libs action runs Gradle,
+      # and an out-of-date file would fail it before anything is written.
+      - name: Set the committed file aside
+        run: |
+          if [ -f gradle/verification-metadata.xml ]; then
+            mv gradle/verification-metadata.xml "$RUNNER_TEMP/committed-verification-metadata.xml"
+          fi
+
+      - name: Set up JDK
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      # No Gradle cache: every checksum is computed from a fresh download.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-disabled: true
+
+      - name: Restore the Go cache for the Xray engines
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
+          restore-keys: xray-go-${{ runner.os }}-
+
+      - uses: ./.github/actions/android-native-libs
+
+      # The trust rules are the only hand-written part: sources and javadoc,
+      # which an IDE fetches on sync and no build ships, are not checked.
+      # Bootstrapping copies this <configuration> into the file it writes.
+      - name: Seed the trust rules
+        run: |
+          cat > gradle/verification-metadata.xml <<'XML'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <verification-metadata xmlns="https://schema.gradle.org/dependency-verification" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://schema.gradle.org/dependency-verification https://schema.gradle.org/dependency-verification/dependency-verification-1.3.xsd">
+             <configuration>
+                <verify-metadata>true</verify-metadata>
+                <verify-signatures>false</verify-signatures>
+                <trusted-artifacts>
+                   <trust file=".*-javadoc[.]jar" regex="true"/>
+                   <trust file=".*-sources[.]jar" regex="true"/>
+                </trusted-artifacts>
+             </configuration>
+             <components/>
+          </verification-metadata>
+          XML
+
+      # One invocation per workflow, each with that workflow's flags; every
+      # later write adds to the file the earlier ones left (the Windows job
+      # relies on the same). Separate because -PplayBuild=true is project-wide:
+      # on the Android CI line it would build the debug variant, and run its
+      # tests, as a Play build.
+      #
+      # The tests run so their runtime classpath (and anything a test task
+      # resolves) is recorded; whether they PASS is Android CI's Unit Tests job.
+      # The init script keeps a failing test, such as a Robolectric android-all
+      # download that flakes, from costing the write: the build still fails on
+      # anything that is not a test result.
+      #
+      # The writes get a Gradle user home of their own: a new daemon and an
+      # empty cache. The native-libs action ran Gradle before the file existed,
+      # and Gradle keeps what it parsed then (in the daemon and as binary
+      # descriptors in caches/); a later write does not record a file it never
+      # reads again. Run 44369092007's Linux file lacked four parent/BOM POMs
+      # and modules (guava-parent, bc-jdk18on-bom, kotlinx-coroutines-bom,
+      # junit-bom) that only the Windows job, on a cold cache, then added; a
+      # build on a cold cache needs them. A new home rather than deleting
+      # caches/: run 44383504178 deleted it under a daemon that was still
+      # exiting, and rm lost the race. The .so files the action built are in
+      # the work tree and stay.
+      #
+      # assembleRelease and bundleRelease sign, so they get a throwaway key made
+      # here: random password, valid one day, never leaves the runner, and
+      # nothing it signs is uploaded.
+      - name: Write the metadata (every CI and release task)
+        run: |
+          export GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home-writes"
+          mkdir -p "$GRADLE_USER_HOME"
+
+          init="$RUNNER_TEMP/test-results-do-not-gate.gradle"
+          cat > "$init" <<'GRADLE'
+          allprojects {
+              tasks.withType(Test).configureEach { ignoreFailures = true }
+          }
+          GRADLE
+
+          # Android CI: Lint Check, Unit Tests, Build APK, CodeQL's compile.
+          ./gradlew --write-verification-metadata sha256 --init-script "$init" \
+            help lintDebug testDebugUnitTest :shared:testAndroidHostTest \
+            assembleDebug assembleDebugAndroidTest
+
+          pw="$(openssl rand -hex 24)"
+          keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/throwaway.p12" -storetype PKCS12 \
+            -storepass "$pw" -keypass "$pw" -alias throwaway -keyalg RSA -keysize 2048 \
+            -validity 1 -dname "CN=throwaway, O=CI"
+          export RELEASE_STORE_FILE="$RUNNER_TEMP/throwaway.p12" RELEASE_STORE_PASSWORD="$pw" \
+            RELEASE_KEY_ALIAS=throwaway RELEASE_KEY_PASSWORD="$pw"
+
+          # android.yml's release, as it runs it: the sideload APK (Android
+          # CI's R8 job is its minifyReleaseWithR8), then the Play bundle.
+          # shellcheck disable=SC2086 # RELEASE_FLAGS is a list of flags
+          ./gradlew --write-verification-metadata sha256 assembleRelease $RELEASE_FLAGS
+          # shellcheck disable=SC2086
+          ./gradlew --write-verification-metadata sha256 bundleRelease -PplayBuild=true $RELEASE_FLAGS
+
+      - name: Upload the Linux metadata
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verification-metadata-linux
+          path: gradle/verification-metadata.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  # aapt2 ships per OS (com.android.tools.build:aapt2:<version>:<os>), so this
+  # host adds its own on top of the Linux file. Resource processing is what
+  # pulls it (debug and release use the same aapt2). Not processReleaseResources:
+  # preReleaseBuild depends on :app:buildRustLibs, the cross-compile the
+  # native-libs action does on Linux, and nothing native is built here.
+  windows:
+    name: Add (Windows)
+    needs: linux
+    runs-on: windows-2025
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Linux file replaces the committed one, not merges with it.
+      - name: Set the committed file aside
+        run: rm -f gradle/verification-metadata.xml
+
+      - name: Take the Linux file
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verification-metadata-linux
+          path: gradle
+
+      - name: Set up JDK
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-disabled: true
+
+      - name: Add this host's artifacts
+        run: ./gradlew --write-verification-metadata sha256 help :app:processDebugResources
+
+      # Gradle writes the host's line endings; the committed file is LF
+      # (.gitattributes) and the compare below is byte for byte.
+      - name: LF line endings
+        run: |
+          f=gradle/verification-metadata.xml
+          sed -i 's/\r$//' "$f"
+          if grep -q $'\r' "$f"; then
+            echo "::error::$f still has a CR after normalising"
+            exit 1
+          fi
+
+      - name: Upload the finished file
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verification-metadata
+          path: gradle/verification-metadata.xml
+          if-no-files-found: error
+          retention-days: 14
+
+  # THE CHECK, in two parts.
+  #
+  # 1. Against the base branch: no checksum changed for a coordinate it already
+  #    lists, and <configuration> (the trust rules) did not change at all.
+  #    A regenerated file is how a substituted artifact would arrive, so a
+  #    changed checksum fails here in words, not as one line in a long diff.
+  #    Checked for the fresh write (what a maintainer is about to commit) and
+  #    for the committed file.
+  # 2. The committed file must be byte for byte what a fresh write produces:
+  #    nothing missing (a build would fail on it), nothing stale.
+  compare:
+    name: The committed file is what the build resolves
+    needs: windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Only the one file, from the commit the pull request merges into (main
+      # when run by hand). Absent on the change that introduces it.
+      - name: Take the base branch's file
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          path: base
+          persist-credentials: false
+          sparse-checkout: gradle/verification-metadata.xml
+          sparse-checkout-cone-mode: false
+
+      - name: Take the finished file
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verification-metadata
+          path: ${{ runner.temp }}/fresh
+
+      - name: The checksum guard fails on what it exists to catch
+        run: python3 scripts/tests/check_verification_metadata_test.py
+
+      - name: No checksum and no trust rule changed against the base branch
+        run: |
+          base=base/gradle/verification-metadata.xml
+          rc=0
+          python3 scripts/check_verification_metadata.py --base "$base" \
+            --file "$RUNNER_TEMP/fresh/verification-metadata.xml" --label "this run's fresh write" || rc=1
+          if [ -f gradle/verification-metadata.xml ]; then
+            python3 scripts/check_verification_metadata.py --base "$base" \
+              --file gradle/verification-metadata.xml --label "the committed file" || rc=1
+          fi
+          exit "$rc"
+
+      - name: Compare
+        if: ${{ !cancelled() }}
+        run: |
+          fresh="$RUNNER_TEMP/fresh/verification-metadata.xml"
+          if [ ! -f gradle/verification-metadata.xml ]; then
+            echo "::error::gradle/verification-metadata.xml is not committed. Commit the verification-metadata artifact of this run."
+            exit 1
+          fi
+          if ! diff -u gradle/verification-metadata.xml "$fresh" > "$RUNNER_TEMP/metadata.diff"; then
+            head -n 400 "$RUNNER_TEMP/metadata.diff"
+            echo "::error::gradle/verification-metadata.xml differs from a fresh write. Review the diff above (a checksum that CHANGED for a listed version is a red flag, not an update), then commit the verification-metadata artifact of this run."
+            exit 1
+          fi
+          echo "gradle/verification-metadata.xml matches a fresh write: $(grep -c '<component ' "$fresh") components."

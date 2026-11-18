@@ -10,7 +10,10 @@ import Foundation
 /// same endpoint with its own token and completes the reset (the e-mailed link
 /// lands on the same page).
 ///
+/// MR-2372: the auth host directly, as Android (`PASSWORD_RESET_URL`) and
+/// Desktop link to it. `https://birdo.app/reset-password` only 302s here.
+///
 /// Foundation-only, in the unit-test bundle, so the target cannot drift.
 enum AuthLinks {
-    static let resetPassword = URL(string: "https://birdo.app/reset-password")!
+    static let resetPassword = URL(string: "https://auth.birdo.app/reset-password")!
 }
