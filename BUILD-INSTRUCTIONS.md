@@ -33,6 +33,7 @@ hashes are compiled into the app and checked by CI (see
 | Android Gradle Plugin | 9.4.1 (`com.android.application`, `com.android.library`); `com.android.kotlin.multiplatform.library` 9.5.0 | `build.gradle.kts` |
 | Kotlin | 2.4.10 (multiplatform, compose, serialization plugins); KSP 2.3.12; Hilt 2.60.1; baselineprofile 1.5.0 | `build.gradle.kts` |
 | Gradle dependencies | locked, `LockMode.STRICT`, `lockAllConfigurations()` | `app/gradle.lockfile`, `dependencyLocking {}` in `app/build.gradle.kts` |
+| Gradle dependency bytes | SHA-256 of every artifact, POM and Gradle module file, checked by every build (strict); sources and javadoc trusted | `gradle/verification-metadata.xml`, written by `.github/workflows/gradle-verification-metadata.yml` |
 | SDK levels | `compileSdk 37` (minor 0), `targetSdk 36`, `minSdk 29` | `app/build.gradle.kts` |
 | ABIs | `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86` | `abiFilters` in `app/build.gradle.kts` |
 | Android NDK | **not pinned on `main` yet**: the build uses the runner image's `ANDROID_NDK_HOME`. Open PR #601 (MR-1793) pins it in `native/ndk-version.txt`; once merged, use the revision named there | `.github/actions/android-native-libs/action.yml`, PR #601 |
@@ -135,7 +136,17 @@ App Signing key.
 - `scripts/xray_corresponding_source.py`: builds the Xray corresponding-source asset
   (every Go module, the Go toolchain source, the exact `go build` command per engine).
   The asset is in each release's `SHA256SUMS.txt`.
-- `app/gradle.lockfile`: dependency versions (and hashes where Gradle records them).
+- `app/gradle.lockfile`: dependency versions only.
+- `gradle/verification-metadata.xml` (MR-1794): the SHA-256 of every dependency
+  artifact, POM and Gradle module file. Gradle refuses one it does not list, in CI
+  and on your machine. `.github/workflows/gradle-verification-metadata.yml` writes it
+  from fresh downloads (Linux with every CI and release task, then Windows and macOS
+  for their own `aapt2`) and fails a pull request whose committed file differs. After
+  a dependency change, take that run's `verification-metadata` artifact, review the
+  diff (new entries only for the versions that changed) and commit it; or run
+  `gh workflow run gradle-verification-metadata.yml --ref <branch>`. Locally,
+  `./gradlew --write-verification-metadata sha256 help <the tasks you run>` adds
+  what is missing. Never `--dependency-verification off`.
 
 ## iOS
 

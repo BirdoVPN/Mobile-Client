@@ -127,8 +127,16 @@ jobs:
       # nonMinifiedRelease/benchmarkRelease build types at the debug key
       # precisely so that recording a profile never depends on holding the
       # upload key.
+      #
+      # --dependency-verification lenient (MR-1794): the Gradle Managed Device
+      # run resolves test-platform artifacts while it executes, and
+      # gradle-verification-metadata.yml, which writes the checksums, cannot run
+      # a managed device. A checksum this job does not find is reported in the
+      # log instead of failing the monthly recording. What it produces is a
+      # profile text a pull request then reviews; every build that ships runs
+      # strict (Android CI, the release).
       - name: Record the profile
-        run: ./gradlew :app:generateReleaseBaselineProfile --no-daemon
+        run: ./gradlew :app:generateReleaseBaselineProfile --no-daemon --dependency-verification lenient
 
       # THE ACTUAL ASSERTION. Everything above is setup.
       #

@@ -11,3 +11,7 @@ gradlew.bat text eol=crlf
 # show as changed on any run from a different platform, burying the handful of
 # rules that actually moved.
 app/src/release/generated/baselineProfiles/*.txt text eol=lf
+
+# Gradle dependency verification (MR-1794). Gradle writes it with the host's
+# line endings too; gradle-verification-metadata.yml compares it byte for byte.
+gradle/verification-metadata.xml text eol=lf
