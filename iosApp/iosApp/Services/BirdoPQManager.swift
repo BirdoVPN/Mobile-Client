@@ -142,16 +142,25 @@ final class BirdoPQManager: @unchecked Sendable {
     /// server-provided classical PSK and call `recordServerProvided()`.
     ///
     /// On success, latches `currentMode == .bilateral`.
+    ///
+    /// `publicKey` is the key THIS config's /connect uploaded
+    /// (`VPNConnectionConfig.pqUploadedKey`). Only that pair is taken, so a
+    /// config never decapsulates with, or wipes, a newer dial's pair; with no
+    /// match there is nothing to decapsulate with, and a session the server
+    /// made post-quantum fails closed (MR-2374 review; Android keys its
+    /// hand-off the same way).
     func tryDecapsulate(
         quantumEnabled: Bool,
         rosenpassPublicKeyBase64: String?,
-        rosenpassEndpointBase64: String?
+        rosenpassEndpointBase64: String?,
+        publicKey: String?
     ) -> String? {
         // MR-2117 / MR-2123: take the hand-off before anything can return, so
         // every path out (the early nils included) wipes its secret key.
         let handedOff = queue.sync { () -> Keypair? in
-            defer { handOff = nil }
-            return handOff
+            guard let kp = handOff, let publicKey, kp.pk.base64EncodedString() == publicKey else { return nil }
+            handOff = nil
+            return kp
         }
         defer { handedOff?.sk.wipe() }
 

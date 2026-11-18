@@ -87,6 +87,15 @@ class PqPerConnectGuardTest {
         assertTrue("BirdoPQManager.discardHandOff(publicKey:) is missing", discard != null)
         assertTrue("it must wipe only the pair uploaded under that key", "base64EncodedString() == publicKey" in discard!!)
         assertTrue("it must wipe the secret, not just drop it", ".sk.wipe()" in discard && "handOff = nil" in discard)
+        // The decapsulation takes only the pair its own config's request uploaded (review, INFO).
+        assertTrue(
+            "tryDecapsulate must take only the pair uploaded under the config's key",
+            "guard let kp = handOff, let publicKey, kp.pk.base64EncodedString() == publicKey else { return nil }" in manager,
+        )
+        assertTrue(
+            "VPNManager must hand tryDecapsulate the key the config's request uploaded",
+            "publicKey: config.pqUploadedKey" in code("iosApp/iosApp/Services/VPNManager.swift"),
+        )
 
         // The key rides the config, injected after decode like the private key, never from the wire.
         val wire = code("iosApp/iosApp/Services/ConnectWire.swift")
