@@ -72,4 +72,57 @@ class PqPerConnectGuardTest {
         val keychain = code("iosApp/iosApp/Services/KeychainService.swift")
         assertFalse("something else stores .pqKeypair", Regex("""setHostData\([^)]*\.pqKeypair""").containsMatchIn(keychain))
     }
+
+    /**
+     * MR-2374: on iOS a connect that ended early (refused, failed, an
+     * unconfirmed route, a rebuild that did not swap) left its pair in the
+     * hand-off until the next upload or sign-out. The dial that uploaded a
+     * pair now ends it, by its key, so a newer dial's pair is never touched.
+     */
+    @Test
+    fun `iOS wipes a pair when the connect that uploaded it ends early`() {
+        val manager = code("iosApp/iosApp/Services/BirdoPQManager.swift")
+        val discard = Regex("""func discardHandOff\(publicKey: String\?\) \{(.*?)\n    \}""", RegexOption.DOT_MATCHES_ALL)
+            .find(manager)?.groupValues?.get(1)
+        assertTrue("BirdoPQManager.discardHandOff(publicKey:) is missing", discard != null)
+        assertTrue("it must wipe only the pair uploaded under that key", "base64EncodedString() == publicKey" in discard!!)
+        assertTrue("it must wipe the secret, not just drop it", ".sk.wipe()" in discard && "handOff = nil" in discard)
+        // The decapsulation takes only the pair its own config's request uploaded (review, INFO).
+        assertTrue(
+            "tryDecapsulate must take only the pair uploaded under the config's key",
+            "guard let kp = handOff, let publicKey, kp.pk.base64EncodedString() == publicKey else { return nil }" in manager,
+        )
+        assertTrue(
+            "VPNManager must hand tryDecapsulate the key the config's request uploaded",
+            "publicKey: config.pqUploadedKey" in code("iosApp/iosApp/Services/VPNManager.swift"),
+        )
+
+        // The key rides the config, injected after decode like the private key, never from the wire.
+        val wire = code("iosApp/iosApp/Services/ConnectWire.swift")
+        assertTrue("var pqUploadedKey: String? = nil" in wire)
+        val codingKeys = Regex("""enum CodingKeys: String, CodingKey \{(.*?)\}""", RegexOption.DOT_MATCHES_ALL)
+            .find(wire)!!.groupValues[1]
+        assertFalse("pqUploadedKey must not be decoded from the server's answer", "pqUploadedKey" in codingKeys)
+
+        // Both /connect requests: the pair dies with a request that throws, else the config carries its key.
+        val api = code("iosApp/iosApp/Services/APIClient.swift")
+        for (fn in listOf("func getConnectConfig(", "func getMultiHopConfig(")) {
+            val body = api.substringAfter(fn).substringBefore("\n    }\n")
+            assertTrue("$fn: no discard on an early end",
+                "defer { if !pairHandedToConfig { BirdoPQManager.shared.discardHandOff(publicKey: pqPk) } }" in body)
+            assertTrue("$fn: the config must carry the uploaded key",
+                "config.pqUploadedKey = pqPk\n        pairHandedToConfig = true\n        return config" in body)
+        }
+
+        // Every dial that fetches a config ends that config's pair, however it ends.
+        val vm = code("iosApp/iosApp/ViewModels/VpnViewModel.swift")
+        val end = "defer { BirdoPQManager.shared.discardHandOff(publicKey: config.pqUploadedKey) }"
+        val fetches = Regex("""api\.get(Connect|MultiHop)Config\(""").findAll(vm).toList()
+        assertTrue("found only ${fetches.size} config fetches in VpnViewModel", fetches.size >= 3)
+        for (fetch in fetches) {
+            // From the fetch to the end of the function it is in (functions close at four spaces).
+            val rest = vm.substring(fetch.range.first).substringBefore("\n    }\n")
+            assertTrue("the config fetch at offset ${fetch.range.first} never ends its PQ pair", end in rest)
+        }
+    }
 }

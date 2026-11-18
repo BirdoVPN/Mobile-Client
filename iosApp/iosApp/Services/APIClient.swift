@@ -643,6 +643,11 @@ final class APIClient: @unchecked Sendable {
         if quantumEnabled && pqPk == nil {
             throw APIError.quantumKeyUnavailable
         }
+        // MR-2374: a request that ends before it returns a config (refused,
+        // failed, undecodable) takes its pair with it; one that returns hands
+        // the key to the config, and the dial ends the pair from there.
+        var pairHandedToConfig = false
+        defer { if !pairHandedToConfig { BirdoPQManager.shared.discardHandOff(publicKey: pqPk) } }
         // BirdoShield (D18): per-device DNS filtering, OFF unless the user
         // switched it on (SettingsViewModel persists the same key). Read
         // the raw store at dial time, like quantum above, so the flag a
@@ -689,6 +694,8 @@ final class APIClient: @unchecked Sendable {
         var config = try decodeConnectResult(data)
         // The private key never came from the server — use the on-device one.
         config.privateKey = wg.privateKey
+        config.pqUploadedKey = pqPk
+        pairHandedToConfig = true
         return config
     }
 
@@ -710,6 +717,9 @@ final class APIClient: @unchecked Sendable {
         if quantumEnabled && pqPk == nil {
             throw APIError.quantumKeyUnavailable
         }
+        // MR-2374: see getConnectConfig.
+        var pairHandedToConfig = false
+        defer { if !pairHandedToConfig { BirdoPQManager.shared.discardHandOff(publicKey: pqPk) } }
         // BirdoShield (D18) — the multi-hop twin of getConnectConfig's read.
         let dnsFilteringEnabled = Self.dnsFilteringEnabled
         // Generate the WireGuard keypair on-device; send only the public key.
@@ -747,6 +757,8 @@ final class APIClient: @unchecked Sendable {
         var config = try decodeConnectResult(data)
         // The private key never came from the server — use the on-device one.
         config.privateKey = wg.privateKey
+        config.pqUploadedKey = pqPk
+        pairHandedToConfig = true
         return config
     }
 

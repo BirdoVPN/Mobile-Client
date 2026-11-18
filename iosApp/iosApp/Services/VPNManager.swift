@@ -503,7 +503,8 @@ final class VPNManager: @unchecked Sendable {
         let pqPsk = BirdoPQManager.shared.tryDecapsulate(
             quantumEnabled: config.quantumEnabled ?? false,
             rosenpassPublicKeyBase64: config.rosenpassPublicKey,
-            rosenpassEndpointBase64: config.rosenpassEndpoint
+            rosenpassEndpointBase64: config.rosenpassEndpoint,
+            publicKey: config.pqUploadedKey
         )
         if let pqPsk { return pqPsk }
         if config.quantumEnabled == true {

@@ -170,7 +170,10 @@ class VpnManager @Inject constructor(
      */
     /**
      * MR-2221: the restriction the last refused connect carried, for Home's
-     * "Ask for a review" action. Cleared by a connect that goes through.
+     * "Ask for a review" action. Cleared by a connect that goes through, and
+     * by a sign-out or an account deletion (MR-2380): it names the account's
+     * restriction and review link, which the next account signed in on this
+     * device must not inherit.
      */
     private val _accountRestriction = MutableStateFlow<AccountRestriction?>(null)
     val accountRestriction: StateFlow<AccountRestriction?> = _accountRestriction.asStateFlow()
@@ -1016,6 +1019,9 @@ class VpnManager @Inject constructor(
      * the second line of defence behind the dead-tunnel probe, for a quota end
      * whose heartbeat reply was lost with the peer. MR-139: the kind follows
      * the refusal's typed reason ([FailureKind.forRefusal]).
+     *
+     * Pure: what it returns is published by [publishRefusal], and only by a
+     * dial that is still current (MR-2380 review, L1).
      */
     private fun refusal(
         serverMessage: String?,
@@ -1043,13 +1049,23 @@ class VpnManager @Inject constructor(
                     base
                 }
             }
-            _accountRestriction.value = restriction
             text to kind
         } else if (kind == FailureKind.QUOTA_EXCEEDED) {
             (serverMessage?.takeIf { it.isNotBlank() } ?: context.getString(R.string.session_quota_exceeded)) to kind
         } else {
             (serverMessage ?: SessionCopy.BAD_SERVER_CONFIG) to kind
         }
+    }
+
+    /**
+     * Publish a refused connect: its Error and, for a restriction, the notice
+     * Home's "Ask for a review" reads (MR-2221). The caller has checked the
+     * dial is still current: a refusal that lands after a sign-out or a
+     * deletion must not put the old account's restriction back (MR-2380).
+     */
+    private fun publishRefusal(message: String, kind: FailureKind, restriction: AccountRestriction?) {
+        if (kind == FailureKind.ACCOUNT_RESTRICTED) _accountRestriction.value = restriction
+        publishError(message, kind)
     }
 
     /**
@@ -1196,7 +1212,7 @@ class VpnManager @Inject constructor(
                         val (message, kind) = refusal(
                             config.message, config.quotaExceeded, config.refusalReason, config.accountRestriction,
                         )
-                        if (!superseded(gen)) publishError(message, kind)
+                        if (!superseded(gen)) publishRefusal(message, kind, config.accountRestriction)
                         return ApiResult.Error(message)
                     }
 
@@ -1326,7 +1342,8 @@ class VpnManager @Inject constructor(
                         config.assignedIp == null
                     ) {
                         val (message, kind) = refusal(config.message, config.quotaExceeded, config.refusalReason)
-                        publishError(message, kind)
+                        // Current: the supersede check above, and nothing suspends since.
+                        publishRefusal(message, kind, null)
                         return ApiResult.Error(message)
                     }
 
@@ -2276,6 +2293,8 @@ class VpnManager @Inject constructor(
     suspend fun disconnectForSignOut() {
         withTimeoutOrNull(SIGN_OUT_RELEASE_TIMEOUT_MS) { disconnect() }
         _sessionExpired.value = false
+        // MR-2380: the restriction was this account's; the next one starts clean.
+        _accountRestriction.value = null
     }
 
     /**
@@ -2293,6 +2312,8 @@ class VpnManager @Inject constructor(
         _sessionExpired.value = false
         prefs.sessionShouldBeUp = false
         sessionKeyId = null
+        // MR-2380: so is the deleted account's restriction notice.
+        _accountRestriction.value = null
         scope.launch { tearDownTunnel(userInitiated = true, releasePeer = false) }
     }
 
