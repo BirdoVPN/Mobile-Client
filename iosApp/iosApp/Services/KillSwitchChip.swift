@@ -42,6 +42,14 @@ struct KillSwitchSystemState: Equatable, Sendable {
     var isArmed: Bool {
         configurationEnabled && onDemandEnabled && hasConnectRule && includeAllNetworks
     }
+
+    /// MR-2371: a dropped tunnel is dialled again by the system (the on-demand
+    /// Connect rule of the configuration in use), whether or not traffic is
+    /// held meanwhile. Home says "Reconnecting…" over such a drop
+    /// (`ReconnectWatch`), not "Connection failed".
+    var redialsOnDrop: Bool {
+        configurationEnabled && onDemandEnabled && hasConnectRule
+    }
 }
 
 /// What the Home chip says.

@@ -67,10 +67,23 @@ final class VpnViewModel: ObservableObject {
     /// True while a settings "blip" reconnect is in flight — Home shows
     /// "Applying settings — reconnecting…" off this.
     @Published private(set) var isReapplyingSettings = false
-    /// MR-1621: true while the tunnel that WAS up is being re-dialled (iOS
-    /// `.reasserting`, or a `.connecting` that follows a live session).
-    /// Home reads "Reconnecting…" off this instead of "Protected" / "Connecting…".
+    /// MR-1621: true while the tunnel that WAS up is being brought back (iOS
+    /// `.reasserting`, a `.connecting` that follows a live session, and since
+    /// MR-2371 a drop the system's on-demand rule is dialling again, until the
+    /// new session proves a handshake). Home reads "Reconnecting…" off this
+    /// instead of "Protected" / "Connecting…" / "Connection failed". Owned by
+    /// `reconnectWatch`.
     @Published private(set) var isReconnecting = false
+    /// MR-2371: the session being brought back is all the way down and the
+    /// system has not started its re-dial yet (`ReconnectWatch.awaitingRedial`).
+    @Published private(set) var isAwaitingRedial = false
+    /// MR-2371: the decisions behind the two flags above (Foundation-only,
+    /// pinned by ConnectionPhaseTests).
+    private var reconnectWatch = ReconnectWatch()
+    /// MR-2371: the error a drop put on the banner while the system re-dials.
+    /// Cleared once that session is back (`noteHandshake`), so a recovered
+    /// tunnel does not sit under "Tunnel failed: …".
+    private var recoveringFromError: String?
 
     /// MR-1620 / MR-1621: the single named state behind the status pill and the
     /// VoiceOver announcements. Pure mapping lives in `ConnectionPhase`.
@@ -78,7 +91,16 @@ final class VpnViewModel: ObservableObject {
         ConnectionPhase.resolve(tunnel: tunnelPhase,
                                 isSwitching: isSwitching,
                                 isReconnecting: isReconnecting,
+                                awaitingRedial: isAwaitingRedial,
                                 hasError: error != nil)
+    }
+
+    /// MR-2371: change the watch and publish what changed.
+    private func updateReconnect(_ change: (inout ReconnectWatch) -> Void) {
+        change(&reconnectWatch)
+        if isReconnecting != reconnectWatch.isReconnecting { isReconnecting = reconnectWatch.isReconnecting }
+        if isAwaitingRedial != reconnectWatch.awaitingRedial { isAwaitingRedial = reconnectWatch.awaitingRedial }
+        if !reconnectWatch.isReconnecting { recoveringFromError = nil }
     }
 
     // MARK: - Servers
@@ -376,6 +398,10 @@ final class VpnViewModel: ObservableObject {
         vpnManager.onKillSwitchStateChange = { [weak self] state in
             Task { @MainActor in
                 self?.killSwitchSystem = state
+                // MR-2371: read fresh from the system. A drop nothing will
+                // dial again (the VPN or On Demand turned off in iOS
+                // Settings) is not "Reconnecting…".
+                self?.updateReconnect { $0.systemChanged(redialsOnDrop: state?.redialsOnDrop ?? false) }
             }
         }
 
@@ -584,6 +610,9 @@ final class VpnViewModel: ObservableObject {
             clearCircuitBreaker()
             relayRetryUsed = false
         }
+        // MR-2371: a dial of the app's own is a first connect, not the
+        // system bringing an earlier session back.
+        updateReconnect { $0.stop() }
         isConnecting = true
         error = nil
         // A fresh single-hop dial replaces any multi-hop session state. This is
@@ -754,6 +783,8 @@ final class VpnViewModel: ObservableObject {
             // with no instant in between where a second dial reads "idle".
             isTearingDownForRedial = false
         }
+        // MR-2371: the app's own dial, as in connect().
+        updateReconnect { $0.stop() }
         isConnecting = true
         error = nil
 
@@ -1020,6 +1051,8 @@ final class VpnViewModel: ObservableObject {
     func autoConnectIfEnabled() {
         guard UserDefaults.standard.bool(forKey: "auto_connect") else { return }
         guard !isConnected else { return }
+        // MR-2371: the system is already dialling the session back.
+        guard !isReconnecting else { return }
         // The fourth door a disconnect-first teardown window used to look idle
         // to (#351). `connect()` reads the same gate, but a dial refused here is
         // also a 1.5 s timer never started and a breaker check never run.
@@ -1048,7 +1081,7 @@ final class VpnViewModel: ObservableObject {
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard let self else { return }
-            guard !self.isConnected else { return }
+            guard !self.isConnected, !self.isReconnecting else { return }
             // Re-checked after the sleep against the same gate: 1.5 s is long
             // enough for a user tap, a settings blip or a teardown to start.
             guard TunnelDialGate.mayStartDial(isConnecting: self.isConnecting,
@@ -1212,6 +1245,22 @@ final class VpnViewModel: ObservableObject {
         // disconnect()/stale-rule cleanup), so snapshotting here keeps the
         // published value honest without polling the system profile.
         killSwitchSystem = vpnManager.killSwitchState
+        // MR-2371: what the session WAS, read before the branches below change
+        // it, for `ReconnectWatch`. The app drives a live switch, a settings
+        // rebuild and its own teardown-then-redial; the system re-dials a drop
+        // only while its on-demand Connect rule is armed (disarmed by every
+        // stop of the app's own BEFORE it stops: `VPNManager.disconnect()`,
+        // `failOpenAndStop()`).
+        let wasConnected = isConnected
+        let wasProven = tunnelPhase == .protected
+        let appDriven = isSwitching || isRebuildingLive || isReapplyingSettings || isTearingDownForRedial
+        let redialsOnDrop = killSwitchSystem?.redialsOnDrop ?? false
+        func watch(_ watched: ReconnectWatch.Status) {
+            updateReconnect {
+                $0.observe(watched, wasConnected: wasConnected, wasProven: wasProven,
+                           appDriven: appDriven, redialsOnDrop: redialsOnDrop)
+            }
+        }
         switch status {
         case .connected:
             // MR-974: up from down is a NEW session, "Connecting…" until its
@@ -1222,9 +1271,12 @@ final class VpnViewModel: ObservableObject {
             // "Protected" must wait for a handshake after the re-dial, not
             // ride the proof the previous path earned.
             if !isConnected || isReconnecting { resetHandshakeProof() }
+            // MR-2371: a recovery the system made (a drop it re-dialled, a
+            // reassert the app did not start) stays "Reconnecting…" until this
+            // session proves a handshake (`noteHandshake`).
+            watch(.connected)
             isConnected = true
             isConnecting = false
-            isReconnecting = false
             isReapplyingSettings = false
             // MR-1948: a tunnel is up, so the server's earlier "not yet" is spent.
             autoDialNotBefore = nil
@@ -1260,11 +1312,12 @@ final class VpnViewModel: ObservableObject {
             startHeartbeat()
         case .reasserting:
             isConnecting = true
-            isReconnecting = true
+            watch(.reasserting)
         case .connecting:
             // A connect that begins while a session was live is a re-dial, not
-            // a first connect (isConnected is still true across `.reasserting`).
-            isReconnecting = isConnected
+            // a first connect (isConnected is still true across `.reasserting`);
+            // so is the system's re-dial of a session that dropped (MR-2371).
+            watch(.connecting)
             isConnecting = true
         case .disconnected, .invalid:
             // An OS-initiated drop carries the extension's failure reason. Show
@@ -1283,7 +1336,11 @@ final class VpnViewModel: ObservableObject {
             }
             isConnected = false
             isConnecting = false
-            isReconnecting = false
+            // MR-2371: a live session that dropped while the system's on-demand
+            // rule is armed is dialled again by iOS: "Reconnecting…", not
+            // "Connection failed". The reason stays on the banner meanwhile.
+            watch(.disconnected)
+            if isReconnecting, let dropReason = error { recoveringFromError = dropReason }
             resetHandshakeProof()
             quantumActive = false
             connectedSince = nil
@@ -1308,6 +1365,9 @@ final class VpnViewModel: ObservableObject {
             // server-side revocation clears the handle.
         case .disconnecting:
             isConnecting = false
+            // MR-2371: the same rule as `.disconnected`, so a drop the system
+            // re-dials never flashes "Protected" on its way down.
+            watch(.disconnecting)
         @unknown default:
             break
         }
@@ -1332,7 +1392,9 @@ final class VpnViewModel: ObservableObject {
         deviceNotice = nil
         isConnected = false
         isConnecting = false
-        isReconnecting = false
+        // MR-2371: the app took over (a disconnect, sign-out, the breaker's
+        // fail-open, a teardown of its own): nothing is being brought back.
+        updateReconnect { $0.stop() }
         resetHandshakeProof()
         quantumActive = false
         connectedSince = nil
@@ -2031,6 +2093,11 @@ final class VpnViewModel: ObservableObject {
     private func noteHandshake(rx: Int64, sampledIn session: Int) {
         if handshakeLatch.observe(rx: rx, sampledIn: session) {
             handshakeProven = true
+            // MR-2371: the session that was being brought back is up again.
+            // The drop's "Tunnel failed: …" is history now, unless something
+            // else has been said since.
+            if isReconnecting, let dropped = recoveringFromError, error == dropped { error = nil }
+            updateReconnect { $0.proven() }
         }
     }
 
