@@ -60,6 +60,26 @@
             android:authorities="${applicationId}.SentryPerformanceProvider"
             tools:node="remove" />
 
+        <!--
+            MR-2379: Play Billing brings in Google's transport-runtime, whose log
+            uploader runs from these two scheduler components and posts to
+            firebaselogging*.googleapis.com. It resolves that host with the
+            system resolver, outside DoH, and during a Stealth session (the
+            app's own traffic stays outside the tunnel) outside the tunnel too.
+            Without them nothing uploads: the runtime's only other sender is
+            ForcedSender, which nothing in this app calls, and the runtime
+            catches the failed scheduling itself (DefaultScheduler,
+            SafeLoggingExecutor). Billing does not depend on the upload.
+            MergedManifestTest and scripts/verify_android_release_apk.py check
+            the merged manifest and the shipped APK/AAB.
+        -->
+        <service
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService"
+            tools:node="remove" />
+        <receiver
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver"
+            tools:node="remove" />
+
         <!-- Main Activity -->
         <activity
             android:name=".MainActivity"

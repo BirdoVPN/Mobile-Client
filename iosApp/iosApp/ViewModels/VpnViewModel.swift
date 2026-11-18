@@ -633,6 +633,9 @@ final class VpnViewModel: ObservableObject {
         Task {
             do {
                 let config = try await api.getConnectConfig(serverId: server.id)
+                // MR-2374: this dial's PQ pair ends with the dial, however it ends
+                // (a no-op once connect() has decapsulated it).
+                defer { BirdoPQManager.shared.discardHandOff(publicKey: config.pqUploadedKey) }
                 // The server-side peer now EXISTS — remember its handle so both
                 // the disconnect path and the failure path below can release
                 // the connection slot (the free tier has exactly one).
@@ -798,6 +801,8 @@ final class VpnViewModel: ObservableObject {
 
         do {
             let config = try await api.getMultiHopConfig(entryId: entry.id, exitId: exit.id)
+            // MR-2374: as in connect(): an unconfirmed route ends the dial early.
+            defer { BirdoPQManager.shared.discardHandOff(publicKey: config.pqUploadedKey) }
             // The server-side peer now EXISTS — remember its handle so every
             // failure below (route refusal included) can release the slot.
             setActiveKeyId(config.keyId)
@@ -1663,6 +1668,10 @@ final class VpnViewModel: ObservableObject {
         // Server-side the NEW peer now exists (and, if honoured, the OLD one is
         // deferred rather than evicted).
         ctx.newConfig = config
+        // MR-2374: the rebuild's PQ pair ends with the rebuild: an unconfirmed
+        // route, an unhonoured deferral or a failed swap ends it early, and a
+        // swap has already decapsulated it (then this is a no-op).
+        defer { BirdoPQManager.shared.discardHandOff(publicKey: config.pqUploadedKey) }
 
         // 2. Multi-Hop: refuse a route the server did not confirm (same rule as
         //    connectMultiHop — rationale in MultiHopRoute.swift).

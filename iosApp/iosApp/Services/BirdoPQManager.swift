@@ -43,6 +43,7 @@ import BirdoPQNative
 /// Nowhere on disk and not in the Keychain. `clientPublicKeyBase64()` makes a
 /// NEW keypair for each `/connect` request and keeps the secret in a
 /// `PQSecretKey` for exactly one `tryDecapsulate`, which wipes it (MR-2123);
+/// the end of the dial that uploaded it (`discardHandOff(publicKey:)`, MR-2374),
 /// `resetPersistedKeypair()` and a later upload wipe an unconsumed one. The
 /// host-only Keychain item (`HostKeychainItem.pqKeypair`) older builds kept is
 /// deleted, once per process (`purgeLegacyKeypair()`).
@@ -74,8 +75,9 @@ final class BirdoPQManager: @unchecked Sendable {
     /// holder of an ML-KEM secret key (MR-703 / MR-1742). Guarded by `queue`.
     ///
     /// MR-2123: whoever ends a hand-off's life wipes its secret key: the
-    /// decapsulation that consumes it, the next upload that replaces it, and
-    /// `resetPersistedKeypair()`.
+    /// decapsulation that consumes it, the next upload that replaces it,
+    /// `resetPersistedKeypair()`, and (MR-2374) the dial that uploaded it when
+    /// that dial ends without decapsulating (`discardHandOff(publicKey:)`).
     ///
     /// MR-2117: with no stored copy to fall back to, a decapsulation without it
     /// fails closed. The server encapsulated to this pair's public key, and any
@@ -140,16 +142,25 @@ final class BirdoPQManager: @unchecked Sendable {
     /// server-provided classical PSK and call `recordServerProvided()`.
     ///
     /// On success, latches `currentMode == .bilateral`.
+    ///
+    /// `publicKey` is the key THIS config's /connect uploaded
+    /// (`VPNConnectionConfig.pqUploadedKey`). Only that pair is taken, so a
+    /// config never decapsulates with, or wipes, a newer dial's pair; with no
+    /// match there is nothing to decapsulate with, and a session the server
+    /// made post-quantum fails closed (MR-2374 review; Android keys its
+    /// hand-off the same way).
     func tryDecapsulate(
         quantumEnabled: Bool,
         rosenpassPublicKeyBase64: String?,
-        rosenpassEndpointBase64: String?
+        rosenpassEndpointBase64: String?,
+        publicKey: String?
     ) -> String? {
         // MR-2117 / MR-2123: take the hand-off before anything can return, so
         // every path out (the early nils included) wipes its secret key.
         let handedOff = queue.sync { () -> Keypair? in
-            defer { handOff = nil }
-            return handOff
+            guard let kp = handOff, let publicKey, kp.pk.base64EncodedString() == publicKey else { return nil }
+            handOff = nil
+            return kp
         }
         defer { handedOff?.sk.wipe() }
 
@@ -212,6 +223,20 @@ final class BirdoPQManager: @unchecked Sendable {
         queue.sync { currentMode = .bilateral }
         debugLog("BirdoPQ v1 BILATERAL — quantum-resistant PSK derived (32 B, mode=bilateral)")
         return pskData.base64EncodedString()
+    }
+
+    /// MR-2374: the dial (or rebuild) whose /connect uploaded `publicKey` has
+    /// ended: refused, failed, abandoned, or connected (when its decapsulation
+    /// already took the pair). Its pair is wiped now instead of lingering until
+    /// the next upload or sign-out. Only that pair: a newer dial's hand-off,
+    /// under another key, is left alone, and nil or a consumed pair is a no-op.
+    func discardHandOff(publicKey: String?) {
+        guard let publicKey else { return }
+        queue.sync {
+            guard let kp = handOff, kp.pk.base64EncodedString() == publicKey else { return }
+            kp.sk.wipe()
+            handOff = nil
+        }
     }
 
     /// Latch mode for telemetry when we end up using the server's classical

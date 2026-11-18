@@ -115,6 +115,26 @@ MIN_BASELINE_PROFILE_BYTES = 1024
 PROFILE_INSTALL_RECEIVER = "androidx.profileinstaller.ProfileInstallReceiver"
 MANIFEST_ENTRIES = ("AndroidManifest.xml", "base/manifest/AndroidManifest.xml")
 
+# MR-2379: Play Billing's transport-runtime uploads its logs from its scheduler
+# components, and the upload resolves firebaselogging*.googleapis.com with the
+# system resolver: outside DoH, and outside the tunnel during Stealth.
+# app/src/main/AndroidManifest.xml removes them. Checked in EVERY mode, so the
+# PR's debug APK, the sideload APK and the Play AAB are each read, and by
+# PREFIX (review, L2): any com.google.android.datatransport.* name fails except
+# the discovery service, which only carries the backend registration, and the
+# backend class that registration names as meta-data
+# ("backend:com.google.android.datatransport.cct.CctBackendFactory"), which is
+# a string in the manifest, not a component. Allowed names match by prefix: in
+# an AAB's protobuf manifest the byte after a string can be printable.
+# The app's own VPN service must be found under the same decoding first, so an
+# unreadable manifest cannot pass.
+OWN_VPN_SERVICE = "app.birdo.vpn.service.BirdoVpnService"
+DATATRANSPORT_NAME = re.compile(r"com\.google\.android\.datatransport\.[A-Za-z0-9_.$]+")
+DATATRANSPORT_ALLOWED = (
+    "com.google.android.datatransport.runtime.backends.TransportBackendDiscovery",
+    "com.google.android.datatransport.cct.CctBackendFactory",
+)
+
 
 def parse_hash_encoding(value: str) -> dict[str, str]:
     """Parse "<abi>=<sha256>;..." into {abi: sha256}, or {} if not that shape."""
@@ -192,7 +212,8 @@ def fail(message: str) -> None:
 
 
 def main() -> None:
-    # --native-libs-only checks the ABI x engine contract and nothing else, so
+    # --native-libs-only checks the ABI x engine contract (and the removed
+    # manifest components, MR-2379) and nothing else, so
     # the same gate can run against artifacts that legitimately carry no signing
     # fingerprint constant: the debug APK a pull request builds, and the release
     # AAB. Without it the contract was enforced only in the release job, which
@@ -229,6 +250,34 @@ def main() -> None:
         # the walk find nothing and pass.
         lib_prefix = "base/lib/" if any(n.startswith("base/lib/") for n in names) else "lib/"
 
+        manifest_entry = next((n for n in MANIFEST_ENTRIES if n in names), None)
+        if manifest_entry is None:
+            fail("artifact contains no AndroidManifest.xml")
+        manifest = apk.read(manifest_entry)
+        decoded = (
+            manifest.decode("utf-16-le", "ignore") + manifest.decode("utf-8", "ignore")
+        )
+
+        if OWN_VPN_SERVICE not in decoded:
+            fail(
+                f"{manifest_entry} does not show {OWN_VPN_SERVICE}: the manifest could "
+                "not be read, so the removed-component check would pass on nothing."
+            )
+        returned = sorted({
+            m.group(0)
+            for m in DATATRANSPORT_NAME.finditer(decoded)
+            if not m.group(0).startswith(DATATRANSPORT_ALLOWED)
+        })
+        if returned:
+            fail(
+                f"{manifest_entry} names " + ", ".join(returned) + ". Only "
+                + DATATRANSPORT_ALLOWED[0] + " may stay: the rest of Play Billing's "
+                "transport-runtime runs its log uploader, whose upload resolves "
+                "firebaselogging*.googleapis.com outside DoH (and outside the tunnel "
+                "in Stealth). Remove it in app/src/main/AndroidManifest.xml "
+                "(tools:node=\"remove\", MR-2379)."
+            )
+
         # A full release verification always requires the profile; the
         # --native-libs-only callers (the debug APK on a PR, which legitimately
         # has none, and the release AAB, which does) opt in explicitly.
@@ -254,13 +303,6 @@ def main() -> None:
                     "working one from the outside. Re-record the profile."
                 )
 
-            manifest_entry = next((n for n in MANIFEST_ENTRIES if n in names), None)
-            if manifest_entry is None:
-                fail("artifact contains no AndroidManifest.xml")
-            manifest = apk.read(manifest_entry)
-            decoded = (
-                manifest.decode("utf-16-le", "ignore") + manifest.decode("utf-8", "ignore")
-            )
             if PROFILE_INSTALL_RECEIVER not in decoded:
                 fail(
                     f"{manifest_entry} does not declare {PROFILE_INSTALL_RECEIVER}, so the "
@@ -334,7 +376,8 @@ def main() -> None:
         print(
             f"Native engine set verified in {apk_path} "
             f"({len(SHIPPED_ABIS)} ABIs x {len(REQUIRED_ENGINES)} engines under "
-            f"{lib_prefix}){extra}"
+            f"{lib_prefix}){extra}; {manifest_entry} names no "
+            "com.google.android.datatransport component but TransportBackendDiscovery"
         )
         return
 
@@ -379,7 +422,8 @@ def main() -> None:
         "Release APK payload verification passed "
         f"({len(SHIPPED_ABIS)} ABIs x {len(REQUIRED_ENGINES)} engines; "
         f"native-integrity hashes verified against the shipped .so bytes for "
-        f"{', '.join(sorted(engine_hashes))}; compiled baseline profile present)"
+        f"{', '.join(sorted(engine_hashes))}; compiled baseline profile present; "
+        "no Play Billing log uploader in the manifest)"
     )
 
 

@@ -1757,6 +1757,73 @@ class VpnManagerTest {
         coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
     }
 
+    /** A refused connect that leaves the restriction notice set, as Home reads it. */
+    private suspend fun TestScope.refusedAsRestricted() {
+        every { context.getString(R.string.error_account_restricted_until, *anyVararg()) } returns "x"
+        coEvery { repository.connectVpn(any(), any()) } returns
+            restrictedRefusal(java.time.Instant.now().plusSeconds(3_600).toString())
+        vpnManager.connect("srv-1")
+        advanceUntilIdle()
+        assertEquals(FailureKind.ACCOUNT_RESTRICTED, (vpnManager.state.value as VpnState.Error).kind)
+        assertEquals("/dashboard/devices", vpnManager.accountRestriction.value?.appealPath)
+    }
+
+    /**
+     * MR-2380: the notice names one account's restriction and its review
+     * link. A sign-out clears it with the session's other notices, so the next
+     * account signed in on this device does not inherit it.
+     */
+    @Test
+    fun `sign-out clears the account-restriction notice`() = runTest {
+        refusedAsRestricted()
+
+        vpnManager.disconnectForSignOut()
+        runCurrent()
+
+        assertNull(vpnManager.accountRestriction.value)
+    }
+
+    /** MR-2380: an account deletion clears it too. */
+    @Test
+    fun `an account deletion clears the account-restriction notice`() = runTest {
+        refusedAsRestricted()
+
+        vpnManager.onAccountDeleted()
+        runCurrent()
+
+        assertNull(vpnManager.accountRestriction.value)
+    }
+
+    /**
+     * MR-2380 (review, L1): the account ends while its restricted /connect is
+     * still in flight. The refusal then belongs to a superseded dial, and must
+     * not put the old account's restriction (and review link) back.
+     */
+    private suspend fun TestScope.restrictedRefusalLandsAfter(accountEnds: suspend () -> Unit) {
+        every { context.getString(R.string.error_account_restricted_until, *anyVararg()) } returns "x"
+        val gate = CompletableDeferred<ApiResult<ConnectResponse>>()
+        coEvery { repository.connectVpn(any(), any()) } coAnswers { gate.await() }
+        launch { vpnManager.connect("srv-1") }
+        runCurrent()
+
+        accountEnds()
+        gate.complete(restrictedRefusal(java.time.Instant.now().plusSeconds(3_600).toString()))
+        runCurrent()
+
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        assertNull(vpnManager.accountRestriction.value)
+    }
+
+    @Test
+    fun `a restricted refusal that lands after sign-out leaves no restriction notice`() = runTest {
+        restrictedRefusalLandsAfter { vpnManager.disconnectForSignOut() }
+    }
+
+    @Test
+    fun `a restricted refusal that lands after an account deletion leaves no restriction notice`() = runTest {
+        restrictedRefusalLandsAfter { vpnManager.onAccountDeleted() }
+    }
+
     @Test
     fun `a device notice on a successful connect is kept for Home and cleared by Disconnect`() = runTest {
         coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(
@@ -2355,6 +2422,51 @@ class VpnManagerTest {
         coVerify(exactly = 1) { repository.disconnectVpn("key-123") }
         verify { prefs.lastServerId = "srv-2" }
         assertEquals("srv-2", vpnManager.connectedServerId.value)
+        quiesce()
+    }
+
+    /**
+     * MR-2374 (the LIVE_REBUILD extra): a rebuild uploads a NEW pair and its
+     * LIVE_REBUILD names that one, never the live session's, so the service
+     * decapsulates the rebuild with the pair the server encapsulated to. Once
+     * handed over, the pair is the service's: the rebuild does not wipe it.
+     */
+    @Test
+    fun `a live rebuild names its own new PQ pair in LIVE_REBUILD, not the live session's`() = runTest {
+        every { prefs.quantumProtectionEnabled } returns true
+        mockkObject(BirdoPqManager)
+        coEvery { BirdoPqManager.getClientPublicKeyB64(context) } returnsMany listOf("pq-key-A", "pq-key-B")
+        every { prefs.lastServerId } returns "srv-1"
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = any(),
+            )
+        } returns ApiResult.Success(makeConnectResponse())
+        vpnManager.connect("srv-1")
+        serviceEmits(VpnState.Connected)
+        runCurrent()
+        assertEquals("pq-key-A", stringExtras[BirdoVpnService.EXTRA_PQ_UPLOADED_KEY])
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+
+        assertTrue(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+        assertEquals("pq-key-B", stringExtras[BirdoVpnService.EXTRA_PQ_UPLOADED_KEY])
+        coVerify {
+            repository.connectVpn(
+                serverNodeId = "srv-2", deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = true, pqClientPublicKey = "pq-key-B", integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        }
+        verify(exactly = 0) { BirdoPqManager.discardPending(any()) }
+
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+        runCurrent()
+        assertTrue(switch.await() is ApiResult.Success)
         quiesce()
     }
 
