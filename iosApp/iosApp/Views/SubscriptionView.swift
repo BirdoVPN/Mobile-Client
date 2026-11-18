@@ -495,6 +495,10 @@ struct SubscriptionView: View {
                     .foregroundStyle(BirdoTheme.white60)
                 let price = Text(priceLabel(for: plan, product: product))
                     .birdoFont(18, weight: .bold)
+                    // MR-2383: one line, shrinking a little first, so a long
+                    // yearly price never breaks mid-word at AX5.
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                     .foregroundStyle(plan.slug == "RECON"
                                      ? BirdoTheme.white60
                                      : BirdoTheme.onSurface)

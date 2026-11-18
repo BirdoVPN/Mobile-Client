@@ -30,13 +30,10 @@ struct SegmentedTabs: View {
     }
 
     var body: some View {
-        let row = dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(spacing: 4))
-            : AnyLayout(HStackLayout(spacing: 4))
-        row {
-            ForEach(items.indices, id: \.self) { index in
-                segment(index)
-            }
+        // MR-2383: side by side, every segment as tall as the tallest
+        // (`SegmentRow`, pinned by SegmentRowTests).
+        SegmentRow(count: items.count, stacked: dynamicTypeSize.isAccessibilitySize) { index in
+            segment(index)
         }
         .padding(4)
         .background(
@@ -54,25 +51,11 @@ struct SegmentedTabs: View {
             Haptics.selectionChanged()
             selection = index
         } label: {
-            Text(items[index])
-                .birdoFont(13, weight: selected && style == .accent ? .semibold : .medium)
-                .foregroundStyle(segmentText(selected))
-                // Wraps to a second line before it shrinks (the Yearly label
-                // with its saving, from XL), then shrinks a little rather than cut.
-                .lineLimit(2)
-                .minimumScaleFactor(0.8)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity, minHeight: 40)
-                .background(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(selected ? selectedFill : Color.clear)
-                )
-                .overlay {
-                    if selected && style == .accent {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .strokeBorder(BirdoTheme.accentA(0.55), lineWidth: 1)
-                    }
-                }
+            SegmentLabel(text: items[index],
+                         weight: selected && style == .accent ? .semibold : .medium,
+                         textColor: segmentText(selected),
+                         fill: selected ? selectedFill : Color.clear,
+                         border: selected && style == .accent ? BirdoTheme.accentA(0.55) : nil)
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? [.isSelected] : [])

@@ -148,6 +148,10 @@ struct LimitView: View {
                 if stats != nil && !isGuest {
                     Text(hasCap ? "\(Self.wholeGb(limitGb)) GB / month" : "Unlimited")
                         .birdoFont(12, weight: .semibold)
+                        // MR-2383: one line, shrinking a little first, rather
+                        // than "100 GB /" over "month" in the pill at AX5.
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                         .foregroundStyle(BirdoTheme.accent)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
