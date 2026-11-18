@@ -1,6 +1,5 @@
 package app.birdo.vpn
 
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,15 +20,16 @@ class MergedManifestTest {
 
         /**
          * MR-2379: transport-runtime's log uploader (pulled in by Play Billing)
-         * runs only from these two components, and its upload resolves
+         * runs from its scheduler components, and its upload resolves
          * firebaselogging*.googleapis.com with the system resolver: outside
          * DoH, and outside the tunnel during Stealth. AndroidManifest.xml
-         * removes both (tools:node="remove").
+         * removes them (tools:node="remove"). Checked by prefix, not by the two
+         * names removed today, so a component a later transport-runtime adds
+         * fails here too (review, L2). The one left is inert on its own: it
+         * only carries the backend registration as meta-data.
          */
-        val REMOVED_UPLOADER = listOf(
-            "com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService",
-            "com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver",
-        )
+        const val DATATRANSPORT = "com.google.android.datatransport."
+        const val DATATRANSPORT_KEPT = "com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
     }
 
     private val mergedManifest: File by lazy {
@@ -59,13 +59,12 @@ class MergedManifestTest {
             "library manifests are not merged into $mergedManifest",
             "com.android.billingclient.api.ProxyBillingActivity" in components,
         )
-        for (name in REMOVED_UPLOADER) {
-            assertFalse(
-                "$name is back in the merged manifest: Play Billing's log uploader would resolve " +
-                    "firebaselogging*.googleapis.com outside DoH (and outside the tunnel in Stealth). " +
-                    "Keep its tools:node=\"remove\" in app/src/main/AndroidManifest.xml (MR-2379).",
-                name in components,
-            )
-        }
+        val transport = components.filter { it.startsWith(DATATRANSPORT) && it != DATATRANSPORT_KEPT }
+        assertTrue(
+            "the merged manifest declares $transport: Play Billing's log uploader would resolve " +
+                "firebaselogging*.googleapis.com outside DoH (and outside the tunnel in Stealth). " +
+                "Remove each with tools:node=\"remove\" in app/src/main/AndroidManifest.xml (MR-2379).",
+            transport.isEmpty(),
+        )
     }
 }

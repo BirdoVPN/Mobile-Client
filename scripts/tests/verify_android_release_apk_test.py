@@ -25,8 +25,13 @@ _spec = importlib.util.spec_from_file_location(
 verify = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(verify)
 
-UPLOADER = verify.REMOVED_MANIFEST_COMPONENTS[0]
+UPLOADER = (
+    "com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService",
+    "com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver",
+)
 DISCOVERY = "com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+# The meta-data the discovery service carries: a string in the manifest, not a component.
+BACKEND = "backend:com.google.android.datatransport.cct.CctBackendFactory"
 
 
 def _manifest(names: list[str], utf16: bool) -> bytes:
@@ -78,19 +83,33 @@ class ManifestComponentCheck(unittest.TestCase):
 
     def test_passes_without_the_uploader(self) -> None:
         for aab in (False, True):
-            code, err = self._check([verify.OWN_VPN_SERVICE, DISCOVERY], aab)
+            code, err = self._check([verify.OWN_VPN_SERVICE, DISCOVERY, BACKEND], aab)
             self.assertEqual(0, code, err)
+
+    def test_an_allowed_name_followed_by_a_printable_byte_still_passes(self) -> None:
+        # In an AAB's protobuf manifest the next field's tag can be printable
+        # (0x32 is '2'), and the name scan runs on into it.
+        code, err = self._check([verify.OWN_VPN_SERVICE, DISCOVERY + "2", BACKEND + "("], aab=True)
+        self.assertEqual(0, code, err)
 
     def test_fails_when_either_uploader_component_is_back(self) -> None:
         for aab in (False, True):
-            for component in verify.REMOVED_MANIFEST_COMPONENTS:
-                code, err = self._check([verify.OWN_VPN_SERVICE, component], aab)
+            for component in UPLOADER:
+                code, err = self._check([verify.OWN_VPN_SERVICE, DISCOVERY, component], aab)
                 self.assertEqual(1, code, f"aab={aab} {component}")
                 self.assertIn("MR-2379", err)
 
+    def test_fails_on_any_other_transport_component(self) -> None:
+        # By prefix (review L2): one a later transport-runtime adds fails too.
+        future = "com.google.android.datatransport.runtime.scheduling.WorkManagerUploadService"
+        for aab in (False, True):
+            code, err = self._check([verify.OWN_VPN_SERVICE, DISCOVERY, future], aab)
+            self.assertEqual(1, code, f"aab={aab}")
+            self.assertIn(future, err)
+
     def test_fails_when_the_manifest_cannot_be_read(self) -> None:
         # Without the app's own service in view, an absent uploader proves nothing.
-        code, err = self._check([UPLOADER.replace(".", "/")], aab=False)
+        code, err = self._check([UPLOADER[0].replace(".", "/")], aab=False)
         self.assertEqual(1, code)
         self.assertIn(verify.OWN_VPN_SERVICE, err)
 
