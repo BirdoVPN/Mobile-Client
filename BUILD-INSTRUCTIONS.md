@@ -31,7 +31,7 @@ hashes are compiled into the app and checked by CI (see
 | JDK | 17, Temurin | `JAVA_VERSION` / `JAVA_DISTRIBUTION` in `.github/workflows/android.yml`; `JavaVersion.VERSION_17` in `app/build.gradle.kts` |
 | Gradle | 9.8.2, distribution SHA-256 `21bd5da2de49b642904077f38c0efdc7778e92b3ed0889392dca61b97e389607` | `gradle/wrapper/gradle-wrapper.properties` (use `./gradlew`, never a system Gradle) |
 | Android Gradle Plugin | 9.4.1 (`com.android.application`, `com.android.library`); `com.android.kotlin.multiplatform.library` 9.5.0 | `build.gradle.kts` |
-| Kotlin | 2.4.10 (multiplatform, compose, serialization plugins); KSP 2.3.12; Hilt 2.60.1; baselineprofile 1.5.0 | `build.gradle.kts` |
+| Kotlin | 2.4.10 (multiplatform, compose, serialization plugins); KSP 2.3.13; Hilt 2.60.1; baselineprofile 1.5.0 | `build.gradle.kts` |
 | Gradle dependencies | locked, `LockMode.STRICT`, `lockAllConfigurations()` | `app/gradle.lockfile`, `dependencyLocking {}` in `app/build.gradle.kts` |
 | Gradle dependency bytes | SHA-256 of every artifact, POM and Gradle module file that Gradle resolves for the CI and release tasks, checked strictly by those builds; the exceptions are listed under "Where CI already records hashes" below | `gradle/verification-metadata.xml`, written by `.github/workflows/gradle-verification-metadata.yml` |
 | SDK levels | `compileSdk 37` (minor 0), `targetSdk 36`, `minSdk 29` | `app/build.gradle.kts` |

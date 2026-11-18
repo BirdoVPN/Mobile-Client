@@ -79,7 +79,7 @@ updates:
       # accepts 2.4.20: read the version out of a recent Analyze (java-kotlin)
       # log rather than release notes, and raise build.gradle.kts in the same PR.
       #
-      # KSP is NOT affected: com.google.devtools.ksp is on 2.3.12 and KSP2 is
+      # KSP is NOT affected: com.google.devtools.ksp is on 2.3.13 and KSP2 is
       # versioned independently of Kotlin, so its patches do not drag a Kotlin
       # version in.
       - dependency-name: "org.jetbrains.kotlin:*"
