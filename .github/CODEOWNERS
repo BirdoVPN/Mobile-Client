@@ -1,0 +1,14 @@
+# Code owners (MR-1794).
+#
+# Informational today: main's branch protection does not require a code-owner
+# review, so these lines request a review but cannot block a merge. They name
+# who must look at a change to the dependency-verification control: the pinned
+# checksums and trust rules, the workflow that writes and checks them, its
+# checksum guard, and the repositories Gradle resolves from.
+
+/gradle/verification-metadata.xml                   @1Birdo
+/.github/workflows/gradle-verification-metadata.yml @1Birdo
+/scripts/check_verification_metadata.py             @1Birdo
+/scripts/tests/check_verification_metadata_test.py  @1Birdo
+/settings.gradle.kts                                @1Birdo
+/.github/CODEOWNERS                                 @1Birdo
