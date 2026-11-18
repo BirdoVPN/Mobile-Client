@@ -132,8 +132,17 @@ jobs:
           </verification-metadata>
           XML
 
+      # assembleRelease and bundleRelease sign, so they get a throwaway key made
+      # here: random password, valid one day, never leaves the runner, and
+      # nothing it signs is uploaded.
       - name: Write the metadata (every CI and release task)
         run: |
+          pw="$(openssl rand -hex 24)"
+          keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/throwaway.p12" -storetype PKCS12 \
+            -storepass "$pw" -keypass "$pw" -alias throwaway -keyalg RSA -keysize 2048 \
+            -validity 1 -dname "CN=throwaway, O=CI"
+          export RELEASE_STORE_FILE="$RUNNER_TEMP/throwaway.p12" RELEASE_STORE_PASSWORD="$pw" \
+            RELEASE_KEY_ALIAS=throwaway RELEASE_KEY_PASSWORD="$pw"
           # shellcheck disable=SC2086 # RELEASE_FLAGS is a list of flags
           ./gradlew --write-verification-metadata sha256 \
             help lintDebug testDebugUnitTest :shared:testAndroidHostTest \
