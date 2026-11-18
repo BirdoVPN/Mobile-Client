@@ -141,19 +141,6 @@ jobs:
 
       - uses: ./.github/actions/android-native-libs
 
-      # The native-libs action ran Gradle before the file existed. Gradle keeps
-      # what it parsed then (in the daemon and as binary descriptors in
-      # caches/), and a later write does not record a file it never reads
-      # again: run 44369092007's Linux file lacked four parent/BOM POMs and
-      # modules (guava-parent, bc-jdk18on-bom, kotlinx-coroutines-bom,
-      # junit-bom) that only the Windows job, on a cold cache, then added. A
-      # build on a cold cache needs them, so the writes start from one. The
-      # .so files the action built are in the work tree and stay.
-      - name: Start the writes from a cold Gradle cache
-        run: |
-          ./gradlew --stop
-          rm -rf "${GRADLE_USER_HOME:-$HOME/.gradle}/caches"
-
       # The trust rules are the only hand-written part: sources and javadoc,
       # which an IDE fetches on sync and no build ships, are not checked.
       # Bootstrapping copies this <configuration> into the file it writes.
@@ -186,11 +173,26 @@ jobs:
       # download that flakes, from costing the write: the build still fails on
       # anything that is not a test result.
       #
+      # The writes get a Gradle user home of their own: a new daemon and an
+      # empty cache. The native-libs action ran Gradle before the file existed,
+      # and Gradle keeps what it parsed then (in the daemon and as binary
+      # descriptors in caches/); a later write does not record a file it never
+      # reads again. Run 44369092007's Linux file lacked four parent/BOM POMs
+      # and modules (guava-parent, bc-jdk18on-bom, kotlinx-coroutines-bom,
+      # junit-bom) that only the Windows job, on a cold cache, then added; a
+      # build on a cold cache needs them. A new home rather than deleting
+      # caches/: run 44383504178 deleted it under a daemon that was still
+      # exiting, and rm lost the race. The .so files the action built are in
+      # the work tree and stay.
+      #
       # assembleRelease and bundleRelease sign, so they get a throwaway key made
       # here: random password, valid one day, never leaves the runner, and
       # nothing it signs is uploaded.
       - name: Write the metadata (every CI and release task)
         run: |
+          export GRADLE_USER_HOME="$RUNNER_TEMP/gradle-home-writes"
+          mkdir -p "$GRADLE_USER_HOME"
+
           init="$RUNNER_TEMP/test-results-do-not-gate.gradle"
           cat > "$init" <<'GRADLE'
           allprojects {
