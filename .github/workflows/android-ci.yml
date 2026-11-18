@@ -553,7 +553,7 @@ jobs:
           RESTORED: ${{ steps.apt-restore.outputs.cache-matched-key }}
 
       - name: Save the QEMU proof's apt packages
-        if: ${{ (github.ref == 'refs/heads/main' || github.head_ref == 'ci/mr-2347-android-ci-caches') && steps.apt-collect.outputs.n != '0' && steps.apt-collect.outputs.key != steps.apt-restore.outputs.cache-matched-key }}
+        if: ${{ github.ref == 'refs/heads/main' && steps.apt-collect.outputs.n != '0' && steps.apt-collect.outputs.key != steps.apt-restore.outputs.cache-matched-key }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/pq-apt-archives
@@ -641,7 +641,7 @@ jobs:
 
       # Saved from this job only; "R8" restores the same entry.
       - name: Save the Rosenpass JNI Rust cache
-        if: ${{ (github.ref == 'refs/heads/main' || github.head_ref == 'ci/mr-2347-android-ci-caches') && steps.rust-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
