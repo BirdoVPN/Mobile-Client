@@ -20,7 +20,12 @@ import SwiftUI
 /// A hold filed here is cancelled by the app FIRST: the server's sign-out is
 /// best effort, so offline it might never void the hold the user was told
 /// signing out cancels. If that cancel fails, nobody is signed out and the
-/// dialog says the deletion is still scheduled.
+/// dialog says the deletion is still scheduled. Once it went through, the
+/// sign-out goes on with "The deletion is cancelled." unless the re-read
+/// names a hold (MR-2389 R1). While signing out the dialog cannot be
+/// dismissed, so a cancel never lands unseen; that state is bounded: the
+/// cancel at `HeldDeletionController.cancelCap` (10 s, R2), the re-read at
+/// `SignOutHold.readWait` (3 s). Android #623 at e2337eb1 does the same.
 struct SignOutConfirmation: View {
     @EnvironmentObject var authVM: AuthViewModel
 
@@ -167,7 +172,14 @@ struct SignOutConfirmation: View {
                 cancel: { id in await authVM.cancelHeldDeletion(id: id) },
                 read: { [authVM] in await authVM.readHeldDeletionForSignOut() })
             switch step {
-            case .signOut:
+            case .signOut(let cancelled):
+                // MR-2389 (R1): a cancel-first that went through is said here
+                // while the sign-out runs, never the generic caution: nothing
+                // is known to wait (`CancelResult.listKnown`).
+                if let cancelled {
+                    listAnswered = true
+                    cancelNote = SignOutHold.cancelNote(cancelled)
+                }
                 await signOut()
                 busy = false
                 onClose()
@@ -175,10 +187,11 @@ struct SignOutConfirmation: View {
                 // Nobody is signed out: the deletion is still scheduled.
                 busy = false
                 blocked = refused
-            case .reconsider(let answered):
-                // The cancel went through, but the read after it did not say
-                // that nothing waits: show what is known now.
+            case .reconsider(let answered, let cancelled):
+                // The cancel went through, but what is known after it is not
+                // "nothing waits": show it, and what the cancel did.
                 listAnswered = answered
+                cancelNote = SignOutHold.cancelNote(cancelled)
                 busy = false
             case .sessionEnded:
                 busy = false
@@ -200,8 +213,9 @@ struct SignOutConfirmation: View {
     }
 
     /// "Cancel deletion": the app's cancel, then the list is read again (at
-    /// most `SignOutHold.readWait`). Only a read that answered may say that
-    /// nothing waits any more.
+    /// most `SignOutHold.readWait`). After a 404 only a read that answered may
+    /// say that nothing waits any more; after a 200 nothing is known to wait
+    /// unless that read names a hold (MR-2389 R1, `CancelResult.listKnown`).
     private func cancelDeletion(_ id: String) {
         guard !busy, !cancelInFlight else { return }
         cancelInFlight = true
@@ -214,13 +228,10 @@ struct SignOutConfirmation: View {
                 read: { [authVM] in await authVM.readHeldDeletionForSignOut() })
             cancelInFlight = false
             switch result.outcome {
-            case .cancelled:
+            case .cancelled, .alreadyGone:
                 // The server confirmed it: only now is anything said.
-                listAnswered = result.listAnswered
-                cancelNote = "The deletion is cancelled."
-            case .alreadyGone:
-                listAnswered = result.listAnswered
-                cancelNote = "That deletion was no longer waiting."
+                listAnswered = result.listKnown
+                cancelNote = SignOutHold.cancelNote(result.outcome)
             case .failed(let reason):
                 cancelError = reason
             case .sessionEnded:

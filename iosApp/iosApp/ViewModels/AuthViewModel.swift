@@ -188,6 +188,11 @@ final class AuthViewModel: ObservableObject {
     /// still knows (`KeychainService.heldDeletionFiledHereId`).
     @Published private(set) var heldDeletion = HeldDeletionRecord()
     @Published private(set) var isCancellingPendingDeletion = false
+    /// MR-2389: a list read has answered in this session, so "no hold" is
+    /// known rather than assumed (`HeldDeletionController.listAnswered`). The
+    /// deletion dialog's hold step says "signing out cancels the deletion"
+    /// only then.
+    @Published private(set) var heldDeletionListAnswered = false
     /// A cancel that failed, shown on the banner. Never a deletion error.
     @Published private(set) var pendingDeletionError: String?
     /// One-shot: a hold request was answered with a hold. ProfileView closes
@@ -421,6 +426,9 @@ final class AuthViewModel: ObservableObject {
             if isCancellingPendingDeletion != controller.isCancelling {
                 isCancellingPendingDeletion = controller.isCancelling
             }
+            if heldDeletionListAnswered != controller.listAnswered {
+                heldDeletionListAnswered = controller.listAnswered
+            }
         }
         return controller
     }
@@ -454,8 +462,8 @@ final class AuthViewModel: ObservableObject {
 
     /// MR-179: cancel the deletion on hold (the Profile banner), then read the
     /// list again. A 404 means it is already gone (cancelled elsewhere, or
-    /// applied). A list read already in flight is dropped, so it cannot bring
-    /// the hold back.
+    /// applied). Once the cancel went through, a list read still in flight is
+    /// dropped, so it cannot bring the hold back.
     func cancelPendingDeletion() {
         guard let pending = pendingDeletion, !isCancellingPendingDeletion else { return }
         Task { [weak self] in
@@ -474,11 +482,22 @@ final class AuthViewModel: ObservableObject {
     /// (`SignOutHold.prepareSignOut`). One at a time: a second call for the
     /// same id waits for the first. Only `.cancelled` / `.alreadyGone` are the
     /// server's word that the hold is gone. The caller reads the list again.
+    /// Capped at `HeldDeletionController.cancelCap` (MR-2389 R2).
+    ///
+    /// MR-2389 (R3): a list read already in flight is left alone until the
+    /// cancel SUCCEEDS. If the cancel fails, that read's answer still stands
+    /// (as Android #623); once it succeeds, the read is stale and dropped.
     func cancelHeldDeletion(id: String) async -> HeldDeletionCancelOutcome {
-        pendingDeletionTask?.cancel()
         pendingDeletionError = nil
         let outcome = await heldDeletions.cancel(id: id)
-        if case .failed(let message) = outcome { pendingDeletionError = message }
+        switch outcome {
+        case .cancelled, .alreadyGone:
+            pendingDeletionTask?.cancel()
+        case .failed(let message):
+            pendingDeletionError = message
+        case .sessionEnded:
+            break
+        }
         return outcome
     }
 
@@ -1401,6 +1420,7 @@ final class AuthViewModel: ObservableObject {
         pendingDeletionError = nil
         deleteHoldError = nil
         isCancellingPendingDeletion = false
+        heldDeletionListAnswered = false
         deletionHoldFiled = false
         isLoading = false
         isDeleting = false

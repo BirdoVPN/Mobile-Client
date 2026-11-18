@@ -78,9 +78,50 @@ final class HeldDeletionOriginTests: XCTestCase {
         // The banner and the deletion dialog's hold step.
         XCTAssertEqual(DeletionHold.bannerSignOutNote(filedHere: false), keeps)
         XCTAssertEqual(DeletionHold.bannerSignOutNote(filedHere: true), DeletionHold.signOutCancels)
-        XCTAssertEqual(DeletionHold.holdStepSignOutNote(holdKnown: false), DeletionHold.signOutCancels)
-        XCTAssertNil(DeletionHold.holdStepSignOutNote(holdKnown: true),
+        XCTAssertEqual(DeletionHold.holdStepSignOutNote(holdKnown: false, listAnswered: true),
+                       DeletionHold.signOutCancels)
+        XCTAssertNil(DeletionHold.holdStepSignOutNote(holdKnown: true, listAnswered: true),
                      "with a hold waiting, a new request is a 409 this session may not have filed")
+        // MR-2389 nit: not before the list answered (a 409 would correct it, too late).
+        XCTAssertNil(DeletionHold.holdStepSignOutNote(holdKnown: false, listAnswered: false))
+        XCTAssertNil(DeletionHold.holdStepSignOutNote(holdKnown: true, listAnswered: false))
+    }
+
+    // MARK: - The hold request's refusal hook (MR-2389 nit: the call site is pinned)
+
+    /// The hook `APIClient.requestDeletionHold` passes is THIS function
+    /// (pinned by source below), so a 409 that names the hold reaches the
+    /// caller as `.alreadyPending`, never as a failure or as `.filed`.
+    func testTheHoldRequestRefusalHookTellsTheAnswersApart() throws {
+        func hook(_ status: Int, _ json: String) -> Error? {
+            DeletionHold.holdRequestRefusal(status: status, body: Data(json.utf8))
+        }
+        let waiting = #"{"statusCode":409,"error":"change_already_pending","message":"x","details":{"stepUp":{"methods":["hold"],"pendingChangeId":"web1","applyAfter":"2026-11-14T12:00:00.000Z"}}}"#
+        let named = try XCTUnwrap(hook(409, waiting) as? DeletionHoldNamed)
+        XCTAssertEqual(named.answer, .alreadyPending(filedElsewhere))
+        XCTAssertFalse(named.answer.filedHere)
+
+        XCTAssertEqual(hook(403, #"{"error":"two_factor_required","stepUp":["two_factor"]}"#) as? DeletionRefusal,
+                       .twoFactorRequired)
+        XCTAssertTrue(hook(409, #"{"error":"hold_unavailable","stepUp":["account_number"]}"#) is DeletionHoldRefusal)
+        XCTAssertTrue(hook(409, #"{"error":"change_already_pending","message":"x"}"#) is DeletionHoldRefusal,
+                      "an already-pending answer that names no hold stays a refusal")
+        XCTAssertNil(hook(500, "{}"), "anything else keeps the generic mapping")
+    }
+
+    func testTheHoldRequestUsesTheHookAndMarksOnlyA2xxFiled() throws {
+        let api = try source("iosApp/Services/APIClient.swift")
+        let request = member("func requestDeletionHold(", in: api)
+        XCTAssertTrue(request.contains("refusal: DeletionHold.holdRequestRefusal"), request)
+        XCTAssertTrue(request.contains("catch let named as DeletionHoldNamed"))
+        XCTAssertTrue(request.contains("return named.answer"))
+        XCTAssertTrue(request.contains("DeletionHold.holdRequestAnswer(status: answer.status, body: answer.data)"))
+        XCTAssertTrue(request.contains("throw DeletionHoldRefusal.unexpectedAnswer"))
+        XCTAssertFalse(request.contains(".filed("), "only holdRequestAnswer decides what this request filed")
+
+        let auth = try source("iosApp/ViewModels/AuthViewModel.swift")
+        XCTAssertTrue(auth.contains("let answer = try await api.requestDeletionHold("))
+        XCTAssertTrue(auth.contains("showDeletionHold(answer.pending, filedHere: answer.filedHere)"))
     }
 
     // MARK: - The record
@@ -287,7 +328,7 @@ final class HeldDeletionOriginTests: XCTestCase {
         XCTAssertEqual(try line(notice), unchecked)
         XCTAssertFalse(notice.offersCancelDeletion)
         let step1 = await h.prepareSignOut(notice)
-        XCTAssertEqual(step1, .signOut)
+        XCTAssertEqual(step1, .signOut(cancelled: nil))
         XCTAssertTrue(h.server.cancels.isEmpty)
     }
 
@@ -313,7 +354,7 @@ final class HeldDeletionOriginTests: XCTestCase {
         h.server.held = filedOnThisDevice
         h.controller.show(.filed(filedOnThisDevice))
         let step = await h.prepareSignOut(h.controller.record.signOutNotice(listAnswered: true))
-        XCTAssertEqual(step, .signOut)
+        XCTAssertEqual(step, .signOut(cancelled: .cancelled))
         XCTAssertEqual(h.server.cancels, ["app1"])
         XCTAssertEqual(h.server.reads, 1, "the list is read after the cancel")
         XCTAssertNil(h.controller.record.pending)
@@ -325,7 +366,7 @@ final class HeldDeletionOriginTests: XCTestCase {
         gone.controller.show(.filed(filedOnThisDevice))
         gone.server.cancelSaysGone = true
         let step2 = await gone.prepareSignOut(.filedHere(filedOnThisDevice))
-        XCTAssertEqual(step2, .signOut)
+        XCTAssertEqual(step2, .signOut(cancelled: .alreadyGone))
     }
 
     /// F1: cold start, offline. The record knows the id it filed but not the
@@ -361,7 +402,7 @@ final class HeldDeletionOriginTests: XCTestCase {
         h.server.listFails = false
         h.server.cancelError = nil
         let step3 = await h.prepareSignOut(notice)
-        XCTAssertEqual(step3, .signOut)
+        XCTAssertEqual(step3, .signOut(cancelled: .cancelled))
         XCTAssertEqual(h.server.cancels, ["app1", "app1"])
         XCTAssertNil(h.store.heldDeletionFiledHereId)
     }
@@ -394,25 +435,57 @@ final class HeldDeletionOriginTests: XCTestCase {
         XCTAssertEqual(h.sessionsEnded, 1)
     }
 
-    /// F4: after the cancel, only a read that ANSWERED "nothing waits" lets
-    /// the sign-out go on.
+    /// F4: after the cancel, a read that names another hold stops the
+    /// sign-out; after a 404, so does a read that did not answer (after a 200
+    /// it does not: R1 below).
     @MainActor
-    func testAfterTheCancelOnlyAnAnsweredEmptyListLetsTheSignOutGoOn() async {
+    func testAfterTheCancelAListedHoldOrAnUnreadListAfterA404StopsTheSignOut() async {
         let another = Harness()
         another.server.held = filedOnThisDevice
         another.server.heldAfterCancel = filedElsewhere
         another.controller.show(.filed(filedOnThisDevice))
         let step5 = await another.prepareSignOut(.filedHere(filedOnThisDevice))
-        XCTAssertEqual(step5, .reconsider(listAnswered: true))
+        XCTAssertEqual(step5, .reconsider(listAnswered: true, cancelled: .cancelled))
         XCTAssertEqual(another.controller.record.signOutNotice(listAnswered: true), .notFiledHere(filedElsewhere))
 
+        // A 404 says only that THAT id is gone: with the re-read failed,
+        // nothing says no other hold waits, so nobody is signed out yet.
+        let goneUnread = Harness()
+        goneUnread.server.held = filedOnThisDevice
+        goneUnread.server.cancelSaysGone = true
+        goneUnread.server.listFailsAfterCancel = true
+        goneUnread.controller.show(.filed(filedOnThisDevice))
+        let step6 = await goneUnread.prepareSignOut(.filedHere(filedOnThisDevice))
+        XCTAssertEqual(step6, .reconsider(listAnswered: false, cancelled: .alreadyGone))
+        XCTAssertEqual(goneUnread.controller.record.signOutNotice(listAnswered: false), .unchecked)
+    }
+
+    /// MR-2389 R1 (Android #623 `afterCancelFirst`): after a 200 the hold this
+    /// session filed IS cancelled, so a re-read that failed is no reason to
+    /// stop, to ask for a second tap or to show the generic caution: the
+    /// sign-out goes on, saying "The deletion is cancelled.".
+    @MainActor
+    func testR1ASuccessfulCancelWithAFailedReReadStillSignsOut() async throws {
         let unread = Harness()
         unread.server.held = filedOnThisDevice
         unread.server.listFailsAfterCancel = true
         unread.controller.show(.filed(filedOnThisDevice))
-        let step6 = await unread.prepareSignOut(.filedHere(filedOnThisDevice))
-        XCTAssertEqual(step6, .reconsider(listAnswered: false))
-        XCTAssertEqual(unread.controller.record.signOutNotice(listAnswered: false), .unchecked)
+        let step = await unread.prepareSignOut(.filedHere(filedOnThisDevice))
+        XCTAssertEqual(step, .signOut(cancelled: .cancelled))
+        XCTAssertEqual(unread.server.cancels, ["app1"])
+        XCTAssertEqual(unread.server.reads, 1, "the re-read was tried")
+        // What the dialog shows while the sign-out runs: no caution, the note.
+        XCTAssertEqual(unread.controller.record.signOutNotice(listAnswered: true), .nothingWaiting)
+        XCTAssertNil(try line(unread.controller.record.signOutNotice(listAnswered: true)))
+        XCTAssertEqual(SignOutHold.cancelNote(.cancelled), "The deletion is cancelled.")
+
+        // The cold start that could not read the list: the same.
+        let cold = Harness(stored: "app1")
+        cold.controller.restore()
+        cold.server.listFails = true
+        let step2 = await cold.prepareSignOut(.filedHereUnchecked(id: "app1"), wait: .milliseconds(200))
+        XCTAssertEqual(cold.server.cancels, ["app1"])
+        XCTAssertEqual(step2, .signOut(cancelled: .cancelled))
 
         // "Cancel deletion" in the dialog: the same rule for what it says next.
         let dialog = Harness()
@@ -424,9 +497,29 @@ final class HeldDeletionOriginTests: XCTestCase {
                                                          read: { await dialog.controller.read() },
                                                          wait: .milliseconds(200))
         XCTAssertEqual(result, SignOutHold.CancelResult(outcome: .cancelled, listAnswered: false))
+        XCTAssertTrue(result.listKnown, "a 200 is the server's word: no caution after it")
+        XCTAssertEqual(dialog.controller.record.signOutNotice(listAnswered: result.listKnown), .nothingWaiting)
     }
 
-    /// F5: the read after the cancel is capped too.
+    /// The rule behind R1, whole: after a 200 nothing is known to wait unless
+    /// a read names a hold; after a 404 only an answered read says so.
+    func testWhatIsKnownAfterACancel() {
+        typealias R = SignOutHold.CancelResult
+        XCTAssertTrue(R(outcome: .cancelled, listAnswered: true).listKnown)
+        XCTAssertTrue(R(outcome: .cancelled, listAnswered: false).listKnown)
+        XCTAssertTrue(R(outcome: .alreadyGone, listAnswered: true).listKnown)
+        XCTAssertFalse(R(outcome: .alreadyGone, listAnswered: false).listKnown)
+        XCTAssertFalse(R(outcome: .failed("x"), listAnswered: false).listKnown)
+        XCTAssertFalse(R(outcome: .sessionEnded, listAnswered: false).listKnown)
+
+        XCTAssertEqual(SignOutHold.cancelNote(.cancelled), "The deletion is cancelled.")
+        XCTAssertEqual(SignOutHold.cancelNote(.alreadyGone), "That deletion was no longer waiting.")
+        XCTAssertNil(SignOutHold.cancelNote(.failed("x")))
+        XCTAssertNil(SignOutHold.cancelNote(.sessionEnded))
+    }
+
+    /// F5: the read after the cancel is capped too. Past it, a 200 still
+    /// signs out (R1); a 404 does not.
     @MainActor
     func testTheReadAfterTheCancelIsCapped() async {
         let h = Harness()
@@ -437,7 +530,152 @@ final class HeldDeletionOriginTests: XCTestCase {
         let start = clock.now
         let step = await h.prepareSignOut(.filedHere(filedOnThisDevice), wait: .milliseconds(100))
         XCTAssertLessThan(start.duration(to: clock.now), .seconds(2))
-        XCTAssertEqual(step, .reconsider(listAnswered: false))
+        XCTAssertEqual(step, .signOut(cancelled: .cancelled))
+
+        let gone = Harness()
+        gone.server.held = filedOnThisDevice
+        gone.server.cancelSaysGone = true
+        gone.server.listDelayAfterCancel = .seconds(4)
+        gone.controller.show(.filed(filedOnThisDevice))
+        let start2 = clock.now
+        let step2 = await gone.prepareSignOut(.filedHere(filedOnThisDevice), wait: .milliseconds(100))
+        XCTAssertLessThan(start2.duration(to: clock.now), .seconds(2))
+        XCTAssertEqual(step2, .reconsider(listAnswered: false, cancelled: .alreadyGone))
+    }
+
+    /// MR-2389 R2 (Android #623 `HOLD_CANCEL_TIMEOUT_MS`): one cancel is
+    /// capped. Past the cap it FAILED, as unreachable: nothing local says the
+    /// hold is gone, the sign-out waiting on it stops (Try again / Sign out
+    /// anyway), and the dialog is busy no longer than the cap.
+    @MainActor
+    func testR2TheCancelIsCapped() async {
+        XCTAssertEqual(HeldDeletionController.cancelCap, .seconds(10))
+        let h = Harness(cancelTimeout: .milliseconds(100))
+        h.server.held = filedOnThisDevice
+        h.server.cancelDelay = .seconds(5)
+        h.controller.show(.filed(filedOnThisDevice))
+        let clock = ContinuousClock()
+        let start = clock.now
+        let step = await h.prepareSignOut(.filedHere(filedOnThisDevice))
+        XCTAssertLessThan(start.duration(to: clock.now), .seconds(3), "bounded by the cap, not by the request")
+        XCTAssertEqual(step, .blocked(SignOutHold.Blocked(reason: HeldDeletionController.unreachableMessage,
+                                                          applyAfter: Self.applyAfterDate)))
+        XCTAssertEqual(h.controller.record.pending, filedOnThisDevice, "not said to be cancelled")
+        XCTAssertEqual(h.store.heldDeletionFiledHereId, "app1")
+        XCTAssertFalse(h.controller.isCancelling)
+
+        // The banner's cancel is the same call, capped the same way.
+        let banner = Harness(cancelTimeout: .milliseconds(100))
+        banner.server.cancelDelay = .seconds(5)
+        banner.controller.show(.alreadyPending(filedElsewhere))
+        let outcome = await banner.controller.cancel(id: "web1")
+        XCTAssertEqual(outcome, .failed(HeldDeletionController.unreachableMessage))
+        XCTAssertEqual(banner.controller.record.pending, filedElsewhere)
+    }
+
+    /// The cap itself: a fast answer passes through, a slow one is cut off
+    /// at the cap and its task is cancelled.
+    @MainActor
+    func testCappedCallAnswersOrTimesOut() async throws {
+        let fast = try await CappedCall.run(within: .seconds(5)) { 42 }
+        XCTAssertEqual(fast, 42)
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        let probe = CancellationProbe()
+        do {
+            _ = try await CappedCall.run(within: .milliseconds(100)) { () async throws -> Int in
+                try? await Task.sleep(for: .seconds(5))
+                probe.sawCancel = Task.isCancelled
+                return 1
+            }
+            XCTFail("a slow call must time out")
+        } catch is CappedCall.TimedOut {
+            XCTAssertLessThan(start.duration(to: clock.now), .seconds(3))
+        }
+        // The slow call's task was cancelled, so its sleep ended early.
+        for _ in 0..<100 where !probe.sawCancel { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(probe.sawCancel)
+
+        do {
+            _ = try await CappedCall.run(within: .seconds(5)) { () async throws -> Int in throw URLError(.timedOut) }
+            XCTFail("the call's own error comes through")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .timedOut)
+        }
+    }
+
+    /// MR-2389 R3 (Android #623 `applyRead`): only a cancel that SUCCEEDS
+    /// makes the reads started before it stale. A read that started before a
+    /// cancel that failed applies, whether it answers during the cancel or
+    /// after it.
+    @MainActor
+    func testR3AReadStartedBeforeAFailedCancelStillApplies() async {
+        // It answers while the cancel is out.
+        let during = Harness()
+        during.server.scripted = [(answer: filedElsewhere, delay: .milliseconds(100))]
+        during.server.cancelDelay = .milliseconds(400)
+        during.server.cancelError = URLError(.notConnectedToInternet)
+        let read1 = Task { await during.controller.read() }
+        while during.server.reads == 0 { await Task.yield() }
+        let outcome1 = await during.controller.cancel(id: "web1")
+        let answered1 = await read1.value
+        XCTAssertEqual(outcome1, .failed(HeldDeletionController.unreachableMessage))
+        XCTAssertTrue(answered1)
+        XCTAssertEqual(during.controller.record.pending, filedElsewhere)
+
+        // It answers after the cancel failed.
+        let after = Harness()
+        after.server.scripted = [(answer: filedElsewhere, delay: .milliseconds(400))]
+        after.server.cancelError = URLError(.notConnectedToInternet)
+        let read2 = Task { await after.controller.read() }
+        while after.server.reads == 0 { await Task.yield() }
+        let outcome2 = await after.controller.cancel(id: "web1")
+        XCTAssertEqual(outcome2, .failed(HeldDeletionController.unreachableMessage))
+        let answered2 = await read2.value
+        XCTAssertTrue(answered2)
+        XCTAssertEqual(after.controller.record.pending, filedElsewhere, "the failed cancel made it stale before R3")
+    }
+
+    /// The other half of R3: a read that started before a cancel that
+    /// SUCCEEDED, and answers after it, is stale and never brings the hold back.
+    @MainActor
+    func testR3AReadStartedBeforeASuccessfulCancelIsDropped() async {
+        let h = Harness()
+        h.controller.show(.filed(filedOnThisDevice))
+        h.server.scripted = [(answer: filedOnThisDevice, delay: .milliseconds(400))]
+        let read = Task { await h.controller.read() }
+        while h.server.reads == 0 { await Task.yield() }
+        let outcome = await h.controller.cancel(id: "app1")
+        XCTAssertEqual(outcome, .cancelled)
+        let answered = await read.value
+        XCTAssertTrue(answered, "what is known is fresher than that answer")
+        XCTAssertNil(h.controller.record.pending, "the cancelled hold does not come back")
+        XCTAssertNil(h.store.heldDeletionFiledHereId)
+    }
+
+    /// MR-2389 nit: the hold step's "signing out cancels the deletion" needs a
+    /// list read that answered in THIS session.
+    @MainActor
+    func testTheListAnsweredFlagFollowsTheSession() async {
+        let h = Harness()
+        XCTAssertFalse(h.controller.listAnswered)
+        h.server.listFails = true
+        let failed = await h.controller.read()
+        XCTAssertFalse(failed)
+        XCTAssertFalse(h.controller.listAnswered, "a failed read answered nothing")
+        h.server.listFails = false
+        let answered = await h.controller.read()
+        XCTAssertTrue(answered)
+        XCTAssertTrue(h.controller.listAnswered)
+        h.controller.endSession()
+        XCTAssertFalse(h.controller.listAnswered)
+        _ = await h.controller.read()
+        h.controller.startSession()
+        XCTAssertFalse(h.controller.listAnswered, "a new session starts unanswered")
+        _ = await h.controller.read()
+        h.controller.restore()
+        XCTAssertFalse(h.controller.listAnswered, "a cold start starts unanswered")
     }
 
     /// Signing out leaves a hold from elsewhere alone.
@@ -448,7 +686,7 @@ final class HeldDeletionOriginTests: XCTestCase {
         let read6 = await h.controller.read()
         XCTAssertTrue(read6)
         let step7 = await h.prepareSignOut(h.controller.record.signOutNotice(listAnswered: true))
-        XCTAssertEqual(step7, .signOut)
+        XCTAssertEqual(step7, .signOut(cancelled: nil))
         XCTAssertTrue(h.server.cancels.isEmpty)
     }
 
@@ -615,7 +853,8 @@ final class HeldDeletionOriginTests: XCTestCase {
         XCTAssertTrue(banner.contains("DeletionHold.bannerSignOutNote(filedHere: authVM.heldDeletion.filedHere)"))
         XCTAssertFalse(banner.contains("signOutCancels"))
         let holdStep = member("private var deletionHoldStep: some View {", in: profile)
-        XCTAssertTrue(holdStep.contains("DeletionHold.holdStepSignOutNote(holdKnown: authVM.pendingDeletion != nil)"))
+        XCTAssertTrue(holdStep.contains("DeletionHold.holdStepSignOutNote(holdKnown: authVM.pendingDeletion != nil,"))
+        XCTAssertTrue(holdStep.contains("listAnswered: authVM.heldDeletionListAnswered)"))
         XCTAssertFalse(holdStep.contains("Text(DeletionHold.signOutCancels)"))
 
         let home = try source("iosApp/Views/HomeView.swift")
@@ -633,6 +872,12 @@ final class HeldDeletionOriginTests: XCTestCase {
 // MARK: - Fakes
 
 private struct FakeUnauthorized: Error {}
+
+/// Whether a capped call's task saw its cancellation.
+@MainActor
+private final class CancellationProbe {
+    var sawCancel = false
+}
 
 /// `GET /auth/pending-changes` and the cancel route.
 @MainActor
@@ -703,7 +948,7 @@ private final class Harness {
     /// Built in `init`, as AuthViewModel builds its own (no lazy initializer).
     private(set) var controller: HeldDeletionController!
 
-    init(stored: String? = nil) {
+    init(stored: String? = nil, cancelTimeout: Duration = HeldDeletionController.cancelCap) {
         let server = FakePendingChanges()
         self.server = server
         store = MemoryHoldStore(stored)
@@ -718,7 +963,8 @@ private final class Harness {
                 self.signedIn = false
                 return true
             },
-            isSignedIn: { [unowned self] in self.signedIn })
+            isSignedIn: { [unowned self] in self.signedIn },
+            cancelTimeout: cancelTimeout)
     }
 
     func check(wait: Duration = SignOutHold.readWait) async -> Bool {
