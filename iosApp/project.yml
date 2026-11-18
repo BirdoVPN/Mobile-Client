@@ -325,6 +325,10 @@ targets:
       # buttons). SwiftUI + BirdoTheme only, pinned by DialogLayoutTests at
       # the accessibility sizes on an iPhone SE-sized space.
       - path: iosApp/Views/Components/BirdoDialogCard.swift
+      # MR-2383: the segmented control's row and label (every segment as tall
+      # as the tallest). SwiftUI + BirdoTheme only, pinned by SegmentRowTests
+      # at XXL/XXXL; SegmentedTabs itself (haptics) stays out of this bundle.
+      - path: iosApp/Views/Components/SegmentRow.swift
       # A-L24 / MR-2241: the keychain write's single retry for a freshly minted
       # session. Foundation-only, pinned by SessionPersistenceTests.
       - path: iosApp/Services/SessionPersistence.swift

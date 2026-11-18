@@ -493,11 +493,26 @@ struct SubscriptionView: View {
                 let tagline = Text(plan.tagline)
                     .font(BirdoTheme.Fonts.bodySmall)
                     .foregroundStyle(BirdoTheme.white60)
-                let price = Text(priceLabel(for: plan, product: product))
-                    .birdoFont(18, weight: .bold)
-                    .foregroundStyle(plan.slug == "RECON"
-                                     ? BirdoTheme.white60
-                                     : BirdoTheme.onSurface)
+                let parts = priceParts(for: plan, product: product)
+                // MR-2383 review (L2): never cut, never broken mid-word. On one
+                // line when it fits; otherwise the period ("/yr") takes its own
+                // line under the amount. No lineLimit: a truncated period
+                // reads as unclear pricing (App Review 3.1.2).
+                let price = ViewThatFits(in: .horizontal) {
+                    Text(parts.whole)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(parts.amount)
+                        if !parts.period.isEmpty {
+                            Text(parts.period)
+                        }
+                    }
+                }
+                .birdoFont(18, weight: .bold)
+                .foregroundStyle(plan.slug == "RECON"
+                                 ? BirdoTheme.white60
+                                 : BirdoTheme.onSurface)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(parts.whole)
 
                 if dynamicTypeSize.isAccessibilitySize {
                     // One per line: a shared row breaks the name and the price
@@ -578,11 +593,11 @@ struct SubscriptionView: View {
     /// StoreKit's localised price wins whenever it resolved: Apple sets the
     /// price per storefront and per tier, so the catalogue's GBP string is only
     /// ever a placeholder for a device that could not reach the store.
-    private func priceLabel(for plan: PlanCardModel, product: Product?) -> String {
+    private func priceParts(for plan: PlanCardModel, product: Product?) -> StorePriceParts {
         if let product {
-            return product.displayPrice + period.priceSuffix
+            return StorePriceParts(amount: product.displayPrice, period: period.priceSuffix)
         }
-        return period == .yearly ? plan.yearlyPrice : plan.monthlyPrice
+        return StorePriceParts(label: period == .yearly ? plan.yearlyPrice : plan.monthlyPrice)
     }
 
     @ViewBuilder

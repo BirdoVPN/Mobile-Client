@@ -24,6 +24,7 @@ final class ScaledFontGuardTests: XCTestCase {
         XCTAssertFalse(files.isEmpty)
 
         var offenders: [String] = []
+        var allowed: [String] = []
         var sawTheme = false
         for file in files {
             let text = try String(contentsOf: file, encoding: .utf8)
@@ -36,10 +37,18 @@ final class ScaledFontGuardTests: XCTestCase {
             for line in try FixedFontScan.offendingLines(in: text, fileName: file.lastPathComponent) {
                 offenders.append("\(file.lastPathComponent):\(line)")
             }
+            for line in FixedFontScan.allowedLines(in: text) {
+                allowed.append("\(file.lastPathComponent):\(line)")
+            }
         }
         XCTAssertTrue(sawTheme, "\(FixedFontScan.themeFile) not found under \(root.path)")
         XCTAssertTrue(offenders.isEmpty,
                       "Use .birdoFont(size, weight:) so the text scales: \(offenders.prefix(10))")
+        // MR-2383: every app line the allow marker exempts is named in
+        // `FixedFontScan.allowedInApp`, so a new one is a reviewed change to
+        // that list. There is none today.
+        XCTAssertEqual(allowed.sorted(), FixedFontScan.allowedInApp,
+                       "an allow marker in the app must be added to FixedFontScan.allowedInApp")
     }
 
     /// The scan itself: every kind of offender, planted in an otherwise clean
@@ -71,6 +80,22 @@ final class ScaledFontGuardTests: XCTestCase {
             ".environment(\\.sizeCategory, .large)",
             // The allow marker needs a reason.
             ".dynamicTypeSize(.large) // scaled-font-guard: allow",
+            // MR-2383: the rarer bypasses. A platform font made into a Font
+            // is frozen at the size it had, however it is spelled.
+            "let f = Font(uiFont)",
+            "Text(\"x\").font(Font(theme.titleFont))",
+            ".font(.init(UIFont.preferredFont(forTextStyle: .body)))",
+            "let f = Font.init(uiFont)",
+            "let f = Font (ctFont)",
+            ".transformEnvironment(\\.dynamicTypeSize) { $0 = .large }",
+            ".transformEnvironment(\\.sizeCategory) { $0 = .large }",
+            "UIFontDescriptor(fontAttributes: [.size: 12])",
+            "base.addingAttributes([.family: \"Inter\", .size: 12])",
+            "base.addingAttributes([UIFontDescriptor.AttributeName.size: 12])",
+            "UIFontDescriptor(name: \"Inter\", size: 12)",
+            // MR-2383: the marker counts only as the line's trailing comment.
+            "Text(\"// scaled-font-guard: allow x\").font(.system(size: 12))",
+            ".font(.system(size: 12)) // see below // scaled-font-guard: allow x",
         ]
         for code in planted {
             let lines = try FixedFontScan.offendingLines(in: "import SwiftUI\n\n" + code + "\n", fileName: "Planted.swift")
@@ -89,6 +114,16 @@ final class ScaledFontGuardTests: XCTestCase {
             "// was .font(.system(size: 12))",
             "    /// `UIFont(name:size:)` ignores Dynamic Type",
             "X().environment(\\.dynamicTypeSize, .accessibility5) // scaled-font-guard: allow preview at AX5",
+            // A string with // in it before the marker is still code.
+            "Link(\"x\", destination: URL(string: \"https://birdo.app\")!).dynamicTypeSize(.large) // scaled-font-guard: allow preview",
+            // Near misses of the MR-2383 patterns.
+            "Text(name).font(font)",
+            "let f = Font.body",
+            "Font.system(.body, design: .rounded)",
+            "let size = proxy.size",
+            "items.sorted { $0.size < $1.size }",
+            "call(x, .size(12))",
+            "@Environment(\\.sizeCategory) private var category",
         ]
         for code in clean {
             XCTAssertEqual(try FixedFontScan.offendingLines(in: code + "\n", fileName: "Clean.swift"), [], code)
@@ -97,6 +132,29 @@ final class ScaledFontGuardTests: XCTestCase {
         // CRLF and characters outside the BMP before the match keep the line right.
         XCTAssertEqual(try FixedFontScan.offendingLines(in: "// \u{1F310}\r\nlet x = 1\r\n.font(.system(size: 9))\r\n",
                                                         fileName: "Crlf.swift"), [3])
+    }
+
+    /// MR-2383: the marker exempts a line only as its trailing comment, with
+    /// a reason, after code; `allowedLines` names exactly those lines.
+    func testTheAllowMarkerCountsOnlyAsATrailingComment() {
+        let marked = ".dynamicTypeSize(.large) // scaled-font-guard: allow preview"
+        XCTAssertTrue(FixedFontScan.isAllowed(marked))
+        XCTAssertTrue(FixedFontScan.isAllowed("Text(\"a \\\" b\").dynamicTypeSize(.large) // scaled-font-guard: allow preview"),
+                      "an escaped quote does not end the string")
+        XCTAssertFalse(FixedFontScan.isAllowed(".dynamicTypeSize(.large) // scaled-font-guard: allow"), "no reason")
+        XCTAssertFalse(FixedFontScan.isAllowed("Text(\"// scaled-font-guard: allow x\").dynamicTypeSize(.large)"),
+                       "inside a string literal")
+        XCTAssertFalse(FixedFontScan.isAllowed(".dynamicTypeSize(.large) // why // scaled-font-guard: allow x"),
+                       "after an earlier comment")
+        XCTAssertFalse(FixedFontScan.isAllowed("    // scaled-font-guard: allow x"), "a whole-line comment exempts nothing")
+
+        let text = ["import SwiftUI",
+                    marked,
+                    "// scaled-font-guard: allow x",
+                    "Text(\"// scaled-font-guard: allow x\")",
+                    "X().environment(\\.sizeCategory, .large) // scaled-font-guard: allow test"].joined(separator: "\n")
+        XCTAssertEqual(FixedFontScan.allowedLines(in: text), [2, 5])
+        XCTAssertEqual(FixedFontScan.allowedInApp, [], "no app line is exempt today")
     }
 
     /// The exemption is the two builder LINES, in BirdoTheme.swift only, each
@@ -134,8 +192,13 @@ enum FixedFontScan {
     ]
 
     /// A line carrying this marker and a reason is not scanned: for a preview
-    /// or test that pins a text size on purpose.
+    /// or test that pins a text size on purpose. MR-2383: only as the line's
+    /// trailing comment, after code (`isAllowed`).
     static let allowMarker = "// scaled-font-guard: allow"
+
+    /// MR-2383: every app line the marker exempts, as "File.swift:line". The
+    /// guard asserts the app's against this list, so each one is reviewed.
+    static let allowedInApp: [String] = []
 
     /// The arguments of one call: anything up to its closing parenthesis,
     /// with nested calls two levels deep.
@@ -149,9 +212,18 @@ enum FixedFontScan {
         #"\b(?:UI|NS)Font\(\s*(?:name|descriptor):"# + callArgs + #"\bsize:"#, // UIFont(name:size:), (descriptor:size:)
         #"\.withSize\("#,                                                // UIFont/descriptor .withSize(_:)
         #"\bCTFontCreateWith\w*\("#,                                     // Core Text at a point size
-        #"\bFont\(\s*(?:UI|NS)Font\b"#,                                  // Font(UIFont...): a snapshot
+        // Review of #636 (L3): ANY Font(...) or Font.init(...) call. Font's
+        // initialisers all wrap a platform font (UIFont, NSFont, CTFont) and
+        // freeze it at its size; the scaled ones are .system/.custom/the tokens.
+        #"\bFont\s*(?:\.init)?\("#,                                      // Font(uiFont), Font.init(...)
         #"\.dynamicTypeSize\("#,                                         // pins or limits a subtree
         #"\.environment\(\s*\\\.(?:dynamicTypeSize|sizeCategory)\b"#,    // pins a subtree
+        // MR-2383: the rarer bypasses.
+        #"\.font\(\s*\.init\("#,                                         // .font(.init(UIFont...))
+        #"\.transformEnvironment\(\s*\\\.(?:dynamicTypeSize|sizeCategory)\b"#, // rewrites a subtree's size
+        #"\bAttributeName\.size\b"#,                                     // UIFontDescriptor size attribute
+        #"[\[,]\s*\.size\s*:"#,                                          // [.size: 12] in font attributes
+        #"\b(?:UI|NS)FontDescriptor\(\s*name:"# + callArgs + #"\bsize:"#, // UIFontDescriptor(name:size:)
     ]
 
     /// 1-based line numbers of every offender in one file's text. Whole-line
@@ -165,10 +237,7 @@ enum FixedFontScan {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.hasPrefix("//") { return "" }
                 if isTheme && themeBuilderLines.contains(trimmed) { return "" }
-                if let marker = line.range(of: allowMarker),
-                   !line[marker.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return ""
-                }
+                if isAllowed(line) { return "" }
                 return line
             }
             .joined(separator: "\n")
@@ -182,6 +251,49 @@ enum FixedFontScan {
             }
         }
         return lines.sorted()
+    }
+
+    /// MR-2383: the marker exempts a line only as its trailing `//` comment,
+    /// with a reason, after code: never inside a string literal (where it
+    /// would hide the very call it sits in) and never after an earlier `//`.
+    /// A whole-line comment is blanked anyway and exempts nothing else.
+    static func isAllowed(_ line: String) -> Bool {
+        guard let marker = line.range(of: allowMarker) else { return false }
+        let reason = line[marker.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reason.isEmpty else { return false }
+        let code = line[..<marker.lowerBound]
+        guard !code.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        var inString = false
+        var escaped = false
+        var previous: Character?
+        for character in code {
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if character == "\\" {
+                    escaped = true
+                } else if character == "\"" {
+                    inString = false
+                }
+                previous = nil
+            } else {
+                if character == "\"" {
+                    inString = true
+                } else if character == "/" && previous == "/" {
+                    return false
+                }
+                previous = character
+            }
+        }
+        return !inString
+    }
+
+    /// 1-based numbers of the lines the marker exempts (`isAllowed`).
+    static func allowedLines(in text: String) -> [Int] {
+        (text as NSString).components(separatedBy: "\n").enumerated().compactMap { index, line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmed.hasPrefix("//") && isAllowed(line) ? index + 1 : nil
+        }
     }
 
     /// Each builder line must appear in the theme exactly once.
