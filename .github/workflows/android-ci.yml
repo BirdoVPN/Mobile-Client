@@ -514,7 +514,11 @@ jobs:
         run: |
           set -euo pipefail
           dir="$HOME/pq-apt-archives"
-          n=$(find "$dir" -maxdepth 1 -type f -name '*.deb' 2>/dev/null | wc -l)
+          # On a cache miss the directory does not exist at all.
+          n=0
+          if [ -d "$dir" ]; then
+            n=$(find "$dir" -maxdepth 1 -type f -name '*.deb' | wc -l)
+          fi
           if [ "$n" -eq 0 ]; then
             echo "No cached packages: apt downloads every one."
             exit 0
