@@ -33,7 +33,7 @@ hashes are compiled into the app and checked by CI (see
 | Android Gradle Plugin | 9.4.1 (`com.android.application`, `com.android.library`); `com.android.kotlin.multiplatform.library` 9.5.0 | `build.gradle.kts` |
 | Kotlin | 2.4.10 (multiplatform, compose, serialization plugins); KSP 2.3.12; Hilt 2.60.1; baselineprofile 1.5.0 | `build.gradle.kts` |
 | Gradle dependencies | locked, `LockMode.STRICT`, `lockAllConfigurations()` | `app/gradle.lockfile`, `dependencyLocking {}` in `app/build.gradle.kts` |
-| Gradle dependency bytes | SHA-256 of every artifact, POM and Gradle module file, checked by every build (strict); sources and javadoc trusted | `gradle/verification-metadata.xml`, written by `.github/workflows/gradle-verification-metadata.yml` |
+| Gradle dependency bytes | SHA-256 of every artifact, POM and Gradle module file that Gradle resolves for the CI and release tasks, checked strictly by those builds; the exceptions are listed under "Where CI already records hashes" below | `gradle/verification-metadata.xml`, written by `.github/workflows/gradle-verification-metadata.yml` |
 | SDK levels | `compileSdk 37` (minor 0), `targetSdk 36`, `minSdk 29` | `app/build.gradle.kts` |
 | ABIs | `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86` | `abiFilters` in `app/build.gradle.kts` |
 | Android NDK | **not pinned on `main` yet**: the build uses the runner image's `ANDROID_NDK_HOME`. Open PR #601 (MR-1793) pins it in `native/ndk-version.txt`; once merged, use the revision named there | `.github/actions/android-native-libs/action.yml`, PR #601 |
@@ -137,18 +137,38 @@ App Signing key.
   (every Go module, the Go toolchain source, the exact `go build` command per engine).
   The asset is in each release's `SHA256SUMS.txt`.
 - `app/gradle.lockfile`: dependency versions only.
-- `gradle/verification-metadata.xml` (MR-1794): the SHA-256 of every dependency
-  artifact, POM and Gradle module file. Gradle refuses one it does not list, in CI
-  and on your machine. `.github/workflows/gradle-verification-metadata.yml` writes it
-  from fresh downloads (Linux with every CI and release task, then Windows for its
-  own `aapt2`; no workflow builds the Android app on macOS, so a Gradle build on a Mac
-  first adds aapt2's osx entry, see the workflow header) and fails a pull request
-  whose committed file differs. After
-  a dependency change, take that run's `verification-metadata` artifact, review the
-  diff (new entries only for the versions that changed) and commit it; or run
+- `gradle/verification-metadata.xml` (MR-1794): the SHA-256 of every artifact, POM
+  and Gradle module file Gradle resolves for the CI and release tasks. Gradle refuses
+  one it does not list, in CI and on your machine. Each coordinate comes from exactly
+  one repository (Google's Maven or Maven Central; `settings.gradle.kts` says why the
+  Gradle Plugin Portal is not listed). `.github/workflows/gradle-verification-metadata.yml`
+  writes it from fresh downloads on a cold cache (Linux with every CI and release
+  task, then Windows for its own `aapt2` and Kotlin/Native compiler; no workflow
+  builds the Android app on macOS, so a Gradle build on a Mac first adds those osx
+  entries, see the workflow header). On a pull request it fails when the committed
+  file differs from that fresh write, when a checksum changed for a version the base
+  branch already lists, and when `<configuration>` changed at all. After a dependency
+  change, take that run's `verification-metadata` artifact, review the diff (new
+  entries only for the versions that changed) and commit it; or run
   `gh workflow run gradle-verification-metadata.yml --ref <branch>`. Locally,
   `./gradlew --write-verification-metadata sha256 help <the tasks you run>` adds
   what is missing. Never `--dependency-verification off`.
+
+  **Not covered** by the file:
+  - `baseline-profile.yml`, which records on a Gradle Managed Device with
+    `--dependency-verification lenient` (it reports a checksum it cannot find instead
+    of failing) and a read-only Gradle cache. Its local equivalent,
+    `scripts/generate-baseline-profile.sh`, runs Gradle with the default strict
+    verification and is expected to stop on the managed-device and test-platform
+    artifacts the file does not list; run its Gradle command with
+    `--dependency-verification lenient` there too. Only the recorded profile text
+    comes out of either, and a pull request reviews it.
+  - sources and javadoc jars: trusted by rule (an IDE fetches them; no build ships
+    them).
+  - anything downloaded outside Gradle's dependency resolution: Robolectric's
+    `android-all-instrumented` jars, which Robolectric fetches itself when the unit
+    tests run; Android SDK and NDK packages (`sdkmanager`); and managed-device system
+    images.
 
 ## iOS
 
