@@ -318,6 +318,56 @@ final class ConnectionPhaseTests: XCTestCase {
         XCTAssertTrue(connect.contains("reapplyQueued = false"))
     }
 
+    /// Review of #634: the handshake arm checks `HandshakeArm.mayArmRule`
+    /// after its last suspension and before it arms, and the proof never
+    /// applies a kept settings change inside the arm's own step: a
+    /// disconnect-first reapply run there had its teardown's save (on-demand
+    /// OFF) overtaken by the arm's (on-demand ON).
+    func testTheArmNeverArmsOverATeardownItsProofStarted() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        let arm = slice(vm, from: "private func armKillSwitchAfterHandshake(", to: "case .inconclusive:")
+        guard let sample = arm.range(of: "await vpnManager.currentStats()"),
+              let gate = arm.range(of: "guard HandshakeArm.mayArmRule(sessionUp: isConnected,"),
+              let flag = arm.range(of: "tearingDownForRedial: isTearingDownForRedial) else { return }"),
+              let armed = arm.range(of: "vpnManager.applyKillSwitchFlag(killSwitch)") else {
+            return XCTFail("the arm no longer checks HandshakeArm.mayArmRule before applyKillSwitchFlag")
+        }
+        XCTAssertLessThan(sample.upperBound, gate.lowerBound, "the check must follow the sample's await")
+        XCTAssertLessThan(gate.lowerBound, flag.lowerBound)
+        XCTAssertLessThan(flag.upperBound, armed.lowerBound, "the check must come before the arm")
+        XCTAssertFalse(String(arm[gate.lowerBound..<armed.lowerBound]).contains("await"),
+                       "a suspension between the check and the arm reopens the window")
+
+        let proof = slice(vm, from: "private func noteHandshake(", to: "\n    }\n")
+        XCTAssertTrue(proof.contains("Task { @MainActor [weak self] in self?.applyQueuedReapply() }"))
+        let synchronous = proof.components(separatedBy: "\n").filter { line in
+            let code = line.trimmingCharacters(in: .whitespaces)
+            return !code.hasPrefix("//") && code.contains("applyQueuedReapply()") && !code.hasPrefix("Task {")
+        }
+        XCTAssertEqual(synchronous, [], "noteHandshake applies a kept change in the arm's own step again")
+    }
+
+    /// Review of #634: the arm's fail-closed "hasn't answered yet" is recorded
+    /// when it is shown and cleared by the session's proof, so a session that
+    /// answers after the 15 s window does not read "Protected" under it.
+    func testTheFailClosedNoticeIsClearedByTheProof() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        let failClosed = slice(vm, from: "case .keepSessionFailClosed:", to: "case .tearDownFailOpen:")
+        XCTAssertTrue(failClosed.contains("error = notice"))
+        XCTAssertTrue(failClosed.contains("failClosedNotice = notice"), "the notice is no longer recorded")
+        let proof = slice(vm, from: "private func noteHandshake(", to: "\n    }\n")
+        guard let proven = proof.range(of: "handshakeProven = true"),
+              let cleared = proof.range(of: "if let notice = failClosedNotice {") else {
+            return XCTFail("noteHandshake no longer clears the fail-closed notice")
+        }
+        XCTAssertLessThan(proven.lowerBound, cleared.lowerBound)
+        XCTAssertTrue(proof.contains("failClosedNotice = nil"))
+        XCTAssertTrue(proof.contains("if error == notice { error = nil }"),
+                      "only the notice itself is cleared, never a later message")
+        let reset = slice(vm, from: "private func resetSessionState() {", to: "\n    }\n")
+        XCTAssertTrue(reset.contains("failClosedNotice = nil"))
+    }
+
     func testTheViewModelAndHomeAreWiredToTheWatch() throws {
         let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
         let handler = slice(vm, from: "private func handleStatusChange(_ status: NEVPNStatus) {", to: "checkCircuitBreaker()\n    }")

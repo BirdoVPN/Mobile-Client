@@ -84,6 +84,11 @@ final class VpnViewModel: ObservableObject {
     /// Cleared once that session is back (`noteHandshake`), so a recovered
     /// tunnel does not sit under "Tunnel failed: …".
     private var recoveringFromError: String?
+    /// Review of #634: the "hasn't answered yet" the handshake arm put on the
+    /// banner when an armed session stayed fail-closed. Cleared once a
+    /// session proves a handshake (`noteHandshake`), so a session that
+    /// answers after the window does not sit under it while "Protected".
+    private var failClosedNotice: String?
 
     /// MR-1620 / MR-1621: the single named state behind the status pill and the
     /// VoiceOver announcements. Pure mapping lives in `ConnectionPhase`.
@@ -1015,6 +1020,15 @@ final class VpnViewModel: ObservableObject {
                 // stale trip.
                 clearCircuitBreaker()
                 relayRetryUsed = false
+                // Review of #634: never re-arm a session the app has started
+                // to stop while the sample above was in flight. Its
+                // `disconnect()` has saved on-demand OFF and deleted the keys,
+                // and the status is still `.connected` until that save lands,
+                // so arming here would persist on-demand ON over a keyless
+                // profile. Checked HERE, with no suspension point before the
+                // arm. A live rebuild is not a reason (`HandshakeArm.mayArmRule`).
+                guard HandshakeArm.mayArmRule(sessionUp: isConnected,
+                                              tearingDownForRedial: isTearingDownForRedial) else { return }
                 let killSwitch = UserDefaults.standard.object(forKey: "kill_switch") as? Bool ?? true
                 vpnManager.applyKillSwitchFlag(killSwitch)
                 // applyKillSwitchFlag mutates the in-memory profile
@@ -1053,11 +1067,15 @@ final class VpnViewModel: ObservableObject {
             // armed at this `.connected` (a reassert's end, the system's
             // re-dial of a drop), not only a restored peer.
             debugLog("[VpnViewModel] armed session has not handshaked — staying fail-closed under the armed rule")
-            error = peerWasRestoredInPlace
+            let notice = peerWasRestoredInPlace
                 ? "Your previous location hasn't answered yet. Traffic stays blocked "
                     + "until Birdo recovers the connection — or tap Disconnect."
                 : "This connection hasn't answered yet. Traffic stays blocked "
                     + "until Birdo recovers it — or tap Disconnect."
+            error = notice
+            // Review of #634: recorded, as the drop's error is, so the session
+            // answering after the window clears it (`noteHandshake`).
+            failClosedNotice = notice
 
         case .tearDownFailOpen:
             // Never handshook. Do NOT arm on-demand — that is the trap this exists to
@@ -1453,6 +1471,7 @@ final class VpnViewModel: ObservableObject {
         // and a kept settings change is the next dial's to read.
         updateReconnect { $0.stop() }
         reapplyQueued = false
+        failClosedNotice = nil
         resetHandshakeProof()
         quantumActive = false
         connectedSince = nil
@@ -2161,8 +2180,19 @@ final class VpnViewModel: ObservableObject {
             let dropped = isReconnecting ? recoveringFromError : nil
             updateReconnect { $0.proven() }
             if !isReconnecting, let dropped, error == dropped { error = nil }
+            // Review of #634: the arm's fail-closed "hasn't answered yet" is
+            // no longer true either, unless something else has been said since.
+            if let notice = failClosedNotice {
+                failClosedNotice = nil
+                if error == notice { error = nil }
+            }
             // Review of #634: a settings change kept while the tunnel was busy.
-            applyQueuedReapply()
+            // NEVER in this step: the handshake arm calls this and then arms
+            // on-demand in the same main-actor step, so a disconnect-first
+            // reapply run from here had its teardown's save overtaken by the
+            // arm's. Deferred, the arm saves first and the teardown's save
+            // (on-demand OFF) is the last word.
+            Task { @MainActor [weak self] in self?.applyQueuedReapply() }
         }
     }
 

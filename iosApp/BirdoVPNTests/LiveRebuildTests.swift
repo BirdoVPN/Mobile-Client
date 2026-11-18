@@ -455,6 +455,22 @@ final class LiveRebuildTests: XCTestCase {
                        .tearDownFailOpen)
     }
 
+    /// Review of #634: the arm's stats sample is an `await`, and the app can
+    /// start stopping the session inside it. `VPNManager.disconnect()` deletes
+    /// the keys and saves on-demand OFF, and the tunnel reads `.connected`
+    /// until that save lands, so an arm that went ahead saved on-demand ON
+    /// over a keyless profile. A live rebuild is NOT such a stop: it keeps the
+    /// session and never arms the rule itself, so the arm must still arm then.
+    func testTheArmNeverArmsTheRuleOverAStopTheAppHasStarted() {
+        XCTAssertTrue(HandshakeArm.mayArmRule(sessionUp: true, tearingDownForRedial: false),
+                      "a live session, a live rebuild included")
+        XCTAssertFalse(HandshakeArm.mayArmRule(sessionUp: true, tearingDownForRedial: true),
+                       "a disconnect-first rebuild, a Multi-Hop dial over the session, a sibling-relay retry")
+        XCTAssertFalse(HandshakeArm.mayArmRule(sessionUp: false, tearingDownForRedial: false),
+                       "a disconnect, sign-out or the breaker's fail-open (resetSessionState)")
+        XCTAssertFalse(HandshakeArm.mayArmRule(sessionUp: false, tearingDownForRedial: true))
+    }
+
     func testNoEventBothStopsTheTunnelAndRestoresAPeerInPlace() {
         // The two are contradictory by construction — the legacy path stops the
         // session it would be restoring a peer onto — so a policy edit that made

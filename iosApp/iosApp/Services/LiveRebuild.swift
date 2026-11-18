@@ -479,6 +479,28 @@ enum HandshakeArm {
         if ruleAlreadyArmed { return .keepSessionFailClosed }
         return .tearDownFailOpen
     }
+
+    /// The arm has just seen inbound bytes: may it put the on-demand rule on
+    /// NOW? (Review of #634.) Its stats sample is an `await`, and the app can
+    /// start stopping the session inside it: every stop of the app's own
+    /// either clears `isConnected` synchronously (`resetSessionState`: a
+    /// disconnect, sign-out, the breaker's fail-open) or raises
+    /// `isTearingDownForRedial` before `VPNManager.disconnect()` (the
+    /// disconnect-first rebuild, the Multi-Hop dial over a live session, the
+    /// sibling-relay retry). That disconnect deletes the keys and saves
+    /// on-demand OFF, and stops the tunnel only once the save lands, so
+    /// NEVPNStatus still reads `.connected`; an arm in that window saved
+    /// on-demand ON after it, and iOS re-dialled a profile with no keys
+    /// until the breaker failed it open.
+    ///
+    /// A LIVE rebuild is deliberately not a reason to skip: it keeps the
+    /// session and never arms the rule itself (`finishRebuild`'s
+    /// `.commitNew`), so an arm still waiting for a fresh dial's first
+    /// handshake when a switch or a settings change began is the only thing
+    /// that will ever arm that session's rule.
+    static func mayArmRule(sessionUp: Bool, tearingDownForRedial: Bool) -> Bool {
+        sessionUp && !tearingDownForRedial
+    }
 }
 
 /// What the handshake arm may do when its window ends with no inbound bytes.
