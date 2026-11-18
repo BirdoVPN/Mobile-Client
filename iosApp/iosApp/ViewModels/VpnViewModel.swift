@@ -611,8 +611,10 @@ final class VpnViewModel: ObservableObject {
             relayRetryUsed = false
         }
         // MR-2371: a dial of the app's own is a first connect, not the
-        // system bringing an earlier session back.
+        // system bringing an earlier session back, and it reads the settings
+        // itself, so nothing kept for a rebuild is still owed.
         updateReconnect { $0.stop() }
+        reapplyQueued = false
         isConnecting = true
         error = nil
         // A fresh single-hop dial replaces any multi-hop session state. This is
@@ -785,6 +787,7 @@ final class VpnViewModel: ObservableObject {
         }
         // MR-2371: the app's own dial, as in connect().
         updateReconnect { $0.stop() }
+        reapplyQueued = false
         isConnecting = true
         error = nil
 
@@ -854,16 +857,30 @@ final class VpnViewModel: ObservableObject {
     /// the blip WINS: it clears `isReapplyingSettings` and drops the session
     /// the swap would probe, so the rebuild ends without touching anything.
     func reapplySettings() {
-        guard isConnected else { return }
         // `isConnecting` and `isRebuildingLive` are read through the gate, which
         // also sees the disconnect-first teardown window neither of them covers
         // (#351). `isReapplyingSettings` stays separate: it is this path's own
         // in-flight flag, not a property of the tunnel.
-        guard TunnelDialGate.mayStartDial(isConnecting: isConnecting,
-                                          isRebuildingLive: isRebuildingLive,
-                                          isTearingDownForRedial: isTearingDownForRedial) else { return }
+        let dialGateOpen = TunnelDialGate.mayStartDial(isConnecting: isConnecting,
+                                                       isRebuildingLive: isRebuildingLive,
+                                                       isTearingDownForRedial: isTearingDownForRedial)
+        // Review of #634 (MR-2371): a change that arrives while the tunnel is
+        // busy or being brought back is KEPT, not dropped, and applied once
+        // the session is up, proven and idle (`applyQueuedReapply`).
+        switch SettingsReapplyGate.decide(isConnected: isConnected,
+                                          isReconnecting: isReconnecting,
+                                          dialGateOpen: dialGateOpen,
+                                          isReapplying: isReapplyingSettings) {
+        case .ignore:
+            return
+        case .queue:
+            debugLog("[VpnViewModel] reapply: the tunnel is busy — the change waits until it is up again")
+            reapplyQueued = true
+            return
+        case .apply:
+            reapplyQueued = false
+        }
         guard activeMultiHop != nil || selectedServer != nil else { return }
-        guard !isReapplyingSettings else { return }
         let target: RebuildTarget
         if let mh = activeMultiHop {
             // A live Multi-Hop session rebuilds as the SAME confirmed pair.
@@ -885,6 +902,28 @@ final class VpnViewModel: ObservableObject {
             return
         }
         Task { [weak self] in await self?.rebuildLive(target, revertSelectionTo: nil) }
+    }
+
+    /// Review of #634 (MR-2371): a settings change `reapplySettings()` kept
+    /// while the tunnel was busy or being brought back. Applied by
+    /// `applyQueuedReapply()` once the session is up, proven and idle; dropped
+    /// by a dial or disconnect of the app's own, since a new dial reads the
+    /// settings itself.
+    private var reapplyQueued = false
+
+    /// Apply a kept settings change if the tunnel can take it now. Called when
+    /// a handshake is proven and when a live rebuild ends.
+    private func applyQueuedReapply() {
+        let dialGateOpen = TunnelDialGate.mayStartDial(isConnecting: isConnecting,
+                                                       isRebuildingLive: isRebuildingLive,
+                                                       isTearingDownForRedial: isTearingDownForRedial)
+        guard SettingsReapplyGate.mayApplyQueued(queued: reapplyQueued,
+                                                 isProtected: isProtected,
+                                                 isReconnecting: isReconnecting,
+                                                 dialGateOpen: dialGateOpen,
+                                                 isReapplying: isReapplyingSettings) else { return }
+        reapplyQueued = false
+        reapplySettings()
     }
 
     /// Wait for the teardown we just requested to ACTUALLY land.
@@ -1410,8 +1449,10 @@ final class VpnViewModel: ObservableObject {
         isConnected = false
         isConnecting = false
         // MR-2371: the app took over (a disconnect, sign-out, the breaker's
-        // fail-open, a teardown of its own): nothing is being brought back.
+        // fail-open, a teardown of its own): nothing is being brought back,
+        // and a kept settings change is the next dial's to read.
         updateReconnect { $0.stop() }
+        reapplyQueued = false
         resetHandshakeProof()
         quantumActive = false
         connectedSince = nil
@@ -1545,6 +1586,8 @@ final class VpnViewModel: ObservableObject {
                 isReapplyingSettings = false
                 isSwitching = false
             }
+            // Review of #634: a settings change kept while this rebuild ran.
+            applyQueuedReapply()
         }
         var ctx = RebuildContext(target: target, previous: previous, oldKeyId: oldKeyId,
                                  snapshot: snapshot, newConfig: nil, confirmedRoute: nil)
@@ -2118,6 +2161,8 @@ final class VpnViewModel: ObservableObject {
             let dropped = isReconnecting ? recoveringFromError : nil
             updateReconnect { $0.proven() }
             if !isReconnecting, let dropped, error == dropped { error = nil }
+            // Review of #634: a settings change kept while the tunnel was busy.
+            applyQueuedReapply()
         }
     }
 

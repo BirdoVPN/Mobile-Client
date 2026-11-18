@@ -557,6 +557,49 @@ enum TunnelDialGate {
     }
 }
 
+/// Review of #634 (MR-2371): what a settings change does to the tunnel right
+/// now. `VpnViewModel.reapplySettings()` used to RETURN whenever the tunnel
+/// was busy (a dial, a reassert, a rebuild, a teardown, a blip already
+/// running) or being brought back, and the change was lost until the next
+/// connect. Now it waits and is applied once the session is up, proven and
+/// idle again (`mayApplyQueued`).
+enum SettingsReapplyGate {
+    enum Decision: Equatable, Sendable {
+        /// Rebuild the live tunnel now.
+        case apply
+        /// Keep it for later (`VpnViewModel.reapplyQueued`).
+        case queue
+        /// No session: the next dial reads the settings anyway.
+        case ignore
+    }
+
+    /// - Parameters:
+    ///   - dialGateOpen: `TunnelDialGate.mayStartDial` for the tunnel as it is.
+    ///   - isReapplying: a settings blip is already running; it may have read
+    ///     the settings before this change.
+    static func decide(isConnected: Bool,
+                       isReconnecting: Bool,
+                       dialGateOpen: Bool,
+                       isReapplying: Bool) -> Decision {
+        // The session is being brought back (a reassert, the system's re-dial
+        // of a drop): the change waits for it.
+        if isReconnecting { return .queue }
+        guard isConnected else { return .ignore }
+        if !dialGateOpen || isReapplying { return .queue }
+        return .apply
+    }
+
+    /// A queued change is applied once the session is up AND proven, nothing
+    /// is bringing it back, and nothing else is changing it.
+    static func mayApplyQueued(queued: Bool,
+                               isProtected: Bool,
+                               isReconnecting: Bool,
+                               dialGateOpen: Bool,
+                               isReapplying: Bool) -> Bool {
+        queued && isProtected && !isReconnecting && dialGateOpen && !isReapplying
+    }
+}
+
 /// Every entry point in this client that can START or CHANGE a tunnel.
 ///
 /// An inventory, pinned by a test, because #336's finding is that a guard

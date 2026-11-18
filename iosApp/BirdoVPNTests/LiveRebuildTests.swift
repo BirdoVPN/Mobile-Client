@@ -394,6 +394,37 @@ final class LiveRebuildTests: XCTestCase {
         XCTAssertTrue(HandshakeArm.restoresPeerInPlace(.stayFailedClosed(persistedProfileIsOld: false)))
     }
 
+    /// Review of #634 (MR-2371): a settings change is never dropped because
+    /// the tunnel is busy or being brought back; it waits, and is applied
+    /// once the session is up, proven and idle.
+    func testASettingsChangeWaitsForABusyTunnelInsteadOfBeingDropped() {
+        typealias G = SettingsReapplyGate
+        XCTAssertEqual(G.decide(isConnected: true, isReconnecting: false, dialGateOpen: true, isReapplying: false), .apply)
+        XCTAssertEqual(G.decide(isConnected: true, isReconnecting: true, dialGateOpen: false, isReapplying: false), .queue,
+                       "a reassert")
+        XCTAssertEqual(G.decide(isConnected: false, isReconnecting: true, dialGateOpen: true, isReapplying: false), .queue,
+                       "the system re-dialling a drop")
+        XCTAssertEqual(G.decide(isConnected: true, isReconnecting: false, dialGateOpen: false, isReapplying: false), .queue,
+                       "a dial, a rebuild or a teardown in flight")
+        XCTAssertEqual(G.decide(isConnected: true, isReconnecting: false, dialGateOpen: true, isReapplying: true), .queue,
+                       "a blip already running may have read the settings before this change")
+        XCTAssertEqual(G.decide(isConnected: false, isReconnecting: false, dialGateOpen: true, isReapplying: false), .ignore,
+                       "no session: the next dial reads the settings")
+
+        XCTAssertTrue(G.mayApplyQueued(queued: true, isProtected: true, isReconnecting: false,
+                                       dialGateOpen: true, isReapplying: false))
+        XCTAssertFalse(G.mayApplyQueued(queued: false, isProtected: true, isReconnecting: false,
+                                        dialGateOpen: true, isReapplying: false))
+        XCTAssertFalse(G.mayApplyQueued(queued: true, isProtected: false, isReconnecting: false,
+                                        dialGateOpen: true, isReapplying: false), "not yet proven")
+        XCTAssertFalse(G.mayApplyQueued(queued: true, isProtected: true, isReconnecting: true,
+                                        dialGateOpen: true, isReapplying: false))
+        XCTAssertFalse(G.mayApplyQueued(queued: true, isProtected: true, isReconnecting: false,
+                                        dialGateOpen: false, isReapplying: false))
+        XCTAssertFalse(G.mayApplyQueued(queued: true, isProtected: true, isReconnecting: false,
+                                        dialGateOpen: true, isReapplying: true))
+    }
+
     /// Review of #634 (MR-2371): a session whose on-demand rule is ALREADY
     /// armed at its `.connected` -- the end of any `.reasserting` of a session
     /// that was up, the system's re-dial of a drop, a peer restored in place

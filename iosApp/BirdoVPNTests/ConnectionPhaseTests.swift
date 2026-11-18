@@ -299,6 +299,25 @@ final class ConnectionPhaseTests: XCTestCase {
         XCTAssertTrue(arm.contains("ruleAlreadyArmed: ruleAlreadyArmed,"), "the verdict ignores the armed rule")
     }
 
+    /// Review of #634: reapplySettings keeps a change the tunnel cannot take
+    /// now, and the kept change is applied after a proven handshake and after
+    /// a live rebuild; the app's own dial or disconnect drops it.
+    func testAKeptSettingsChangeIsWired() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        let reapply = slice(vm, from: "func reapplySettings() {", to: "\n    }\n")
+        XCTAssertTrue(reapply.contains("SettingsReapplyGate.decide(isConnected: isConnected,"))
+        XCTAssertTrue(reapply.contains("reapplyQueued = true"))
+        XCTAssertFalse(reapply.contains("guard !isReapplyingSettings else { return }"), "a second change is dropped again")
+        let proof = slice(vm, from: "private func noteHandshake(", to: "\n    }\n")
+        XCTAssertTrue(proof.contains("applyQueuedReapply()"))
+        let rebuild = slice(vm, from: "private func rebuildLive(", to: "var ctx = RebuildContext(")
+        XCTAssertTrue(rebuild.contains("applyQueuedReapply()"), "a change kept during a rebuild waits for the next session")
+        let reset = slice(vm, from: "private func resetSessionState() {", to: "\n    }\n")
+        XCTAssertTrue(reset.contains("reapplyQueued = false"))
+        let connect = slice(vm, from: "func connect(userInitiated: Bool = true) {", to: "Task {")
+        XCTAssertTrue(connect.contains("reapplyQueued = false"))
+    }
+
     func testTheViewModelAndHomeAreWiredToTheWatch() throws {
         let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
         let handler = slice(vm, from: "private func handleStatusChange(_ status: NEVPNStatus) {", to: "checkCircuitBreaker()\n    }")
