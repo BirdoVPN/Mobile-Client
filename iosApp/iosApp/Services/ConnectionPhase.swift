@@ -11,9 +11,8 @@ enum ConnectionPhase: Equatable, Sendable {
     case disconnected
     case connecting
     /// The tunnel was up and is being brought back: a `.reasserting` status
-    /// (a live re-key, or no network path: the extension's adapter pauses and
-    /// raises it, vendored WireGuardKit local patch 5), or a session that
-    /// dropped and that the system is dialling again (`ReconnectWatch`).
+    /// (a live re-key), or a session that dropped and that the system is
+    /// dialling again (`ReconnectWatch`).
     case reconnecting
     case protected
     /// The last attempt, or the live tunnel, ended in an error.
@@ -97,10 +96,8 @@ enum ConnectAction: Equatable, Sendable {
 /// MR-2371 -- whether the session the user had is being brought back, so
 /// Home says (and VoiceOver speaks) "Reconnecting…" for the whole of it, not
 /// only inside a live re-key:
-///   * a reassert (`.reasserting`): a re-key, or no network path (the
-///     extension's adapter pauses the backend and raises `reasserting`,
-///     vendored WireGuardKit local patch 5), so a path loss no longer reads
-///     "Protected";
+///   * a reassert (`.reasserting`, a live re-key), as before (MR-1621), until
+///     its `.connected`;
 ///   * a real drop that the SYSTEM dials again (the on-demand Connect rule is
 ///     armed: the kill switch): `.disconnecting` / `.disconnected` (no longer
 ///     "Connection failed"), `.connecting`, then the new session's
@@ -110,6 +107,13 @@ enum ConnectAction: Equatable, Sendable {
 /// dial again, nor once the app takes over (`stop()`: a tap on Connect or
 /// Disconnect, the circuit breaker's fail-open, sign-out, or the system's
 /// on-demand rule found disarmed).
+///
+/// A path loss is NOT shown here: NEVPNStatus stays `.connected` while the
+/// extension's adapter waits for a network, and this never makes it change
+/// (review of #634: a `.reasserting -> .connected` on every path return
+/// reached the fresh-dial fail-open). Saying "paused, no network" is a
+/// separate follow-up, through the extension's stats reply or an app-group
+/// flag, never NEVPNStatus.
 ///
 /// Foundation-only, pinned by ConnectionPhaseTests; VpnViewModel feeds it.
 struct ReconnectWatch: Equatable, Sendable {
@@ -123,9 +127,10 @@ struct ReconnectWatch: Equatable, Sendable {
     /// The session being brought back is all the way down and the system has
     /// not started its re-dial yet.
     private(set) var awaitingRedial = false
-    /// The last status was `.reasserting`: a proof sampled meanwhile is the
-    /// old path's, and does not end it.
-    private var inReassert = false
+    /// The session being brought back went all the way down (a drop the
+    /// system re-dials), so its `.connected` is a new session that still has
+    /// to prove a handshake.
+    private(set) var recoveringFromDrop = false
 
     init() {}
 
@@ -144,7 +149,6 @@ struct ReconnectWatch: Equatable, Sendable {
                           wasProven: Bool,
                           appDriven: Bool,
                           redialsOnDrop: Bool) {
-        inReassert = status == .reasserting
         switch status {
         case .reasserting:
             isReconnecting = true
@@ -155,28 +159,26 @@ struct ReconnectWatch: Equatable, Sendable {
             isReconnecting = isReconnecting || wasConnected
             awaitingRedial = false
         case .connected:
-            // A recovery stays "Reconnecting…" until the new session proves a
-            // handshake; one the app drove reads as before ("Connecting…"
-            // until then).
-            if appDriven { isReconnecting = false }
+            // The system's re-dial of a dropped session stays "Reconnecting…"
+            // until the new session proves a handshake. A reassert ends here,
+            // as before; so does anything the app drove.
+            if appDriven || !recoveringFromDrop { stop() }
             awaitingRedial = false
         case .disconnecting, .disconnected:
             let live = (wasConnected && wasProven) || isReconnecting
             if live && !appDriven && redialsOnDrop {
                 isReconnecting = true
                 awaitingRedial = true
+                recoveringFromDrop = true
             } else {
                 stop()
             }
         }
     }
 
-    /// The current session proved a handshake: it is back. Not while the
-    /// system still says `.reasserting`: that ends with `.connected`.
+    /// The current session proved a handshake: it is back.
     mutating func proven() {
-        guard !inReassert else { return }
-        isReconnecting = false
-        awaitingRedial = false
+        stop()
     }
 
     /// The system's configuration, read fresh: a drop it will not dial again
@@ -191,6 +193,6 @@ struct ReconnectWatch: Equatable, Sendable {
     mutating func stop() {
         isReconnecting = false
         awaitingRedial = false
-        inReassert = false
+        recoveringFromDrop = false
     }
 }

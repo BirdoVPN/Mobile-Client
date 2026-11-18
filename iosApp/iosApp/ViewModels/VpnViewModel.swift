@@ -936,16 +936,19 @@ final class VpnViewModel: ObservableObject {
     /// decided, and it is decided there — in BirdoVPNTests' one Foundation-only
     /// source — rather than here, because this file is not in that bundle.
     ///
-    /// - Parameter peerWasRestoredInPlace: this `.connected` is the OLD peer a
-    ///   live rebuild's revert put back on the RUNNING session (#351), not a
-    ///   fresh dial. Its on-demand rule has been armed throughout and its key is
-    ///   the one the user is still riding, so the no-handshake exit must fail
-    ///   CLOSED: the extension's liveness check, the armed rule's re-dial and
-    ///   then the circuit breaker are the recovery, exactly as for
-    ///   `LiveRebuildFollowUp.stayFailedClosed`. Deliberately has no default —
-    ///   a future caller has to answer the question rather than inherit an
-    ///   answer, which is how a guard lands on some of N paths (#336).
-    private func armKillSwitchAfterHandshake(peerWasRestoredInPlace: Bool) async {
+    /// - Parameters:
+    ///   - ruleAlreadyArmed: the session under this `.connected` already has
+    ///     its on-demand rule armed (`HandshakeArm.ruleAlreadyArmed`): the OLD
+    ///     peer a live rebuild's revert put back on the RUNNING session (#351),
+    ///     the end of a reassert, or the system's re-dial of a drop. Not a fresh
+    ///     dial, so the no-handshake exit must fail CLOSED: the extension's
+    ///     liveness check, the armed rule's re-dial and then the circuit breaker
+    ///     are the recovery, exactly as for `LiveRebuildFollowUp.stayFailedClosed`.
+    ///   - peerWasRestoredInPlace: #351's case of it, which only picks the words.
+    ///   Deliberately no defaults: a future caller has to answer the question
+    ///   rather than inherit an answer, which is how a guard lands on some of N
+    ///   paths (#336).
+    private func armKillSwitchAfterHandshake(ruleAlreadyArmed: Bool, peerWasRestoredInPlace: Bool) async {
         // A live rebuild owns the handshake wait for its swap (and the revert
         // when it fails); this generic arm must not run its own no-handshake
         // teardown on top of it. The rule it would arm is already armed — the
@@ -986,7 +989,7 @@ final class VpnViewModel: ObservableObject {
         }
         guard isConnected else { return }
         switch HandshakeArm.noHandshakeOutcome(
-            peerWasRestoredInPlace: peerWasRestoredInPlace,
+            ruleAlreadyArmed: ruleAlreadyArmed,
             elapsed: startedAt.duration(to: ContinuousClock.now),
             window: .milliseconds(HandshakeArm.windowMs)
         ) {
@@ -1007,9 +1010,15 @@ final class VpnViewModel: ObservableObject {
             // and if that never comes up the breaker trips and
             // `checkCircuitBreaker` performs the counted, user-visible
             // fail-open. Same recovery `.stayFailedClosed` relies on.
-            debugLog("[VpnViewModel] restored peer has not re-handshaked — staying fail-closed under the armed rule")
-            error = "Your previous location hasn't answered yet. Traffic stays blocked "
-                + "until Birdo recovers the connection — or tap Disconnect."
+            // Review of #634: the same for ANY session whose rule was already
+            // armed at this `.connected` (a reassert's end, the system's
+            // re-dial of a drop), not only a restored peer.
+            debugLog("[VpnViewModel] armed session has not handshaked — staying fail-closed under the armed rule")
+            error = peerWasRestoredInPlace
+                ? "Your previous location hasn't answered yet. Traffic stays blocked "
+                    + "until Birdo recovers the connection — or tap Disconnect."
+                : "This connection hasn't answered yet. Traffic stays blocked "
+                    + "until Birdo recovers it — or tap Disconnect."
 
         case .tearDownFailOpen:
             // Never handshook. Do NOT arm on-demand — that is the trap this exists to
@@ -1271,9 +1280,9 @@ final class VpnViewModel: ObservableObject {
             // "Protected" must wait for a handshake after the re-dial, not
             // ride the proof the previous path earned.
             if !isConnected || isReconnecting { resetHandshakeProof() }
-            // MR-2371: a recovery the system made (a drop it re-dialled, a
-            // reassert the app did not start) stays "Reconnecting…" until this
-            // session proves a handshake (`noteHandshake`).
+            // MR-2371: the system's re-dial of a dropped session stays
+            // "Reconnecting…" until this session proves a handshake
+            // (`noteHandshake`); a reassert ends here, as before.
             watch(.connected)
             isConnected = true
             isConnecting = false
@@ -1305,8 +1314,16 @@ final class VpnViewModel: ObservableObject {
             // and cleared in one main-actor step, so exactly one arm can see it.
             let peerWasRestoredInPlace = revertRestoredPeerAwaitingConnected
             revertRestoredPeerAwaitingConnected = false
+            // Review of #634: a session whose on-demand rule is ALREADY armed
+            // here (a reassert's end, the system's re-dial of a drop, a restored
+            // peer) must never reach the fresh-dial fail-open. `redialsOnDrop`
+            // is the profile as it stood at this transition: the app's own
+            // connect saved it with on-demand OFF.
+            let ruleAlreadyArmed = HandshakeArm.ruleAlreadyArmed(peerWasRestoredInPlace: peerWasRestoredInPlace,
+                                                                 onDemandRuleArmed: redialsOnDrop)
             Task { [weak self] in
-                await self?.armKillSwitchAfterHandshake(peerWasRestoredInPlace: peerWasRestoredInPlace)
+                await self?.armKillSwitchAfterHandshake(ruleAlreadyArmed: ruleAlreadyArmed,
+                                                        peerWasRestoredInPlace: peerWasRestoredInPlace)
             }
             startStatsTimer()
             startHeartbeat()

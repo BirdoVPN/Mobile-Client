@@ -250,9 +250,7 @@ public class WireGuardAdapter {
             // This will broadcast the `NEVPNStatusDidChange` notification to the GUI process.
             self.packetTunnelProvider?.reasserting = true
             defer {
-                // Birdo local patch 5 (MR-2371): still paused for want of a network
-                // path, the tunnel is still reasserting (see didReceivePathUpdate).
-                self.packetTunnelProvider?.reasserting = self.isPausedOffline
+                self.packetTunnelProvider?.reasserting = false
             }
 
             do {
@@ -288,12 +286,6 @@ public class WireGuardAdapter {
     }
 
     // MARK: - Private methods
-
-    /// Birdo local patch 5 (MR-2371): the backend is paused for want of a network path.
-    private var isPausedOffline: Bool {
-        if case .temporaryShutdown = self.state { return true }
-        return false
-    }
 
     /// Setup WireGuard log handler.
     private func setupLogHandler() {
@@ -443,11 +435,6 @@ public class WireGuardAdapter {
 
                 self.state = .temporaryShutdown(settingsGenerator)
                 wgTurnOff(handle)
-                // Birdo local patch 5 (MR-2371): with the backend off and no path the
-                // tunnel carries nothing, yet NEVPNStatus stayed `.connected` and the
-                // app said "Protected". `reasserting` makes it `.reasserting` (the app
-                // says "Reconnecting...") until the backend is back below.
-                self.packetTunnelProvider?.reasserting = true
             }
 
         case .temporaryShutdown(let settingsGenerator):
@@ -465,9 +452,6 @@ public class WireGuardAdapter {
                     try self.startWireGuardBackend(wgConfig: wgConfig),
                     settingsGenerator
                 )
-                // Birdo local patch 5 (MR-2371): the backend is back. A restart that
-                // failed stays paused, and reasserting, as it truly is.
-                self.packetTunnelProvider?.reasserting = false
             } catch {
                 self.logHandler(.error, "Failed to restart backend: \(error.localizedDescription)")
             }

@@ -1,9 +1,9 @@
 import XCTest
 
 /// MR-1620 / MR-1621 -- the connection state the user sees and hears.
-/// MR-2371 -- "Reconnecting…" for a real drop the system re-dials and for a
-/// path loss, Disconnect while reconnecting, and "Connection failed" only for
-/// a connection that failed.
+/// MR-2371 -- "Reconnecting…" for a real drop the system re-dials, Disconnect
+/// while reconnecting, and "Connection failed" only for a connection that
+/// failed. A path loss is not shown through NEVPNStatus (review of #634).
 final class ConnectionPhaseTests: XCTestCase {
 
     private func phase(_ tunnel: TunnelPhase,
@@ -186,20 +186,18 @@ final class ConnectionPhaseTests: XCTestCase {
         XCTAssertEqual(s.phase(.disconnected, error: true), .reconnecting)
     }
 
-    /// A path loss: the extension raises `reasserting` while its backend is
-    /// paused (vendored WireGuardKit local patch 5). "Reconnecting…", not
-    /// "Protected", until the resumed backend proves a handshake. A proof
-    /// sampled during the reassert is the old path's and ends nothing.
-    func testAPathLossReadsReconnectingNotProtected() {
+    /// A reassert (a live re-key) reads "Reconnecting…" and ends at its
+    /// `.connected`, as before (MR-1621). A path loss does not reach here at
+    /// all: NEVPNStatus stays `.connected` while the extension waits for a
+    /// network (review of #634; "paused, no network" is a follow-up through
+    /// the stats reply or an app-group flag, never NEVPNStatus).
+    func testAReassertEndsAtItsConnected() {
         var s = Step()
         s.see(.reasserting, connected: true, proven: true)
         XCTAssertEqual(s.phase(.protected), .reconnecting)
-        s.watch.proven()
-        XCTAssertTrue(s.watch.isReconnecting, "still reasserting")
         s.see(.connected, connected: true, proven: true)
-        XCTAssertEqual(s.phase(.connecting), .reconnecting)
-        s.watch.proven()
-        XCTAssertEqual(s.phase(.protected), .protected)
+        XCTAssertFalse(s.watch.isReconnecting)
+        XCTAssertEqual(s.phase(.connecting), .connecting)
     }
 
     /// A live switch or a settings rebuild raises `.reasserting` too; once it
@@ -279,17 +277,26 @@ final class ConnectionPhaseTests: XCTestCase {
         return String(text[a.lowerBound..<b.upperBound])
     }
 
-    /// Vendored WireGuardKit local patch 5: a re-vendor must not drop it.
-    func testTheVendoredAdapterReassertsWhilePausedForNoNetwork() throws {
+    /// Review of #634: the vendored adapter is upstream's again. Its pause
+    /// for no network path does not change NEVPNStatus; a `.reasserting ->
+    /// .connected` on every path return reached the fresh-dial fail-open.
+    func testThePathLossPauseLeavesTheTunnelStatusAlone() throws {
         let adapter = try source("Vendor/wireguard-apple/Sources/WireGuardKit/WireGuardAdapter.swift")
-        let pause = slice(adapter, from: "Connectivity offline, pausing backend.", to: "case .temporaryShutdown(let settingsGenerator):")
-        XCTAssertTrue(pause.contains("wgTurnOff(handle)"))
-        XCTAssertTrue(pause.contains("self.packetTunnelProvider?.reasserting = true"), "the pause no longer reasserts")
-        let resume = slice(adapter, from: "Connectivity online, resuming backend.", to: "Failed to restart backend")
-        XCTAssertTrue(resume.contains("self.packetTunnelProvider?.reasserting = false"), "the resume no longer ends it")
-        let update = slice(adapter, from: "public func update(tunnelConfiguration:", to: "do {")
-        XCTAssertTrue(update.contains("self.packetTunnelProvider?.reasserting = self.isPausedOffline"),
-                      "update() ends a reassert the pause still needs")
+        let pause = slice(adapter, from: "Connectivity offline, pausing backend.", to: "Failed to restart backend")
+        XCTAssertFalse(pause.contains("reasserting"), "a path loss must not drive NEVPNStatus (see the arm guard)")
+    }
+
+    /// Review of #634: whatever drives a `.connected`, a session whose
+    /// on-demand rule is already armed never reaches the fresh-dial
+    /// fail-open (`HandshakeArm.ruleAlreadyArmed`, LiveRebuildTests).
+    func testTheConnectedArmKnowsWhetherTheRuleIsAlreadyArmed() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        let connected = slice(vm, from: "case .connected:", to: "case .reasserting:")
+        XCTAssertTrue(connected.contains("HandshakeArm.ruleAlreadyArmed(peerWasRestoredInPlace: peerWasRestoredInPlace,"))
+        XCTAssertTrue(connected.contains("onDemandRuleArmed: redialsOnDrop)"))
+        XCTAssertTrue(connected.contains("armKillSwitchAfterHandshake(ruleAlreadyArmed: ruleAlreadyArmed,"))
+        let arm = slice(vm, from: "private func armKillSwitchAfterHandshake(", to: "case .inconclusive:")
+        XCTAssertTrue(arm.contains("ruleAlreadyArmed: ruleAlreadyArmed,"), "the verdict ignores the armed rule")
     }
 
     func testTheViewModelAndHomeAreWiredToTheWatch() throws {

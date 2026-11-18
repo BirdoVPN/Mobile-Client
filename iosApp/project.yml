@@ -49,7 +49,7 @@ settings:
 # extension (to actually carry packets).
 packages:
   WireGuardKit:
-    # VENDORED at iosApp/Vendor/wireguard-apple (tag 1.0.15-26 + 5 local patches).
+    # VENDORED at iosApp/Vendor/wireguard-apple (tag 1.0.15-26 + 4 local patches).
     # Upstream git.zx2c4.com/wireguard-apple is DORMANT (last commit 2023-02-15) and
     # its master (= tag 1.0.16-27) has an INVALID manifest: swift-tools-version:5.3
     # while using .macOS(.v12)/.iOS(.v15), which require 5.5 — SwiftPM under Xcode 16
@@ -72,14 +72,6 @@ packages:
     #      "private" key. No Birdo code calls WireGuardKit's PrivateKey() today
     #      (APIClient uses CryptoKit); android-ci.yml's lint job fails if the
     #      patch is lost in a re-vendor.
-    # And one for what the app says, not for the build:
-    #   5. Sources/WireGuardKit/WireGuardAdapter.swift raises the provider's
-    #      `reasserting` while the iOS backend is paused for want of a network
-    #      path (`.temporaryShutdown`) and drops it once the backend is back;
-    #      `update()` leaves it raised while still paused (MR-2371). Upstream
-    #      kept NEVPNStatus `.connected` over a tunnel carrying nothing, so the
-    #      app said "Protected" through a path loss. ConnectionPhaseTests fails
-    #      if a re-vendor drops it.
     path: Vendor/wireguard-apple
 
 targets:

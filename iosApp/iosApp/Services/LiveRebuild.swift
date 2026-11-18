@@ -446,15 +446,37 @@ enum HandshakeArm {
         }
     }
 
+    /// Is the on-demand rule of the session under this `.connected` ALREADY
+    /// armed? (Review of #634, generalising #351's restored peer.) Then the
+    /// session must fail CLOSED when it does not handshake: the no-handshake
+    /// teardown persists on-demand OFF and deletes the key, so traffic would
+    /// leave unprotected the moment a network is back.
+    ///
+    /// That covers a peer this client restored in place (#351), the end of
+    /// any `.reasserting` of a session that was up (its rule was armed after
+    /// its first handshake), and the system's own re-dial of a dropped session
+    /// (only an armed rule re-dials). Only a FRESH dial may fail open: the
+    /// app's own connect saves its profile with on-demand OFF, so its rule is
+    /// never armed at its `.connected`.
+    ///
+    /// - Parameters:
+    ///   - peerWasRestoredInPlace: #351's marker for a live rebuild's revert.
+    ///   - onDemandRuleArmed: the profile holds an enabled on-demand Connect
+    ///     rule at this `.connected` (`KillSwitchSystemState.redialsOnDrop`).
+    static func ruleAlreadyArmed(peerWasRestoredInPlace: Bool, onDemandRuleArmed: Bool) -> Bool {
+        peerWasRestoredInPlace || onDemandRuleArmed
+    }
+
     /// The verdict when the probe ends with no inbound bytes. The order of the
     /// tests is the order of the evidence: a window that was not spent proves
     /// nothing at all, so it is answered before anything is decided about the
-    /// peer.
-    static func noHandshakeOutcome(peerWasRestoredInPlace: Bool,
+    /// peer. A session whose rule is already armed (`ruleAlreadyArmed`) never
+    /// reaches the fail-open, however long it waited.
+    static func noHandshakeOutcome(ruleAlreadyArmed: Bool,
                                    elapsed: Duration,
                                    window: Duration) -> HandshakeArmOutcome {
         if elapsed < window { return .inconclusive }
-        if peerWasRestoredInPlace { return .keepSessionFailClosed }
+        if ruleAlreadyArmed { return .keepSessionFailClosed }
         return .tearDownFailOpen
     }
 }
@@ -468,11 +490,13 @@ enum HandshakeArmOutcome: Equatable {
     /// one — nothing re-dials a tunnel that was never armed, and the user is
     /// told which server did not answer.
     case tearDownFailOpen
-    /// The peer under this `.connected` was RESTORED in place (#351). Keep the
-    /// session and the armed on-demand rule exactly as they are and tell the
-    /// user traffic is blocked: the extension's liveness check, the armed
-    /// rule's re-dial and then the circuit breaker are the recovery, which is
-    /// the same escape `LiveRebuildFollowUp.stayFailedClosed` relies on.
+    /// The session under this `.connected` already had its on-demand rule
+    /// armed (`HandshakeArm.ruleAlreadyArmed`: a peer RESTORED in place, #351;
+    /// the end of a reassert; the system's re-dial of a drop). Keep the
+    /// session and the armed rule exactly as they are and tell the user
+    /// traffic is blocked: the extension's liveness check, the armed rule's
+    /// re-dial and then the circuit breaker are the recovery, which is the
+    /// same escape `LiveRebuildFollowUp.stayFailedClosed` relies on.
     case keepSessionFailClosed
     /// The probe returned without spending its window (a cancelled task, whose
     /// `CancellationError` the caller's `try?` eats). It has proved nothing, so
