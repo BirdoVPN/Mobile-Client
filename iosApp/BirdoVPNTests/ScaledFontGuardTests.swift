@@ -86,6 +86,7 @@ final class ScaledFontGuardTests: XCTestCase {
             "Text(\"x\").font(Font(theme.titleFont))",
             ".font(.init(UIFont.preferredFont(forTextStyle: .body)))",
             "let f = Font.init(uiFont)",
+            "let f = Font (ctFont)",
             ".transformEnvironment(\\.dynamicTypeSize) { $0 = .large }",
             ".transformEnvironment(\\.sizeCategory) { $0 = .large }",
             "UIFontDescriptor(fontAttributes: [.size: 12])",
@@ -117,6 +118,8 @@ final class ScaledFontGuardTests: XCTestCase {
             "Link(\"x\", destination: URL(string: \"https://birdo.app\")!).dynamicTypeSize(.large) // scaled-font-guard: allow preview",
             // Near misses of the MR-2383 patterns.
             "Text(name).font(font)",
+            "let f = Font.body",
+            "Font.system(.body, design: .rounded)",
             "let size = proxy.size",
             "items.sorted { $0.size < $1.size }",
             "call(x, .size(12))",
@@ -209,13 +212,14 @@ enum FixedFontScan {
         #"\b(?:UI|NS)Font\(\s*(?:name|descriptor):"# + callArgs + #"\bsize:"#, // UIFont(name:size:), (descriptor:size:)
         #"\.withSize\("#,                                                // UIFont/descriptor .withSize(_:)
         #"\bCTFontCreateWith\w*\("#,                                     // Core Text at a point size
-        #"\bFont\(\s*(?:UI|NS)Font\b"#,                                  // Font(UIFont...): a snapshot
+        // Review of #636 (L3): ANY Font(...) or Font.init(...) call. Font's
+        // initialisers all wrap a platform font (UIFont, NSFont, CTFont) and
+        // freeze it at its size; the scaled ones are .system/.custom/the tokens.
+        #"\bFont\s*(?:\.init)?\("#,                                      // Font(uiFont), Font.init(...)
         #"\.dynamicTypeSize\("#,                                         // pins or limits a subtree
         #"\.environment\(\s*\\\.(?:dynamicTypeSize|sizeCategory)\b"#,    // pins a subtree
         // MR-2383: the rarer bypasses.
-        #"\bFont\(\s*[a-z_][\w.]*\s*\)"#,                                // Font(uiFont): a snapshot
         #"\.font\(\s*\.init\("#,                                         // .font(.init(UIFont...))
-        #"\bFont\.init\("#,                                              // Font.init(...)
         #"\.transformEnvironment\(\s*\\\.(?:dynamicTypeSize|sizeCategory)\b"#, // rewrites a subtree's size
         #"\bAttributeName\.size\b"#,                                     // UIFontDescriptor size attribute
         #"[\[,]\s*\.size\s*:"#,                                          // [.size: 12] in font attributes
