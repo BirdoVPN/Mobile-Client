@@ -1757,6 +1757,43 @@ class VpnManagerTest {
         coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
     }
 
+    /** A refused connect that leaves the restriction notice set, as Home reads it. */
+    private suspend fun TestScope.refusedAsRestricted() {
+        every { context.getString(R.string.error_account_restricted_until, *anyVararg()) } returns "x"
+        coEvery { repository.connectVpn(any(), any()) } returns
+            restrictedRefusal(java.time.Instant.now().plusSeconds(3_600).toString())
+        vpnManager.connect("srv-1")
+        advanceUntilIdle()
+        assertEquals(FailureKind.ACCOUNT_RESTRICTED, (vpnManager.state.value as VpnState.Error).kind)
+        assertEquals("/dashboard/devices", vpnManager.accountRestriction.value?.appealPath)
+    }
+
+    /**
+     * MR-2380: the notice names one account's restriction and its review
+     * link. A sign-out clears it with the session's other notices, so the next
+     * account signed in on this device does not inherit it.
+     */
+    @Test
+    fun `sign-out clears the account-restriction notice`() = runTest {
+        refusedAsRestricted()
+
+        vpnManager.disconnectForSignOut()
+        runCurrent()
+
+        assertNull(vpnManager.accountRestriction.value)
+    }
+
+    /** MR-2380: an account deletion clears it too. */
+    @Test
+    fun `an account deletion clears the account-restriction notice`() = runTest {
+        refusedAsRestricted()
+
+        vpnManager.onAccountDeleted()
+        runCurrent()
+
+        assertNull(vpnManager.accountRestriction.value)
+    }
+
     @Test
     fun `a device notice on a successful connect is kept for Home and cleared by Disconnect`() = runTest {
         coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(

@@ -170,7 +170,10 @@ class VpnManager @Inject constructor(
      */
     /**
      * MR-2221: the restriction the last refused connect carried, for Home's
-     * "Ask for a review" action. Cleared by a connect that goes through.
+     * "Ask for a review" action. Cleared by a connect that goes through, and
+     * by a sign-out or an account deletion (MR-2380): it names the account's
+     * restriction and review link, which the next account signed in on this
+     * device must not inherit.
      */
     private val _accountRestriction = MutableStateFlow<AccountRestriction?>(null)
     val accountRestriction: StateFlow<AccountRestriction?> = _accountRestriction.asStateFlow()
@@ -2276,6 +2279,8 @@ class VpnManager @Inject constructor(
     suspend fun disconnectForSignOut() {
         withTimeoutOrNull(SIGN_OUT_RELEASE_TIMEOUT_MS) { disconnect() }
         _sessionExpired.value = false
+        // MR-2380: the restriction was this account's; the next one starts clean.
+        _accountRestriction.value = null
     }
 
     /**
@@ -2293,6 +2298,8 @@ class VpnManager @Inject constructor(
         _sessionExpired.value = false
         prefs.sessionShouldBeUp = false
         sessionKeyId = null
+        // MR-2380: so is the deleted account's restriction notice.
+        _accountRestriction.value = null
         scope.launch { tearDownTunnel(userInitiated = true, releasePeer = false) }
     }
 
