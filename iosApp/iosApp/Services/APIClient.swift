@@ -514,18 +514,10 @@ final class APIClient: @unchecked Sendable {
                 body: body,
                 authenticated: true,
                 refreshOn401: true,
-                refusal: { status, data -> Error? in
-                    // The proof refusals first, then the hold's own 409 / 429
-                    // / 503 (#883 final), each told apart by status and code.
-                    if let refusal = DeletionRefusal.classify(status: status, body: data) { return refusal }
-                    // A 409 `change_already_pending` that names the hold is
-                    // an answer (`DeletionHold.holdRequestAnswer`), not filed
-                    // by this request.
-                    if let named = DeletionHold.holdRequestAnswer(status: status, body: data) {
-                        return DeletionHoldNamed(answer: named)
-                    }
-                    return DeletionHold.classifyRefusal(status: status, body: data)
-                }
+                // The proof refusals, a 409 naming the hold (an answer, not
+                // filed by this request: `DeletionHoldNamed`), then the hold's
+                // own 409 / 429 / 503. Pinned by HeldDeletionOriginTests.
+                refusal: DeletionHold.holdRequestRefusal
             )
         } catch let named as DeletionHoldNamed {
             return named.answer

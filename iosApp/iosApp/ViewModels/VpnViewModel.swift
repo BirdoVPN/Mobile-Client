@@ -669,8 +669,10 @@ final class VpnViewModel: ObservableObject {
 
     /// Sign-out variant: tears the tunnel down synchronously (the keychain the
     /// extension reads must still exist at that point) and AWAITS the
-    /// server-side slot release before returning, so the caller can wipe
-    /// credentials immediately after without the DELETE racing token removal.
+    /// server-side slot release before returning (at most
+    /// `signOutReleaseCap`, after which the request is cancelled), so the
+    /// caller can wipe credentials immediately after without the DELETE
+    /// racing token removal.
     /// Order stays load-bearing: `await disconnectForSignOut()` BEFORE
     /// `authVM.logout()`.
     func disconnectForSignOut() async {
@@ -680,9 +682,21 @@ final class VpnViewModel: ObservableObject {
         vpnManager.disconnect()
         resetSessionState()
         if let keyId {
-            try? await api.disconnect(keyId: keyId)
+            // MR-2389 review (L1): best effort, and CAPPED. The sign-out
+            // confirmation waits on this and cannot be dismissed meanwhile,
+            // so a slow DELETE (30 s per request, plus a token refresh) must
+            // not hold it open. Past the cap the request is cancelled; the
+            // server reclaims the slot from this device's next connect anyway.
+            let api = self.api
+            _ = try? await CappedCall.run(within: Self.signOutReleaseCap) {
+                try await api.disconnect(keyId: keyId)
+                return true
+            }
         }
     }
+
+    /// MR-2389 review (L1): the longest a sign-out waits for its slot release.
+    static let signOutReleaseCap: Duration = .seconds(5)
 
     /// Account-deletion variant (owner item 43): runs only once the server has
     /// CONFIRMED the erasure (or the app is checking whether it happened), and

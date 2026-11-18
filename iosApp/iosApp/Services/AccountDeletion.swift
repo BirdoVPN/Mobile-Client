@@ -441,11 +441,13 @@ enum DeletionHold {
     }
 
     /// The deletion dialog's hold step: "signing out cancels the deletion"
-    /// only while no hold is known. With one waiting, a new hold request is
-    /// answered 409 `change_already_pending`, for a hold this session may not
-    /// have filed.
-    static func holdStepSignOutNote(holdKnown: Bool) -> String? {
-        holdKnown ? nil : signOutCancels
+    /// only once the list has ANSWERED that no hold waits (MR-2389, as
+    /// Android #623's `holdStepSaysSignOutCancels`). With one waiting, a new
+    /// hold request is answered 409 `change_already_pending`, for a hold this
+    /// session may not have filed; before the list answered, that is not
+    /// known yet.
+    static func holdStepSignOutNote(holdKnown: Bool, listAnswered: Bool) -> String? {
+        listAnswered && !holdKnown ? signOutCancels : nil
     }
 
     private static func formatted(_ date: Date, timeZone: TimeZone, locale: Locale) -> String {
@@ -505,6 +507,19 @@ extension DeletionHold {
             return .alreadyPending(pending)
         }
         return nil
+    }
+
+    /// `APIClient.requestDeletionHold`'s refusal hook, for every non-2xx
+    /// (MR-2389: here, so the tests run the very hook the request uses). The
+    /// proof refusals first (`DeletionRefusal`, 2FA), then a 409
+    /// `change_already_pending` that NAMES the hold, which is an answer
+    /// (`DeletionHoldNamed`, `.alreadyPending`), not a failure, then the
+    /// hold's own 409 / 429 / 503 (#883 final), each told apart by status and
+    /// code.
+    static func holdRequestRefusal(status: Int, body: Data) -> Error? {
+        if let refusal = DeletionRefusal.classify(status: status, body: body) { return refusal }
+        if let named = holdRequestAnswer(status: status, body: body) { return DeletionHoldNamed(answer: named) }
+        return classifyRefusal(status: status, body: body)
     }
 }
 
@@ -741,31 +756,56 @@ final class HeldDeletionController {
     private let endsSession: @MainActor (Error) -> Bool
     /// A session is signed in now (an answer that lands after a sign-out is dropped).
     private let isSignedIn: @MainActor () -> Bool
-    /// After every change of `record` or `isCancelling`.
+    /// After every change of `record`, `isCancelling` or `listAnswered`.
     var onChange: (@MainActor () -> Void)?
 
     private(set) var record = HeldDeletionRecord()
     private(set) var isCancelling = false
+    /// MR-2389: a list read has answered (and was applied) in this session,
+    /// so "no hold" is known rather than assumed. The deletion dialog's hold
+    /// step says "signing out cancels the deletion" only then
+    /// (`DeletionHold.holdStepSignOutNote`), as Android #623's
+    /// `pendingDeletionListAnswered`.
+    private(set) var listAnswered = false
     private var order = HeldDeletionReadOrder()
     private var inFlight: (id: String, task: Task<HeldDeletionCancelOutcome, Never>)?
+    private let cancelTimeout: Duration
+    /// Review of #632 (L2, Android #623 `cancelledHoldIds`): the ids whose
+    /// cancel this session had answered 200 or 404. A list answer, or a hold
+    /// request's answer, that names one later is a stale view of a hold that
+    /// is gone, never a hold again: it is filtered out (`read`) or refused
+    /// (`show`). Kept for the session, dropped with it.
+    private(set) var cancelledIds: Set<String> = []
 
     static let unreachableMessage = "Unable to reach server. Check your connection."
     static let cancelFailedMessage = "The deletion could not be cancelled. Please try again."
 
+    /// MR-2389 (R2): the longest one cancel may take, a token refresh inside
+    /// it included. The request alone could take 30 s (60 s for the resource)
+    /// plus a refresh, with the sign-out confirmation waiting on it. Past the
+    /// cap the cancel FAILED (`unreachableMessage`): a sign-out waiting on it
+    /// stops with Try again / Sign out anyway. Android #623's
+    /// `HOLD_CANCEL_TIMEOUT_MS`.
+    nonisolated static let cancelCap: Duration = .seconds(10)
+
     init(server: Server,
          store: any HeldDeletionIdStore,
          endsSession: @escaping @MainActor (Error) -> Bool,
-         isSignedIn: @escaping @MainActor () -> Bool) {
+         isSignedIn: @escaping @MainActor () -> Bool,
+         cancelTimeout: Duration = HeldDeletionController.cancelCap) {
         self.server = server
         self.store = store
         self.endsSession = endsSession
         self.isSignedIn = isSignedIn
+        self.cancelTimeout = cancelTimeout
     }
 
     /// A cold start with a live session: the id this session filed comes back
     /// from the store. Nothing is shown until a list read names that hold.
     func restore() {
         record = HeldDeletionRecord(restoredFiledHereId: store.heldDeletionFiledHereId)
+        listAnswered = false
+        cancelledIds = []
         onChange?()
     }
 
@@ -773,6 +813,8 @@ final class HeldDeletionController {
     func startSession() {
         order.wrote()
         record = HeldDeletionRecord()
+        listAnswered = false
+        cancelledIds = []
         store.setHeldDeletionFiledHere(nil)
         onChange?()
     }
@@ -782,28 +824,45 @@ final class HeldDeletionController {
         order.wrote()
         inFlight = nil
         isCancelling = false
+        listAnswered = false
+        cancelledIds = []
         update { $0.sessionEnded() }
     }
 
     /// A hold request named a hold. Filed here only for this session's own 202.
-    func show(_ answer: DeletionHoldAnswer) {
+    /// - Returns: false, changing nothing, when it names a hold this session
+    ///   already cancelled (L2): a late answer, not a new hold. The caller
+    ///   reads the list instead and claims nothing.
+    @discardableResult
+    func show(_ answer: DeletionHoldAnswer) -> Bool {
+        guard !cancelledIds.contains(answer.pending.id) else { return false }
         order.wrote()
         update { $0.apply(answer) }
+        return true
     }
 
     /// Read the list. True when what is known is now at least as fresh as its
     /// answer; false when it failed, was cancelled or was refused (signed out,
-    /// a cancel in flight).
+    /// a cancel in flight when it would start).
+    ///
+    /// MR-2389 (R3): a read that STARTED before a cancel still applies when
+    /// it answers while that cancel is out, or after it failed: only a cancel
+    /// that succeeds is a write (`performCancel`), and only it makes the
+    /// reads started before it stale. As Android #623's `applyRead`.
     @discardableResult
     func read() async -> Bool {
         guard isSignedIn(), !isCancelling else { return false }
         let ticket = order.begin()
         do {
             let listed = try await server.list()
-            guard !Task.isCancelled, isSignedIn(), !isCancelling else { return false }
+            guard !Task.isCancelled, isSignedIn() else { return false }
             switch order.admit(ticket) {
             case .apply:
-                update { $0.listed(listed) }
+                listAnswered = true
+                // L2: a hold this session already cancelled is not listed
+                // back (an answer that raced the cancel, a replica behind).
+                let current = listed.flatMap { cancelledIds.contains($0.id) ? nil : $0 }
+                update { $0.listed(current) }
                 return true
             case .superseded:
                 return true
@@ -815,14 +874,14 @@ final class HeldDeletionController {
     }
 
     /// Cancel the hold `id`. One cancel at a time: a second call for the same
-    /// id waits for the one in flight and gets its outcome.
+    /// id waits for the one in flight and gets its outcome. Capped at
+    /// `cancelTimeout` (R2). The read order moves only when it succeeds (R3).
     func cancel(id: String) async -> HeldDeletionCancelOutcome {
         if let running = inFlight {
             let outcome = await running.task.value
             if running.id == id { return outcome }
         }
         isCancelling = true
-        order.wrote()
         onChange?()
         let task = Task<HeldDeletionCancelOutcome, Never> { await self.performCancel(id: id) }
         inFlight = (id: id, task: task)
@@ -833,8 +892,13 @@ final class HeldDeletionController {
 
     private func performCancel(id: String) async -> HeldDeletionCancelOutcome {
         do {
-            let cancelled = try await server.cancel(id)
+            let cancelled = try await CappedCall.run(within: cancelTimeout) { [self] in
+                try await server.cancel(id)
+            }
+            // The server's word: every read started before now is stale, and
+            // this id never comes back (L2).
             order.wrote()
+            cancelledIds.insert(id)
             isCancelling = false
             update { $0.cancelled(id: id) }
             return cancelled ? .cancelled : .alreadyGone
@@ -842,7 +906,10 @@ final class HeldDeletionController {
             isCancelling = false
             onChange?()
             if endsSession(error) { return .sessionEnded }
-            return .failed(error is URLError ? Self.unreachableMessage : Self.cancelFailedMessage)
+            // Past the cap the hold may or may not be cancelled; the next
+            // list read says which. Until then it is NOT said to be.
+            let unreachable = error is URLError || error is CappedCall.TimedOut
+            return .failed(unreachable ? Self.unreachableMessage : Self.cancelFailedMessage)
         }
     }
 
@@ -903,6 +970,27 @@ enum SignOutHold {
     struct CancelResult: Equatable, Sendable {
         let outcome: HeldDeletionCancelOutcome
         let listAnswered: Bool
+
+        /// MR-2389 (R1): what the confirmation may take as known after this
+        /// cancel. A 200 (`.cancelled`) is the server's word that the hold is
+        /// gone, so a re-read that failed or ran past its wait is no reason
+        /// to fall back on "we couldn't check": nothing is known to wait
+        /// unless a list read names a hold (as Android #623 clears
+        /// `pendingDeletionUnknown` on a 200). A 404 says only that THAT id
+        /// is gone: only an answered read says nothing else waits.
+        var listKnown: Bool {
+            listAnswered || outcome == .cancelled
+        }
+    }
+
+    /// The line under "Cancel deletion" for what it did (and for what a
+    /// sign-out's cancel-first did), nil when it did not go through.
+    static func cancelNote(_ outcome: HeldDeletionCancelOutcome) -> String? {
+        switch outcome {
+        case .cancelled: return "The deletion is cancelled."
+        case .alreadyGone: return "That deletion was no longer waiting."
+        case .failed, .sessionEnded: return nil
+        }
     }
 
     /// "Cancel deletion" (and a sign-out's cancel-first): cancel `id`, then
@@ -930,13 +1018,16 @@ enum SignOutHold {
     }
 
     enum Step: Equatable, Sendable {
-        /// Go on and sign out.
-        case signOut
+        /// Go on and sign out. `cancelled`: what the cancel-first did
+        /// (`.cancelled` or `.alreadyGone`, said under the dialog while the
+        /// sign-out runs), nil when there was none.
+        case signOut(cancelled: HeldDeletionCancelOutcome?)
         /// Nobody is signed out: the deletion is still scheduled.
         case blocked(Blocked)
-        /// The cancel went through, but the read after it did not answer
-        /// "nothing waits": show what is known now, sign nobody out.
-        case reconsider(listAnswered: Bool)
+        /// The cancel went through, but what is known after it is not
+        /// "nothing waits" (another hold listed; a 404 whose re-read did not
+        /// answer): show what is known now, sign nobody out.
+        case reconsider(listAnswered: Bool, cancelled: HeldDeletionCancelOutcome)
         /// The session ended on its own (401).
         case sessionEnded
     }
@@ -944,18 +1035,22 @@ enum SignOutHold {
     /// Sign-out confirmed. A hold THIS session filed (or, after a cold start
     /// that could not read the list, the id it filed) is cancelled first: the
     /// user was told signing out cancels it, and the server's sign-out is best
-    /// effort. If that cancel fails, nobody is signed out. After it, the list
-    /// is read again (at most `wait`), and the sign-out goes on only if that
-    /// read answered that nothing waits. A hold not known to be filed here is
-    /// left alone: its line said signing out may not cancel it, and offered
-    /// Cancel deletion.
+    /// effort. If that cancel fails (or passes `HeldDeletionController.cancelCap`),
+    /// nobody is signed out. After it, the list is read again (at most
+    /// `wait`), and the sign-out goes on when nothing is known to wait
+    /// (`CancelResult.listKnown`, MR-2389 R1): after a 200 that holds unless
+    /// the re-read NAMES a hold, so a slow or failed re-read neither stops
+    /// the sign-out nor asks for a second tap; after a 404 only an answered,
+    /// empty list lets it go on (Android #623 `afterCancelFirst`). A hold not
+    /// known to be filed here is left alone: its line said signing out may
+    /// not cancel it, and offered Cancel deletion.
     @MainActor
     static func prepareSignOut(_ notice: SignOutHoldNotice,
                                current: @MainActor () -> HeldDeletionRecord,
                                cancel: @MainActor (String) async -> HeldDeletionCancelOutcome,
                                read: @escaping @MainActor @Sendable () async -> Bool,
                                wait: Duration = readWait) async -> Step {
-        guard let id = notice.cancelsBeforeSignOut else { return .signOut }
+        guard let id = notice.cancelsBeforeSignOut else { return .signOut(cancelled: nil) }
         let result = await cancelThenRecheck(id, cancel: cancel, read: read, wait: wait)
         switch result.outcome {
         case .failed(let reason):
@@ -963,8 +1058,11 @@ enum SignOutHold {
         case .sessionEnded:
             return .sessionEnded
         case .cancelled, .alreadyGone:
-            let after = current().signOutNotice(listAnswered: result.listAnswered)
-            return after == .nothingWaiting ? .signOut : .reconsider(listAnswered: result.listAnswered)
+            let known = result.listKnown
+            let after = current().signOutNotice(listAnswered: known)
+            return after == .nothingWaiting
+                ? .signOut(cancelled: result.outcome)
+                : .reconsider(listAnswered: known, cancelled: result.outcome)
         }
     }
 
@@ -1002,6 +1100,66 @@ enum SignOutHold {
         return DialogText(message: line.map { opening + "\n\n" + $0 } ?? opening, confirmLabel: signOutLabel,
                           dismissLabel: dismissLabel, offersCancelDeletion: notice.offersCancelDeletion,
                           offersSignOutAnyway: false)
+    }
+}
+
+/// MR-2389 (R2): an async call with a hard cap. The call runs in its own
+/// task, so one that does not stop when cancelled (a coalesced token refresh)
+/// cannot hold the cap open; past the cap that task is cancelled and its late
+/// answer dropped.
+enum CappedCall {
+    /// The cap passed before `operation` answered.
+    struct TimedOut: Error, Equatable, Sendable {}
+
+    static func run<T: Sendable>(within limit: Duration,
+                                 _ operation: @escaping @MainActor @Sendable () async throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+            let race = FirstAnswer(continuation)
+            race.add(Task {
+                do {
+                    let value = try await operation()
+                    race.resolve(.success(value))
+                } catch {
+                    race.resolve(.failure(error))
+                }
+            })
+            race.add(Task {
+                try? await Task.sleep(for: limit)
+                race.resolve(.failure(TimedOut()))
+            })
+        }
+    }
+}
+
+/// Resumes a throwing continuation once, with whichever task answers first,
+/// and cancels the others.
+private final class FirstAnswer<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+    private var tasks: [Task<Void, Never>] = []
+
+    init(_ continuation: CheckedContinuation<T, Error>) {
+        self.continuation = continuation
+    }
+
+    func add(_ task: Task<Void, Never>) {
+        lock.lock()
+        let answered = continuation == nil
+        if !answered { tasks.append(task) }
+        lock.unlock()
+        if answered { task.cancel() }
+    }
+
+    func resolve(_ result: Result<T, Error>) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        let others = tasks
+        tasks = []
+        lock.unlock()
+        guard let pending else { return }
+        others.forEach { $0.cancel() }
+        pending.resume(with: result)
     }
 }
 

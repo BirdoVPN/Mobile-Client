@@ -635,10 +635,11 @@ struct ProfileView: View {
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
                 .fixedSize(horizontal: false, vertical: true)
-            // MR-179 (hold origin): only while no hold is known. With one
-            // waiting, this request is answered 409 for a hold this session
-            // may not have filed.
-            if let note = DeletionHold.holdStepSignOutNote(holdKnown: authVM.pendingDeletion != nil) {
+            // MR-179 (hold origin): only once the list ANSWERED that no hold
+            // waits (MR-2389). With one waiting, this request is answered 409
+            // for a hold this session may not have filed.
+            if let note = DeletionHold.holdStepSignOutNote(holdKnown: authVM.pendingDeletion != nil,
+                                                           listAnswered: authVM.heldDeletionListAnswered) {
                 Text(note)
                     .font(BirdoTheme.Fonts.bodySmall)
                     .foregroundStyle(BirdoTheme.onSurface)
