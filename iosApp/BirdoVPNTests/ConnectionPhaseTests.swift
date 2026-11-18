@@ -311,6 +311,14 @@ final class ConnectionPhaseTests: XCTestCase {
         XCTAssertTrue(reset.contains("updateReconnect { $0.stop() }"))
         let proof = slice(vm, from: "private func noteHandshake(", to: "\n    }\n")
         XCTAssertTrue(proof.contains("updateReconnect { $0.proven() }"))
+        // Review of #634: the drop's banner goes only once the recovery has
+        // ended, i.e. after proven() and only if it is no longer reconnecting.
+        if let proven = proof.range(of: "updateReconnect { $0.proven() }"),
+           let cleared = proof.range(of: "if !isReconnecting, let dropped, error == dropped { error = nil }") {
+            XCTAssertLessThan(proven.lowerBound, cleared.lowerBound, "the banner is cleared before the watch decided")
+        } else {
+            XCTFail("noteHandshake no longer clears the drop's banner only after the recovery ended")
+        }
         XCTAssertTrue(vm.contains("$0.systemChanged(redialsOnDrop: state?.redialsOnDrop ?? false)"))
         XCTAssertTrue(vm.contains("awaitingRedial: isAwaitingRedial,"))
 

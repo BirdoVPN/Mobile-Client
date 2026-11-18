@@ -2112,9 +2112,12 @@ final class VpnViewModel: ObservableObject {
             handshakeProven = true
             // MR-2371: the session that was being brought back is up again.
             // The drop's "Tunnel failed: …" is history now, unless something
-            // else has been said since.
-            if isReconnecting, let dropped = recoveringFromError, error == dropped { error = nil }
+            // else has been said since. Cleared only once the watch has
+            // actually ended the recovery (review of #634): never while
+            // "Reconnecting…" still stands.
+            let dropped = isReconnecting ? recoveringFromError : nil
             updateReconnect { $0.proven() }
+            if !isReconnecting, let dropped, error == dropped { error = nil }
         }
     }
 
