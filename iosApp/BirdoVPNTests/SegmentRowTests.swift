@@ -18,11 +18,13 @@ final class SegmentRowTests: XCTestCase {
     private let billing = ["Monthly", "Yearly · Save up to 20%"]
     private let login = ["Email", "Anonymous", "SSO"]
 
-    private func heights(_ items: [String], width: CGFloat, size: DynamicTypeSize) -> [CGFloat] {
+    private func heights(_ items: [String], width: CGFloat, size: DynamicTypeSize,
+                         stacked: Bool = false) -> [CGFloat] {
         let measured = Heights()
-        let row = SegmentRow(count: items.count, stacked: false) { index in
+        let row = SegmentRow(count: items.count, stacked: stacked) { index in
             SegmentLabel(text: items[index], weight: .medium, textColor: .white,
-                         fill: index == 0 ? .gray : .clear, border: nil)
+                         fill: index == 0 ? .gray : .clear, border: nil,
+                         fillsRowHeight: !stacked)
                 .background(GeometryReader { proxy -> Color in
                     measured.byIndex[index] = proxy.size.height
                     return Color.clear
@@ -55,6 +57,30 @@ final class SegmentRowTests: XCTestCase {
         guard found.count == 2 else { return }
         XCTAssertGreaterThan(found[1], 40.5, "the Yearly label no longer wraps here; widen the case")
         XCTAssertEqual(found[0], found[1], accuracy: 0.5)
+    }
+
+    /// Review of #636 (L1): stacked (the accessibility sizes) no segment
+    /// takes a flexible height. Each is exactly as tall as it is alone: the
+    /// wrapped "Yearly · Save up to 20%" is neither squeezed nor cut, and
+    /// Monthly is not stretched to match it.
+    func testStackedSegmentsKeepTheirOwnHeightsAtAX3AndAX5() {
+        for size: DynamicTypeSize in [.accessibility3, .accessibility5] {
+            let stacked = heights(billing, width: 220, size: size, stacked: true)
+            XCTAssertEqual(stacked.count, 2)
+            guard stacked.count == 2 else { continue }
+            let alone = billing.map { heights([$0], width: 220, size: size, stacked: true).first ?? 0 }
+            XCTAssertEqual(stacked[0], alone[0], accuracy: 0.5, "Monthly at \(size)")
+            XCTAssertEqual(stacked[1], alone[1], accuracy: 0.5, "Yearly at \(size): squeezed or stretched")
+            XCTAssertGreaterThan(stacked[1], stacked[0] + 0.5, "the wrapped Yearly label is taller at \(size)")
+        }
+    }
+
+    func testOnlyTheSideBySideRowFillsTheRowHeight() throws {
+        let row = try source("iosApp/Views/Components/SegmentRow.swift")
+        XCTAssertTrue(row.contains(".fixedSize(horizontal: false, vertical: !stacked)"))
+        XCTAssertTrue(row.contains("maxHeight: fillsRowHeight ? CGFloat.infinity : nil"))
+        let tabs = try source("iosApp/Views/Components/SegmentedTabs.swift")
+        XCTAssertTrue(tabs.contains("fillsRowHeight: !dynamicTypeSize.isAccessibilitySize"))
     }
 
     // MARK: - Source pins (these views cannot be compiled into this bundle)

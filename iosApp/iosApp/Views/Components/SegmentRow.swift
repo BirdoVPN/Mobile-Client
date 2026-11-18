@@ -4,12 +4,13 @@ import SwiftUI
 /// SegmentRowTests can lay it out at the large text sizes.
 ///
 /// Side by side, every segment is as tall as the tallest (MR-2383): each
-/// `SegmentLabel` takes any height it is offered, and the row is fixed at its
-/// ideal height, which is the tallest label's. Before, a one-line segment
-/// beside one whose label wraps ("Monthly | Yearly · Save up to 20%") sat
-/// 1-6 pt shorter at XXL/XXXL, its selected fill visibly short. Stacked (the
-/// accessibility sizes, where a third or half of the row is too narrow for a
-/// word such as "Anonymous") each segment keeps its own height.
+/// `SegmentLabel` takes any height it is offered (`fillsRowHeight`), and the
+/// row is fixed at its ideal height, which is the tallest label's. Before, a
+/// one-line segment beside one whose label wraps ("Monthly | Yearly · Save up
+/// to 20%") sat 1-6 pt shorter at XXL/XXXL, its selected fill visibly short.
+/// Stacked (the accessibility sizes, where a third or half of the row is too
+/// narrow for a word such as "Anonymous") neither applies: each segment keeps
+/// its own height, exactly as before (review of #636).
 struct SegmentRow<Segment: View>: View {
     let count: Int
     let stacked: Bool
@@ -24,7 +25,7 @@ struct SegmentRow<Segment: View>: View {
                 segment(index)
             }
         }
-        .fixedSize(horizontal: false, vertical: true)
+        .fixedSize(horizontal: false, vertical: !stacked)
     }
 }
 
@@ -39,6 +40,10 @@ struct SegmentLabel: View {
     let fill: Color
     /// The selected segment's border, nil for none.
     let border: Color?
+    /// Side by side (`SegmentRow` not stacked): take the row's height, so the
+    /// fill matches the neighbours'. Never when stacked, where a flexible
+    /// height has nothing to match and could only squeeze or stretch.
+    let fillsRowHeight: Bool
 
     var body: some View {
         Text(text)
@@ -47,8 +52,9 @@ struct SegmentLabel: View {
             .lineLimit(2)
             .minimumScaleFactor(0.8)
             .multilineTextAlignment(.center)
-            // maxHeight: the row's height, so the fill matches its neighbours'.
-            .frame(maxWidth: .infinity, minHeight: 40, maxHeight: .infinity)
+            // Side by side, maxHeight is the row's height, so the fill matches
+            // its neighbours'; stacked, the label's own (review of #636).
+            .frame(maxWidth: .infinity, minHeight: 40, maxHeight: fillsRowHeight ? CGFloat.infinity : nil)
             .background(
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(fill)

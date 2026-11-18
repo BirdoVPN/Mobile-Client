@@ -55,7 +55,8 @@ struct SegmentedTabs: View {
                          weight: selected && style == .accent ? .semibold : .medium,
                          textColor: segmentText(selected),
                          fill: selected ? selectedFill : Color.clear,
-                         border: selected && style == .accent ? BirdoTheme.accentA(0.55) : nil)
+                         border: selected && style == .accent ? BirdoTheme.accentA(0.55) : nil,
+                         fillsRowHeight: !dynamicTypeSize.isAccessibilitySize)
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
