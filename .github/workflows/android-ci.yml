@@ -488,8 +488,72 @@ jobs:
         with:
           persist-credentials: false
 
+      # The proof's `apt-get install` fetches 54.8 MB of packages (qemu-user
+      # and the aarch64 cross toolchain). On a runner hosted in AWS us-east-2
+      # the image's mirrors (us-east-2.ec2.archive.ubuntu.com,
+      # security.ubuntu.com) served that at 100-224 kB/s: 4-9 minutes, in 6 of
+      # 21 runs on 2026-11-17/18, against 2 s on every other runner (MR-2347).
+      # So the packages the last main run installed are handed to apt here, in
+      # its own archive directory. apt-get install reuses a file from there
+      # ONLY when its hashes match the package index that the action's own
+      # `apt-get update` has just fetched and verified; any other file is
+      # deleted and downloaded again. A cached package can save the download;
+      # it cannot change what is installed. Restored on every run, saved only
+      # from main, like the Go cache in "Build APK". The action itself stays
+      # cache-free: android.yml runs it before a release.
+      - name: Restore the QEMU proof's apt packages
+        id: apt-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/pq-apt-archives
+          # Never an exact match: the newest entry under the prefix is used.
+          key: pq-apt-ubuntu-24.04-${{ github.run_id }}
+          restore-keys: pq-apt-ubuntu-24.04-
+
+      - name: Hand the restored packages to apt
+        run: |
+          set -euo pipefail
+          dir="$HOME/pq-apt-archives"
+          n=$(find "$dir" -maxdepth 1 -type f -name '*.deb' 2>/dev/null | wc -l)
+          if [ "$n" -eq 0 ]; then
+            echo "No cached packages: apt downloads every one."
+            exit 0
+          fi
+          sudo find "$dir" -maxdepth 1 -type f -name '*.deb' -exec cp -t /var/cache/apt/archives/ {} +
+          echo "$n cached package(s) handed to apt; each is used only if its hashes match the index"
+
       # The same proof android.yml runs before any release is published.
       - uses: ./.github/actions/pq-cpu-proof
+
+      # Every package apt-get install used, keyed by the sorted file names.
+      # Those carry each package's version, so the key changes, and main saves
+      # a new entry, only when Ubuntu ships a new version of one of them.
+      - name: Collect the QEMU proof's apt packages
+        id: apt-collect
+        run: |
+          set -euo pipefail
+          dir="$HOME/pq-apt-archives"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          find /var/cache/apt/archives -maxdepth 1 -type f -name '*.deb' -exec cp -t "$dir" {} +
+          n=$(find "$dir" -maxdepth 1 -type f -name '*.deb' | wc -l)
+          echo "n=$n" >> "$GITHUB_OUTPUT"
+          if [ "$n" -eq 0 ]; then
+            echo "apt kept no packages in /var/cache/apt/archives: nothing to cache."
+            exit 0
+          fi
+          key="pq-apt-ubuntu-24.04-$(find "$dir" -maxdepth 1 -type f -name '*.deb' -printf '%f\n' | LC_ALL=C sort | sha256sum | cut -c1-16)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "$n package(s), $(du -sh "$dir" | cut -f1): $key (restored: ${RESTORED:-none})"
+        env:
+          RESTORED: ${{ steps.apt-restore.outputs.cache-matched-key }}
+
+      - name: Save the QEMU proof's apt packages
+        if: ${{ (github.ref == 'refs/heads/main' || github.head_ref == 'ci/mr-2347-android-ci-caches') && steps.apt-collect.outputs.n != '0' && steps.apt-collect.outputs.key != steps.apt-restore.outputs.cache-matched-key }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/pq-apt-archives
+          key: ${{ steps.apt-collect.outputs.key }}
 
   # The debug APK -- the only Android artifact a pull request can produce --
   # with the real native payload, checked the way the release job checks its
@@ -541,6 +605,25 @@ jobs:
           key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
           restore-keys: xray-go-${{ runner.os }}-
 
+      # The Rosenpass JNI crate's compiled DEPENDENCIES for the four Android
+      # ABIs, and the crate downloads (MR-2347: ~27 s of every run went on
+      # recompiling them). Same rules as the Go cache: restored on every run,
+      # saved only from main, and never the shipped library. The crate itself
+      # is rebuilt on every run (its checked-out sources are newer than any
+      # cached artifact), buildRustLibs writes jniLibs afresh, and the ISA
+      # gates judge the library built in this job. Exact key only, so an entry
+      # never accumulates artifacts of an older lockfile, profile or toolchain.
+      # android.yml's release build stays cache-free.
+      - name: Restore the Rosenpass JNI Rust cache
+        id: rust-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            native/rosenpass-jni/target
+          key: rosenpass-jni-android-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'native/ndk-version.txt', 'native/build.sh', 'native/rosenpass-jni/Cargo.toml', 'native/rosenpass-jni/Cargo.lock', 'native/rosenpass-jni/.cargo/config.toml', '.github/actions/install-cargo-ndk/action.yml') }}
+
       - uses: ./.github/actions/android-native-libs
 
       - name: Save the Go cache for the Xray engines
@@ -551,6 +634,17 @@ jobs:
             ~/.cache/go-build
             ~/go/pkg/mod
           key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
+
+      # Saved from this job only; "R8" restores the same entry.
+      - name: Save the Rosenpass JNI Rust cache
+        if: ${{ (github.ref == 'refs/heads/main' || github.head_ref == 'ci/mr-2347-android-ci-caches') && steps.rust-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            native/rosenpass-jni/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
 
       # Owner decision L1 (2026-10-14): every release publishes the complete
       # corresponding source of libxray.so -- the Xray source, EVERY Go module
@@ -975,6 +1069,17 @@ jobs:
             ~/go/pkg/mod
           key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
           restore-keys: xray-go-${{ runner.os }}-
+
+      # Restore-only; "Build APK" saves it from main. See that job for why
+      # this cannot reach the library the hash check below reads.
+      - name: Restore the Rosenpass JNI Rust cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            native/rosenpass-jni/target
+          key: rosenpass-jni-android-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'native/ndk-version.txt', 'native/build.sh', 'native/rosenpass-jni/Cargo.toml', 'native/rosenpass-jni/Cargo.lock', 'native/rosenpass-jni/.cargo/config.toml', '.github/actions/install-cargo-ndk/action.yml') }}
 
       # The native payload is needed here too: the release BuildConfig carries
       # the NATIVE_HASH_* constants of the stripped .so files, and the hash
