@@ -537,7 +537,7 @@ jobs:
       # version of one of them.
       - name: Collect the installed .debs for the cache (main)
         id: apt-collect
-        if: ${{ (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') && steps.apt-plan.outputs.key != '' && steps.apt-restore.outputs.cache-hit != 'true' }}
+        if: ${{ github.ref == 'refs/heads/main' && steps.apt-plan.outputs.key != '' && steps.apt-restore.outputs.cache-hit != 'true' }}
         run: bash .github/scripts/pq-apt-cache.sh collect ~/.cache/birdo-pq-apt-archives
 
       - name: Save the .deb cache (main)
