@@ -876,21 +876,32 @@ struct HomeView: View {
 
     // MARK: - Connect CTA (Android §3.4 CompactConnectButton)
 
-    private enum ConnectCTA: Equatable { case idle, busy, connected }
+    /// `reconnecting`: the session is being brought back (MR-2371). The
+    /// button offers Disconnect, enabled, in the busy colours: the pill says
+    /// "Reconnecting…", and this is the way out of a recovery that is not
+    /// coming back (Android `HomeConnectionModel.ctaModel`).
+    private enum ConnectCTA: Equatable { case idle, busy, connected, reconnecting }
+
+    /// What a tap does, from the pure `ConnectAction` (ConnectionPhaseTests).
+    private var ctaAction: ConnectAction {
+        ConnectAction.resolve(phase: vpnVM.connectionPhase,
+                              isSwitching: vpnVM.isSwitching,
+                              isConnected: vpnVM.isConnected,
+                              isConnecting: vpnVM.isConnecting)
+    }
 
     private var cta: ConnectCTA {
         // A live switch is a busy state — the button must not offer
         // "Disconnect" over a half-torn-down tunnel mid-switch.
-        if vpnVM.isSwitching { return .busy }
-        if vpnVM.connectionPhase == .reconnecting { return .busy }
-        if vpnVM.isConnected { return .connected }
-        if vpnVM.isConnecting { return .busy }
-        return .idle
+        switch ctaAction {
+        case .busy: return .busy
+        case .connect: return .idle
+        case .disconnect: return vpnVM.connectionPhase == .reconnecting ? .reconnecting : .connected
+        }
     }
 
     private var ctaLabel: String {
         if vpnVM.isSwitching { return "Switching…" }
-        if vpnVM.connectionPhase == .reconnecting { return ConnectionPhase.reconnectingLabel }
         // Say what the tap will actually do. A guest tapping "Connect" gets a
         // sign-in sheet, and a button that hides that is the kind of thing App
         // Review calls misleading.
@@ -899,10 +910,15 @@ struct HomeView: View {
         // barrier that was removed.
         if isGuest && cta == .idle { return "Connect" }
         switch cta {
-        case .connected: return "Disconnect"
+        case .connected, .reconnecting: return "Disconnect"
         case .busy:      return "Connecting…"
         case .idle:      return "Connect"
         }
+    }
+
+    /// MR-2371: what Disconnect does while reconnecting, for VoiceOver.
+    private var ctaHint: String {
+        cta == .reconnecting ? "Stops reconnecting" : ""
     }
 
     private var connectButton: some View {
@@ -933,7 +949,7 @@ struct HomeView: View {
                     RoundedRectangle(cornerRadius: BirdoTheme.Radius.card,
                                      style: .continuous)
                         .fill(BirdoTheme.Gradients.connectBusy)
-                        .opacity(cta == .busy ? 1 : 0)
+                        .opacity(cta == .busy || cta == .reconnecting ? 1 : 0)
                     RoundedRectangle(cornerRadius: BirdoTheme.Radius.card,
                                      style: .continuous)
                         .fill(BirdoTheme.Gradients.connectConnected)
@@ -954,6 +970,7 @@ struct HomeView: View {
                 radius: 16, x: 0, y: 14)
         .animation(anim(BirdoTheme.Motion.decel(BirdoTheme.Motion.emphasis)), value: cta)
         .accessibilityLabel(ctaLabel)
+        .accessibilityHint(ctaHint)
     }
 
     private func handleConnectTap() {
@@ -965,14 +982,21 @@ struct HomeView: View {
             // guideline 5.1.1(v) requires: the user enters no personal
             // information to reach a non-account-based feature.
             authVM.provisionAnonymously(reason: .connect)
-        } else if vpnVM.isConnected {
-            disconnectHapticTick += 1
-            vpnVM.disconnect()
-        } else if !vpnVM.isConnecting {
-            connectHapticTick += 1
-            // Refusals ("Select a server first", device caps, plan gates,
-            // offline nodes, 426) land in vpnVM.error → banner above.
-            vpnVM.connect()
+        } else {
+            switch ctaAction {
+            case .disconnect:
+                // Also while reconnecting (MR-2371): it stops the system's
+                // re-dial too (VPNManager.disconnect disarms on-demand first).
+                disconnectHapticTick += 1
+                vpnVM.disconnect()
+            case .connect:
+                connectHapticTick += 1
+                // Refusals ("Select a server first", device caps, plan gates,
+                // offline nodes, 426) land in vpnVM.error → banner above.
+                vpnVM.connect()
+            case .busy:
+                break
+            }
         }
     }
 }

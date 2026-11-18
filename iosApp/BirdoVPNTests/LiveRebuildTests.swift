@@ -316,20 +316,20 @@ final class LiveRebuildTests: XCTestCase {
         // for: the rule has been armed the whole time and the key is the one the
         // user is still riding.
         let window = Duration.milliseconds(HandshakeArm.windowMs)
-        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: true,
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(ruleAlreadyArmed: true,
                                                        elapsed: window, window: window),
                        .keepSessionFailClosed)
-        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: true,
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(ruleAlreadyArmed: true,
                                                        elapsed: .seconds(600), window: window),
                        .keepSessionFailClosed,
                        "however long it waited, a restored peer is still not a fresh dial")
         // ...and the deliberate fail-open is untouched for the input it exists
         // for: a FRESH dial that spent its whole window in silence. Removing
         // that would trade this bug for the re-dial blackhole loop.
-        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: false,
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(ruleAlreadyArmed: false,
                                                        elapsed: window, window: window),
                        .tearDownFailOpen)
-        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: false,
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(ruleAlreadyArmed: false,
                                                        elapsed: .seconds(600), window: window),
                        .tearDownFailOpen)
     }
@@ -342,14 +342,14 @@ final class LiveRebuildTests: XCTestCase {
         // exit STOPS THE TUNNEL. Elapsed time is the only evidence that the peer
         // was actually given its window.
         let window = Duration.milliseconds(HandshakeArm.windowMs)
-        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: false,
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(ruleAlreadyArmed: false,
                                                        elapsed: .zero, window: window),
                        .inconclusive)
-        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: false,
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(ruleAlreadyArmed: false,
                                                        elapsed: .milliseconds(14_999), window: window),
                        .inconclusive,
                        "one millisecond short is still short — this exit disarms a live kill switch")
-        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: true,
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(ruleAlreadyArmed: true,
                                                        elapsed: .zero, window: window),
                        .inconclusive,
                        "no verdict beats a fail-closed message the probe did not earn")
@@ -373,7 +373,8 @@ final class LiveRebuildTests: XCTestCase {
         ])
         for event in restoring {
             XCTAssertEqual(HandshakeArm.noHandshakeOutcome(
-                peerWasRestoredInPlace: true,
+                ruleAlreadyArmed: HandshakeArm.ruleAlreadyArmed(peerWasRestoredInPlace: true,
+                                                                onDemandRuleArmed: false),
                 elapsed: .milliseconds(HandshakeArm.windowMs),
                 window: .milliseconds(HandshakeArm.windowMs)), .keepSessionFailClosed,
                 "\(event) leaves the OLD peer on a live, armed session")
@@ -391,6 +392,83 @@ final class LiveRebuildTests: XCTestCase {
         XCTAssertTrue(HandshakeArm.restoresPeerInPlace(.revertToOld))
         XCTAssertTrue(HandshakeArm.restoresPeerInPlace(.stayFailedClosed(persistedProfileIsOld: true)))
         XCTAssertTrue(HandshakeArm.restoresPeerInPlace(.stayFailedClosed(persistedProfileIsOld: false)))
+    }
+
+    /// Review of #634 (MR-2371): a settings change is never dropped because
+    /// the tunnel is busy or being brought back; it waits, and is applied
+    /// once the session is up, proven and idle.
+    func testASettingsChangeWaitsForABusyTunnelInsteadOfBeingDropped() {
+        typealias G = SettingsReapplyGate
+        XCTAssertEqual(G.decide(isConnected: true, isReconnecting: false, dialGateOpen: true, isReapplying: false), .apply)
+        XCTAssertEqual(G.decide(isConnected: true, isReconnecting: true, dialGateOpen: false, isReapplying: false), .queue,
+                       "a reassert")
+        XCTAssertEqual(G.decide(isConnected: false, isReconnecting: true, dialGateOpen: true, isReapplying: false), .queue,
+                       "the system re-dialling a drop")
+        XCTAssertEqual(G.decide(isConnected: true, isReconnecting: false, dialGateOpen: false, isReapplying: false), .queue,
+                       "a dial, a rebuild or a teardown in flight")
+        XCTAssertEqual(G.decide(isConnected: true, isReconnecting: false, dialGateOpen: true, isReapplying: true), .queue,
+                       "a blip already running may have read the settings before this change")
+        XCTAssertEqual(G.decide(isConnected: false, isReconnecting: false, dialGateOpen: true, isReapplying: false), .ignore,
+                       "no session: the next dial reads the settings")
+
+        XCTAssertTrue(G.mayApplyQueued(queued: true, isProtected: true, isReconnecting: false,
+                                       dialGateOpen: true, isReapplying: false))
+        XCTAssertFalse(G.mayApplyQueued(queued: false, isProtected: true, isReconnecting: false,
+                                        dialGateOpen: true, isReapplying: false))
+        XCTAssertFalse(G.mayApplyQueued(queued: true, isProtected: false, isReconnecting: false,
+                                        dialGateOpen: true, isReapplying: false), "not yet proven")
+        XCTAssertFalse(G.mayApplyQueued(queued: true, isProtected: true, isReconnecting: true,
+                                        dialGateOpen: true, isReapplying: false))
+        XCTAssertFalse(G.mayApplyQueued(queued: true, isProtected: true, isReconnecting: false,
+                                        dialGateOpen: false, isReapplying: false))
+        XCTAssertFalse(G.mayApplyQueued(queued: true, isProtected: true, isReconnecting: false,
+                                        dialGateOpen: true, isReapplying: true))
+    }
+
+    /// Review of #634 (MR-2371): a session whose on-demand rule is ALREADY
+    /// armed at its `.connected` -- the end of any `.reasserting` of a session
+    /// that was up, the system's re-dial of a drop, a peer restored in place
+    /// -- never reaches the fresh-dial fail-open, however long it waited
+    /// without inbound bytes (a resumed backend's rx starts at 0). That
+    /// teardown persists on-demand OFF and deletes the key: traffic would
+    /// leave unprotected once a network is back. Only a FRESH dial, whose
+    /// profile `VPNManager.connect` saved with on-demand OFF, may fail open.
+    func testASessionWhoseRuleIsAlreadyArmedNeverFailsOpen() {
+        XCTAssertTrue(HandshakeArm.ruleAlreadyArmed(peerWasRestoredInPlace: false, onDemandRuleArmed: true),
+                      "a reassert's end or the system's re-dial: the rule is armed")
+        XCTAssertTrue(HandshakeArm.ruleAlreadyArmed(peerWasRestoredInPlace: true, onDemandRuleArmed: false))
+        XCTAssertTrue(HandshakeArm.ruleAlreadyArmed(peerWasRestoredInPlace: true, onDemandRuleArmed: true))
+        XCTAssertFalse(HandshakeArm.ruleAlreadyArmed(peerWasRestoredInPlace: false, onDemandRuleArmed: false),
+                       "a fresh dial")
+
+        let window = Duration.milliseconds(HandshakeArm.windowMs)
+        let armed = HandshakeArm.ruleAlreadyArmed(peerWasRestoredInPlace: false, onDemandRuleArmed: true)
+        for elapsed: Duration in [.zero, .milliseconds(14_999), window, .seconds(60), .seconds(3_600)] {
+            let outcome = HandshakeArm.noHandshakeOutcome(ruleAlreadyArmed: armed, elapsed: elapsed, window: window)
+            XCTAssertNotEqual(outcome, .tearDownFailOpen, "an armed session failed open after \(elapsed)")
+        }
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(ruleAlreadyArmed: armed, elapsed: window, window: window),
+                       .keepSessionFailClosed)
+        // The fresh dial keeps its deliberate fail-open.
+        let fresh = HandshakeArm.ruleAlreadyArmed(peerWasRestoredInPlace: false, onDemandRuleArmed: false)
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(ruleAlreadyArmed: fresh, elapsed: window, window: window),
+                       .tearDownFailOpen)
+    }
+
+    /// Review of #634: the arm's stats sample is an `await`, and the app can
+    /// start stopping the session inside it. `VPNManager.disconnect()` deletes
+    /// the keys and saves on-demand OFF, and the tunnel reads `.connected`
+    /// until that save lands, so an arm that went ahead saved on-demand ON
+    /// over a keyless profile. A live rebuild is NOT such a stop: it keeps the
+    /// session and never arms the rule itself, so the arm must still arm then.
+    func testTheArmNeverArmsTheRuleOverAStopTheAppHasStarted() {
+        XCTAssertTrue(HandshakeArm.mayArmRule(sessionUp: true, tearingDownForRedial: false),
+                      "a live session, a live rebuild included")
+        XCTAssertFalse(HandshakeArm.mayArmRule(sessionUp: true, tearingDownForRedial: true),
+                       "a disconnect-first rebuild, a Multi-Hop dial over the session, a sibling-relay retry")
+        XCTAssertFalse(HandshakeArm.mayArmRule(sessionUp: false, tearingDownForRedial: false),
+                       "a disconnect, sign-out or the breaker's fail-open (resetSessionState)")
+        XCTAssertFalse(HandshakeArm.mayArmRule(sessionUp: false, tearingDownForRedial: true))
     }
 
     func testNoEventBothStopsTheTunnelAndRestoresAPeerInPlace() {
