@@ -1794,6 +1794,36 @@ class VpnManagerTest {
         assertNull(vpnManager.accountRestriction.value)
     }
 
+    /**
+     * MR-2380 (review, L1): the account ends while its restricted /connect is
+     * still in flight. The refusal then belongs to a superseded dial, and must
+     * not put the old account's restriction (and review link) back.
+     */
+    private suspend fun TestScope.restrictedRefusalLandsAfter(accountEnds: suspend () -> Unit) {
+        every { context.getString(R.string.error_account_restricted_until, *anyVararg()) } returns "x"
+        val gate = CompletableDeferred<ApiResult<ConnectResponse>>()
+        coEvery { repository.connectVpn(any(), any()) } coAnswers { gate.await() }
+        launch { vpnManager.connect("srv-1") }
+        runCurrent()
+
+        accountEnds()
+        gate.complete(restrictedRefusal(java.time.Instant.now().plusSeconds(3_600).toString()))
+        runCurrent()
+
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        assertNull(vpnManager.accountRestriction.value)
+    }
+
+    @Test
+    fun `a restricted refusal that lands after sign-out leaves no restriction notice`() = runTest {
+        restrictedRefusalLandsAfter { vpnManager.disconnectForSignOut() }
+    }
+
+    @Test
+    fun `a restricted refusal that lands after an account deletion leaves no restriction notice`() = runTest {
+        restrictedRefusalLandsAfter { vpnManager.onAccountDeleted() }
+    }
+
     @Test
     fun `a device notice on a successful connect is kept for Home and cleared by Disconnect`() = runTest {
         coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(
