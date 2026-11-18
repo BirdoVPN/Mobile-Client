@@ -44,6 +44,35 @@ enum StoreBillingPeriod: String, Equatable, Sendable, CaseIterable {
     }
 }
 
+/// MR-2383 review (L2): a plan's price as its amount and its period, so the
+/// paywall can let the period ("/yr") move to its own line under the amount
+/// instead of cutting the label or breaking it mid-word at the accessibility
+/// sizes. A truncated period reads as unclear pricing (App Review 3.1.2). A
+/// StoreKit price arrives as the two parts; a catalogue fallback ("£38/yr",
+/// "Free") is split at its first "/".
+struct StorePriceParts: Equatable, Sendable {
+    let amount: String
+    let period: String
+
+    init(amount: String, period: String) {
+        self.amount = amount
+        self.period = period
+    }
+
+    init(label: String) {
+        if let slash = label.firstIndex(of: "/") {
+            amount = String(label[..<slash])
+            period = String(label[slash...])
+        } else {
+            amount = label
+            period = ""
+        }
+    }
+
+    /// The price on one line, as it was shown before.
+    var whole: String { amount + period }
+}
+
 /// Whether the App Store may offer to SELL a plan (or change one) to the
 /// signed-in account.
 ///

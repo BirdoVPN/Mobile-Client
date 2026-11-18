@@ -113,18 +113,68 @@ final class SegmentRowTests: XCTestCase {
         XCTAssertTrue(tabs.contains("SegmentLabel(text: items[index],"))
     }
 
-    /// MR-2383 AX5 cosmetics: the Limit pill stays "100 GB / month" on one
-    /// line, and a plan's price never breaks mid-word: one line, shrinking
-    /// to 70% first.
-    func testThePillAndThePriceStayOnOneLine() throws {
+    /// MR-2383 AX5 cosmetics, as revised by the review of #636 (L2): the
+    /// Limit pill stays "100 GB / month" on one line at the accessibility
+    /// sizes only (elsewhere it wraps as before, never cut beside a long plan
+    /// name); a plan's price is never cut: one line when it fits, otherwise
+    /// its period under its amount, with no lineLimit at all.
+    func testThePillStaysOnOneLineAtAXAndThePriceIsNeverCut() throws {
         let limit = try source("iosApp/Views/LimitView.swift")
         let pill = chain(after: "GB / month\" : \"Unlimited\")", in: limit)
-        XCTAssertTrue(pill.contains(".lineLimit(1)"), pill)
-        XCTAssertTrue(pill.contains(".minimumScaleFactor(0.7)"), pill)
+        XCTAssertTrue(pill.contains(".lineLimit(dynamicTypeSize.isAccessibilitySize ? 1 : nil)"), pill)
+        XCTAssertTrue(pill.contains(".minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 0.7 : 1)"), pill)
 
         let plans = try source("iosApp/Views/SubscriptionView.swift")
-        let price = chain(after: "let price = Text(priceLabel(for: plan, product: product))", in: plans)
-        XCTAssertTrue(price.contains(".lineLimit(1)"), price)
-        XCTAssertTrue(price.contains(".minimumScaleFactor(0.7)"), price)
+        let price = chain(after: "let price = ViewThatFits(in: .horizontal) {", in: plans)
+        XCTAssertTrue(price.contains("Text(parts.whole)"), price)
+        XCTAssertTrue(price.contains("Text(parts.amount)") && price.contains("Text(parts.period)"), price)
+        XCTAssertFalse(price.contains(".lineLimit("), "a price must never be cut (App Review 3.1.2)")
+        XCTAssertFalse(price.contains(".minimumScaleFactor("), price)
+        XCTAssertTrue(plans.contains("let parts = priceParts(for: plan, product: product)"))
+    }
+
+    /// The split behind it (StoreCatalog.swift).
+    func testAPriceSplitsIntoItsAmountAndItsPeriod() {
+        XCTAssertEqual(StorePriceParts(label: "£38/yr"), StorePriceParts(amount: "£38", period: "/yr"))
+        XCTAssertEqual(StorePriceParts(label: "£3.99/mo"), StorePriceParts(amount: "£3.99", period: "/mo"))
+        XCTAssertEqual(StorePriceParts(label: "Free"), StorePriceParts(amount: "Free", period: ""))
+        XCTAssertEqual(StorePriceParts(label: "£38/yr").whole, "£38/yr")
+        let store = StorePriceParts(amount: "CHF 109.00", period: StoreBillingPeriod.yearly.priceSuffix)
+        XCTAssertEqual(store.whole, "CHF 109.00/yr")
+        XCTAssertEqual(store.period, "/yr")
+    }
+
+    /// Laid out at AX5 in a phone's width, the split price keeps every
+    /// character: the period goes under the amount rather than being cut.
+    func testASplitPriceKeepsItsPeriodAtAX5() {
+        let parts = StorePriceParts(amount: "CHF 1,099.00", period: "/yr")
+        let view = ViewThatFits(in: .horizontal) {
+            Text(parts.whole)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(parts.amount)
+                Text(parts.period)
+            }
+        }
+        .birdoFont(18, weight: .bold)
+        .frame(width: 260)
+        .environment(\.dynamicTypeSize, .accessibility5)
+        let measured = Heights()
+        let probe = view.background(GeometryReader { proxy -> Color in
+            measured.byIndex[0] = proxy.size.height
+            return Color.clear
+        })
+        _ = ImageRenderer(content: probe).cgImage
+        let oneLine = Heights()
+        let line = Text("Hg").birdoFont(18, weight: .bold)
+            .environment(\.dynamicTypeSize, .accessibility5)
+            .background(GeometryReader { proxy -> Color in
+                oneLine.byIndex[0] = proxy.size.height
+                return Color.clear
+            })
+        _ = ImageRenderer(content: line).cgImage
+        guard let height = measured.byIndex[0], let lineHeight = oneLine.byIndex[0] else {
+            return XCTFail("not laid out")
+        }
+        XCTAssertGreaterThan(height, lineHeight * 1.5, "at AX5 the period moved under the amount")
     }
 }
