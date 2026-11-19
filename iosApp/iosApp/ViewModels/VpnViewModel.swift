@@ -2386,12 +2386,14 @@ final class VpnViewModel: ObservableObject {
     }
 
     /// MR-2343: the key went with its drained or deleted server. Connect to
-    /// a different one, chosen by MR-2212's rule (`HeartbeatPolicy.moveTarget`):
-    /// a server the client chose may move to any country, and a location the
-    /// user picked stays in its country. Android's SERVER_GONE re-dials the
-    /// best other server. When no relay qualifies, the session ends and the
-    /// banner says so. Multi-Hop never comes here: HeartbeatPolicy ends a
-    /// pair's session, because the pair is the user's to choose.
+    /// a different one, chosen by the owner's rule (2026-11-19,
+    /// `HeartbeatPolicy.moveTarget`). A server the client chose moves to the
+    /// best server anywhere. A location the user picked stays in its country,
+    /// read from the cached list when the server was deleted, and the session
+    /// stops when nothing qualifies there. When no relay qualifies, the
+    /// session ends and the banner says so. Multi-Hop never comes here:
+    /// HeartbeatPolicy ends a pair's session, because the pair is the user's
+    /// to choose.
     ///
     /// Disconnect-first, like `retryOnAnotherRelay`, from a fresh
     /// `/vpn/servers` (capped; else the cached list), so the drained node is

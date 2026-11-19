@@ -250,19 +250,45 @@ enum HeartbeatPolicy {
         sinceLastOk >= reapWindow ? .rebuild : .end(.revoked)
     }
 
-    /// Where `.moveServer` goes: MR-2212's owner rule (`RelayRetry.next`).
-    /// A server the client chose may move to any country; a location the user
-    /// picked stays in its country. Only relays listed online and open to this
-    /// plan qualify, and nil means nothing qualifies. The drained node may be
-    /// listed offline in `list` or missing from it. When it is missing, its
-    /// location is read from `cached`, the list it was dialled from.
+    /// Where `.moveServer` goes: the owner's rule for a server that has gone
+    /// (2026-11-19, MR-2343 round 2). It applies alike to a drained server
+    /// (listed offline in `list`) and a deleted one (missing from `list`).
+    ///
+    /// - AUTOMATIC pick (`SelectionOrigin.automatic`): the best server
+    ///   anywhere, i.e. QuickSelect's best of all the others. Nobody chose a
+    ///   location, so there is no same-city preference and no need to know
+    ///   where the gone server was.
+    /// - USER pick: stay within its own country (MR-2212), the same city
+    ///   first (`RelayRetry.next`). A deleted server's location is read from
+    ///   `cached`, the list it was dialled from. When it is in neither list,
+    ///   or nothing in its country qualifies, the result is nil.
+    ///
+    /// Only servers listed online and open to this plan qualify. nil means no
+    /// move, and the session ends (`HeartbeatEnding.serverOffline`).
     static func moveTarget<S: RelayRetryCandidate>(from goneId: String, in list: [S], cached: [S],
                                                    origin: SelectionOrigin) -> RelayRetry.Choice<S>? {
-        var known = list
-        if !known.contains(where: { $0.id == goneId }), let gone = cached.first(where: { $0.id == goneId }) {
-            known.append(gone)
+        let gone = list.first(where: { $0.id == goneId }) ?? cached.first(where: { $0.id == goneId })
+        switch origin {
+        case .automatic:
+            guard let best = QuickSelect.bestServer(in: list.filter { $0.id != goneId }) else { return nil }
+            return RelayRetry.Choice(server: best, reach: reach(from: gone, to: best))
+        case .user:
+            guard let gone else { return nil }
+            var known = list
+            if !known.contains(where: { $0.id == goneId }) { known.append(gone) }
+            return RelayRetry.next(after: goneId, in: known, origin: .user)
         }
-        return RelayRetry.next(after: goneId, in: known, origin: origin)
+    }
+
+    /// How far an automatic move reaches, for the log line (counts only). A
+    /// gone server neither list knows logs as other-country.
+    private static func reach<S: RelayRetryCandidate>(from gone: S?, to target: S) -> RelayRetry.Reach {
+        func normalized(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        guard let gone else { return .otherCountry }
+        let country = normalized(gone.countryCode)
+        guard !country.isEmpty, country == normalized(target.countryCode) else { return .otherCountry }
+        let city = normalized(gone.city)
+        return !city.isEmpty && city == normalized(target.city) ? .sameCity : .sameCountry
     }
 }
 
