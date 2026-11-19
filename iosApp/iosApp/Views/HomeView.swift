@@ -586,6 +586,28 @@ struct HomeView: View {
                 .accessibilityIdentifier("home_device_notice")
             }
 
+            // MR-2343 (birdo-web #590): the Free allowance is used and the
+            // server ends the session when its grace window does. Not an error:
+            // nothing has failed yet. A notice with the way out, as on Android.
+            if vpnVM.isConnected, let grace = vpnVM.quotaGrace {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(grace.message)
+                        .birdoFont(13)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("View plans") { showPlans = true }
+                        .birdoFont(13, weight: .semibold)
+                }
+                .foregroundStyle(BirdoTheme.accentSoft)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
+                        .fill(BirdoTheme.accentBg)
+                )
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("home_quota_grace")
+            }
+
             if let advisory = vpnVM.updateAdvisory {
                 updateAdvisoryBanner(advisory)
                     .transition(.opacity.combined(with: .move(edge: .top)))

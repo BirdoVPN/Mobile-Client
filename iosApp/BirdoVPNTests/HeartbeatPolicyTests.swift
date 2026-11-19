@@ -289,6 +289,40 @@ final class HeartbeatPolicyTests: XCTestCase {
         }
     }
 
+    /// The quiet rebuild and the move: disconnect-first behind the teardown
+    /// gate, never the user's own connect (so neither refills the MR-2212
+    /// retry nor clears the breaker on a single-hop session), and Home says
+    /// what is under way. Neither is between `retryOnAnotherRelay` and
+    /// `legacyRebuild`, whose log lines RelayRetryTests counts.
+    func testTheRebuildAndTheMoveAreDisconnectFirstAndSayWhatTheyDo() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        let rebuild = slice(vm, from: "private func rebuildAfterReap() {", to: "\n    }\n")
+        let move = slice(vm, from: "private func moveOffDrainedServer() {", to: "\n    }\n")
+        for path in [rebuild, move] {
+            XCTAssertTrue(path.contains("isTearingDownForRedial = true"))
+            XCTAssertTrue(path.contains("await self?.awaitTeardown()"))
+            XCTAssertTrue(path.contains("guard generation == self.relayRetryGeneration else { return }"))
+            XCTAssertTrue(path.contains("self.connect(userInitiated: false)"))
+            XCTAssertFalse(path.contains("releaseServerSlot()"), "the key is already gone: nothing to DELETE")
+        }
+        XCTAssertTrue(rebuild.contains("relayRecovery = .reconnecting"))
+        XCTAssertTrue(rebuild.contains("self.connectMultiHop(entry: pair.entry, exit: pair.exit)"))
+        XCTAssertTrue(move.contains("relayRecovery = .tryingAnotherServer"))
+        XCTAssertTrue(move.contains("HeartbeatPolicy.moveTarget(from: goneId, in: self.servers, cached: cached,"))
+        XCTAssertTrue(move.contains("self.error = HeartbeatEnding.serverOffline.message"))
+        let retryWindow = slice(vm, from: "private func retryOnAnotherRelay() -> Bool {", to: "private func legacyRebuild(")
+        XCTAssertFalse(retryWindow.contains("rebuildAfterReap") || retryWindow.contains("moveOffDrainedServer"))
+        // The grace notice and the reap clock belong to one session.
+        let reset = slice(vm, from: "private func resetSessionState() {", to: "\n    }\n")
+        XCTAssertTrue(reset.contains("quotaGrace = nil"))
+        XCTAssertTrue(reset.contains("lastHeartbeatOkAt = nil"))
+    }
+
+    func testTheQuietRebuildSaysReconnecting() {
+        XCTAssertEqual(RelayRecovery.reconnecting.label, "Reconnecting…")
+        XCTAssertEqual(RelayRecovery.reconnecting.label, ConnectionPhase.reconnectingLabel)
+    }
+
     /// The Free grace notice reaches Home, with the way out.
     func testHomeShowsTheGraceNotice() throws {
         let home = try source("iosApp/Views/HomeView.swift")
