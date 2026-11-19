@@ -550,6 +550,31 @@ class VpnViewModelTest {
         io.mockk.verify { prefs.lastKnownPlan = null }
     }
 
+    /**
+     * MR-2492 round 3 (review of #652, L2): the next account starts from the
+     * safe default, the user's: no stored "the client chose it", and no
+     * pre-select of the last account marked as the client's pick.
+     */
+    @Test
+    fun `MR-2492 sign-out forgets who chose the last server`() = runTest {
+        twoServers()
+        val vm = viewModel()
+        vm.loadServers()
+        assertEquals("z", vm.uiState.value.selectedServer?.id)
+
+        vm.resetForSignOut()
+
+        io.mockk.verify { prefs.lastServerAutoPicked = false }
+        // The next account loads a list in which "z" is no longer the best:
+        // its own pre-select is the client's pick, the old one is not.
+        coEvery { repository.getServers(any()) } returns ApiResult.Success(
+            listOf(server("a", "Austria", load = 1), server("z", "Zambia", load = 5)),
+        )
+        vm.loadServers()
+        vm.connect()
+        coVerify(exactly = 1) { vpnManager.connect("a", null, SelectionOrigin.AUTOMATIC) }
+    }
+
     // ── A1-045 / A2-005: sign-out ordering ────────────────────────────────
 
     @Test

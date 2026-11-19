@@ -279,17 +279,57 @@ class RelayRetryTest {
         }
     }
 
-    /**
-     * iOS's rule, kept: without the failed relay's country the user's choice
-     * cannot be kept, so nothing moves. On Android a server deleted from the
-     * fleet (not only drained) is absent from /vpn/servers.
-     */
+    // ── A server deleted from the fleet (owner decision 2026-11-19, round 3) ──
+    //
+    // The backend's server_offline covers a drain AND a delete; a deleted node
+    // is gone from the next /vpn/servers. iOS's `next` moves nothing when the
+    // failed relay is not listed; the owner's rule for that case:
+    //   * a server the client chose moves to the best eligible server anywhere;
+    //   * a location the user picked moves only inside the country it was last
+    //     listed in (the list cached before the refresh), else it stops.
+
     @Test
-    fun `an unknown failed relay moves nothing`() {
-        val list = listOf(node("a"), node("b", countryCode = "NL", city = "Amsterdam"))
-        for (origin in SelectionOrigin.entries) {
-            assertNull("$origin", RelayRetry.next("zzz", list, origin))
-        }
+    fun `an automatic pick whose server was deleted moves to the best server anywhere`() {
+        val list = listOf(
+            node("ams", countryCode = "NL", city = "Amsterdam", load = 30),
+            node("sto", countryCode = "SE", city = "Stockholm", load = 20),
+            node("lon", countryCode = "GB", city = "London", load = 0, isOnline = false),
+        )
+        val choice = RelayRetry.next("fra", list, automatic)
+        assertEquals("the plan filter still applies: never the offline London", "sto", choice?.server?.id)
+        assertEquals(RelayRetry.Reach.OTHER_COUNTRY, choice?.reach)
+        val budget = RelayRetryBudget()
+        assertEquals("sto", RelayRetry.plan("fra", list, automatic, budget)?.server?.id)
+        assertTrue("the same single move", budget.spent)
+        assertNull(RelayRetry.plan("sto", list, automatic, budget))
+    }
+
+    @Test
+    fun `a user pick whose server was deleted moves only inside the country it was last listed in`() {
+        val lastKnown = node("fra", countryCode = "DE", city = "Frankfurt")
+        val list = listOf(
+            node("ber", countryCode = "DE", city = "Berlin", load = 50),
+            node("ams", countryCode = "NL", city = "Amsterdam", load = 0),
+        )
+        val choice = RelayRetry.next("fra", list, user, lastKnown)
+        assertEquals("never Amsterdam, however empty", "ber", choice?.server?.id)
+        assertEquals(RelayRetry.Reach.SAME_COUNTRY, choice?.reach)
+    }
+
+    @Test
+    fun `a user pick whose server was deleted, with nothing left in its country, stays put`() {
+        val lastKnown = node("fra", countryCode = "DE", city = "Frankfurt")
+        val list = listOf(node("ams", countryCode = "NL", city = "Amsterdam", load = 0))
+        assertNull(RelayRetry.next("fra", list, user, lastKnown))
+    }
+
+    @Test
+    fun `a user pick whose deleted server's country is unknown stays put`() {
+        val list = listOf(node("ber", countryCode = "DE", city = "Berlin"), node("ams", countryCode = "NL", city = "Amsterdam"))
+        assertNull("no cached entry", RelayRetry.next("fra", list, user))
+        // A cached entry for ANOTHER server says nothing about this one.
+        assertNull(RelayRetry.next("fra", list, user, node("ber", countryCode = "DE", city = "Berlin")))
+        assertNull("a cached entry with no country", RelayRetry.next("fra", list, user, node("fra", countryCode = " ")))
     }
 
     // ── Exactly one move ───────────────────────────────────────────────────

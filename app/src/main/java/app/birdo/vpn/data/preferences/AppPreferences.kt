@@ -412,6 +412,12 @@ class AppPreferences @Inject constructor(
         get() = prefs.getBoolean(KEY_LAST_SERVER_AUTO_PICKED, false)
         set(value) = prefs.edit { putBoolean(KEY_LAST_SERVER_AUTO_PICKED, value) }
 
+    /** MR-2492: the server a dial landed on, and who chose it. */
+    fun rememberLastServer(id: String, autoPicked: Boolean) {
+        lastServerId = id
+        lastServerAutoPicked = autoPicked
+    }
+
     /**
      * The plan this account last had, as the server reported it (the
      * subscription fetch writes it, sign-out clears it). What a dial with no

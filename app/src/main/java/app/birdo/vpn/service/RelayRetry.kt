@@ -96,7 +96,12 @@ object RelayRetry {
      * [list]: without the failed relay's country the user's choice cannot be
      * kept, so nothing moves (iOS's rule, kept for either origin).
      */
-    fun next(failedId: String, list: List<VpnServer>, origin: SelectionOrigin): Choice? {
+    fun next(
+        failedId: String,
+        list: List<VpnServer>,
+        origin: SelectionOrigin,
+        @Suppress("UNUSED_PARAMETER") lastKnown: VpnServer? = null,
+    ): Choice? {
         val failed = list.firstOrNull { it.id == failedId } ?: return null
         sibling(failedId, list)?.let { return Choice(it, Reach.SAME_CITY) }
         val others = list.filter { it.id != failedId }
@@ -116,9 +121,15 @@ object RelayRetry {
      * [next], behind the budget: the choice with the move taken, or null with
      * the budget untouched (already spent, or no relay qualifies).
      */
-    fun plan(failedId: String, list: List<VpnServer>, origin: SelectionOrigin, budget: RelayRetryBudget): Choice? {
+    fun plan(
+        failedId: String,
+        list: List<VpnServer>,
+        origin: SelectionOrigin,
+        budget: RelayRetryBudget,
+        lastKnown: VpnServer? = null,
+    ): Choice? {
         if (budget.spent) return null
-        val choice = next(failedId, list, origin) ?: return null
+        val choice = next(failedId, list, origin, lastKnown) ?: return null
         budget.take()
         return choice
     }

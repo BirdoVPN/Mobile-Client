@@ -1563,20 +1563,29 @@ class VpnManagerTest {
         every { prefs.lastServerId = any() } answers { lastServer = firstArg() }
         every { prefs.lastServerAutoPicked } answers { lastAutoPicked }
         every { prefs.lastServerAutoPicked = any() } answers { lastAutoPicked = firstArg() }
+        // Round 3 (review L1): both in one write.
+        every { prefs.rememberLastServer(any(), any()) } answers {
+            lastServer = firstArg()
+            lastAutoPicked = secondArg()
+        }
     }
 
     private fun serversAre(vararg lists: List<VpnServer>) {
         coEvery { repository.getServers(any()) } returnsMany lists.map { ApiResult.Success(it) }
     }
 
-    /** The session is up; then the heartbeat says its server went offline for good, and the supervisor acts. */
-    private fun TestScope.upThenServerGoesOffline() {
+    /**
+     * The session is up; then the heartbeat says its server went offline for
+     * good, and the supervisor acts. With [killSwitch] the teardown puts the
+     * block up first; without it there is no block at all.
+     */
+    private fun TestScope.upThenServerGoesOffline(killSwitch: Boolean = true) {
         serviceEmits(VpnState.Connected)
         runCurrent()
-        every { BirdoVpnService.killSwitchActive } returns true
+        every { BirdoVpnService.killSwitchActive } returns killSwitch
         beatsAnswer(valid = false, reason = "server_offline")
         advanceTimeBy(61_000)
-        assertTrue(BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
+        assertEquals(killSwitch, BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
         advanceTimeBy(30_000)
     }
 
@@ -1871,6 +1880,195 @@ class VpnManagerTest {
 
             assertTrue(published.toString(), published.any { it.endsWith("DIED_AFTER_HANDSHAKE): ${SessionCopy.SERVER_OFFLINE}") })
             coVerify(exactly = 1) { repository.connectVpn("sto", any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    // ── MR-2492 round 3: the kill switch on the stop path (review of #652, M1) ──
+    //
+    // A server that went offline with nothing to replace it ends the session.
+    // Kill switch on: fail-closed, the block the teardown put up stays held.
+    // Kill switch off: the user chose fail-open, and a dead tunnel carries
+    // nothing, so it must come down, as a revoke's does.
+
+    private suspend fun multiHopDialled() {
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Success(makeMultiHopResponse())
+        vpnManager.connectMultiHop("de-1", "nl-1")
+    }
+
+    @Test
+    fun `MR-2492 with the kill switch off, a picked location that stops takes the dead tunnel down`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        every { prefs.killSwitchEnabled } returns false
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("fra", "DE", "Frankfurt", 10), relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline(killSwitch = false)
+            advanceTimeBy(30 * 60_000L)
+
+            assertTrue(dispatchedActions.toString(), BirdoVpnService.ACTION_STOP in dispatchedActions)
+            assertEquals(SessionCopy.SERVER_UNREACHABLE, stringExtras[BirdoVpnService.EXTRA_STOP_REASON])
+            assertEquals(FailureKind.REFUSED.name, stringExtras[BirdoVpnService.EXTRA_STOP_KIND])
+            assertFalse(BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
+            assertNotEquals(VpnState.Connected, vpnManager.state.value)
+            verify { prefs.sessionShouldBeUp = false }
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 with the kill switch on, a picked location that stops keeps the block held`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("fra", "DE", "Frankfurt", 10), relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline(killSwitch = true)
+            advanceTimeBy(30 * 60_000L)
+
+            assertFalse("fail-closed: no STOP", BirdoVpnService.ACTION_STOP in dispatchedActions)
+            assertFalse(BirdoVpnService.ACTION_RELEASE_BLOCK in dispatchedActions)
+            assertEquals(SessionCopy.SERVER_UNREACHABLE, (vpnManager.state.value as? VpnState.Error)?.message)
+            verify { prefs.sessionShouldBeUp = false }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 with the kill switch off, a Multi-Hop route that went offline takes the dead tunnel down`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        every { prefs.killSwitchEnabled } returns false
+        try {
+            multiHopDialled()
+
+            upThenServerGoesOffline(killSwitch = false)
+
+            assertTrue(dispatchedActions.toString(), BirdoVpnService.ACTION_STOP in dispatchedActions)
+            assertEquals(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, stringExtras[BirdoVpnService.EXTRA_STOP_REASON])
+            assertEquals(FailureKind.REFUSED.name, stringExtras[BirdoVpnService.EXTRA_STOP_KIND])
+            assertFalse(BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
+            verify { prefs.sessionShouldBeUp = false }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 with the kill switch on, a Multi-Hop route that went offline keeps the block held`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        try {
+            multiHopDialled()
+
+            upThenServerGoesOffline(killSwitch = true)
+
+            assertFalse("fail-closed: no STOP", BirdoVpnService.ACTION_STOP in dispatchedActions)
+            assertFalse(BirdoVpnService.ACTION_RELEASE_BLOCK in dispatchedActions)
+            assertEquals(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, (vpnManager.state.value as? VpnState.Error)?.message)
+        } finally {
+            quiesce()
+        }
+    }
+
+    // ── MR-2492 round 3: a server deleted from the fleet (owner decision) ──
+    //
+    // server_offline also covers a delete, and a deleted node is gone from the
+    // next /vpn/servers. A server the client chose moves to the best eligible
+    // server anywhere; a location the user picked moves only inside the
+    // country the list cached before the refresh had it in, else it stops.
+
+    @Test
+    fun `MR-2492 an automatic pick whose server was deleted moves to the best server anywhere`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(
+            listOf(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20), relay("ams", "NL", "Amsterdam", 30)),
+            // Frankfurt was deleted: not in the fresh list at all.
+            listOf(relay("sto", "SE", "Stockholm", 20), relay("ams", "NL", "Amsterdam", 30)),
+        )
+        try {
+            vpnManager.quickConnect()
+            assertEquals("fra", lastServer)
+
+            upThenServerGoesOffline()
+
+            coVerify(exactly = 1) { repository.connectVpn("sto", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("ams", any()) }
+            assertTrue(lastAutoPicked)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a location the user picked whose server was deleted moves inside the country it was last listed in`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        every { repository.lastKnownServer("fra") } returns relay("fra", "DE", "Frankfurt", 10)
+        serversAre(listOf(relay("ber", "DE", "Berlin", 50), relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline()
+
+            coVerify(exactly = 1) { repository.connectVpn("ber", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("ams", any()) }
+            assertFalse("still the user's location", lastAutoPicked)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a location the user picked whose server was deleted, with nothing left in its country, stops and offers another server`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        every { repository.lastKnownServer("fra") } returns relay("fra", "DE", "Frankfurt", 10)
+        serversAre(listOf(relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline()
+
+            val error = vpnManager.state.value as? VpnState.Error
+            assertEquals(SessionCopy.SERVER_UNREACHABLE, error?.message)
+            assertEquals(
+                app.birdo.vpn.ui.screen.Remedy.CHOOSE_SERVER,
+                app.birdo.vpn.ui.screen.homeRemedy(app.birdo.vpn.ui.viewmodel.VpnUiState(vpnState = error!!)),
+            )
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a location the user picked whose deleted server's country is unknown stops`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        every { repository.lastKnownServer(any()) } returns null
+        serversAre(listOf(relay("ber", "DE", "Berlin", 50), relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline()
+
+            assertEquals(SessionCopy.SERVER_UNREACHABLE, (vpnManager.state.value as? VpnState.Error)?.message)
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
         } finally {
             quiesce()
         }
