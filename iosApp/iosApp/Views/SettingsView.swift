@@ -42,6 +42,10 @@ struct SettingsView: View {
     @State private var showSubscription = false
     /// MR-1094: why App Lock could not be turned on (no device passcode).
     @State private var appLockRefusal: String?
+    /// MR-2287: the opt-in failure counts' switch, as stored.
+    @State private var failureCountsOn = FailureCounts.shared.isEnabled
+    /// What the last Copy Diagnostics did.
+    @State private var diagnosticsNotice: String?
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
@@ -72,6 +76,8 @@ struct SettingsView: View {
                     }
 
                     vpnSection
+
+                    diagnosticsSection
 
                     SectionHeader("About")
                     // The policies also live on the Profile tab, but they are
@@ -320,6 +326,60 @@ struct SettingsView: View {
             dnsFields
         }
         portForwardingRow
+    }
+
+    // MARK: - Diagnostics (MR-2287, owner decisions 2026-11-19)
+
+    /// Opt-in failure counts: off by default, kept on this device, and shared
+    /// only by the user pasting what Copy Diagnostics copies. No consent-screen
+    /// item, and no send path of any kind (`FailureCounts`).
+    @ViewBuilder
+    private var diagnosticsSection: some View {
+        SectionHeader("Diagnostics")
+        SettingsToggleRow(icon: "chart.bar.doc.horizontal", iconColor: BirdoTheme.white60,
+                          title: "Count Connection Failures",
+                          isOn: failureCountsBinding)
+        if failureCountsOn {
+            SettingsLinkButton(icon: "doc.on.doc", iconColor: BirdoTheme.accent,
+                               title: "Copy Diagnostics",
+                               trailing: "doc.on.clipboard") {
+                copyDiagnostics()
+            }
+        }
+        Text("Counts why connections fail, as failure codes and numbers only. The counts stay on this device. Copy Diagnostics puts them and the app version on the clipboard, and they are shared only if you paste them somewhere. Copying them, or turning this off, deletes them.")
+            .font(BirdoTheme.Fonts.bodySmall)
+            .foregroundStyle(BirdoTheme.onSurfaceMuted)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 4)
+        if let diagnosticsNotice {
+            Text(diagnosticsNotice)
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.onSurface)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 4)
+        }
+    }
+
+    /// The toggle is the only writer of the choice; turning it off deletes
+    /// what is held (`FailureCounts.setEnabled`).
+    private var failureCountsBinding: Binding<Bool> {
+        Binding(get: { failureCountsOn },
+                set: { on in
+                    FailureCounts.shared.setEnabled(on)
+                    failureCountsOn = on
+                    diagnosticsNotice = nil
+                })
+    }
+
+    /// The ONE reader of the counts: the report goes to the clipboard, and
+    /// taking it clears the counts on this device.
+    private func copyDiagnostics() {
+        guard let report = FailureCounts.shared.takeReport() else {
+            diagnosticsNotice = "No connection failures counted since the last copy."
+            return
+        }
+        Clipboard.copy(report.text)
+        diagnosticsNotice = "Copied. The counts on this device were cleared."
     }
 
     // MARK: - Top bar (Android BirdoTopBar — no back button on a tab root)

@@ -235,6 +235,16 @@ final class VpnViewModel: ObservableObject {
         connectRefusal = error as? ConnectRefusedError
     }
 
+    /// MR-2287: count a failed dial by its reason, when it is one the failure
+    /// counts cover (`DialFailure(dialError:)`). A no-op unless the user opted
+    /// in, which no build offers yet (`FailureCounts`). The code, not the
+    /// message: the message can carry server text.
+    private func noteDialFailure(after error: Error) {
+        guard let failure = DialFailure(dialError: error) else { return }
+        debugLog("[VpnViewModel] dial failed (%@)", failure.rawValue)
+        FailureCounts.shared.record(failure)
+    }
+
     private var dismissedFloors: Set<String> {
         Set(dismissedFloorsRaw.split(separator: ",").map(String.init).filter { !$0.isEmpty })
     }
@@ -707,6 +717,7 @@ final class VpnViewModel: ObservableObject {
                 holdAutomaticDials(after: error)
                 showUpdateRequired(after: error)
                 noteRefusal(after: error)
+                noteDialFailure(after: error)
                 self.error = error.localizedDescription
                 reportUnauthorized(error)
                 isConnecting = false
@@ -882,6 +893,7 @@ final class VpnViewModel: ObservableObject {
             holdAutomaticDials(after: error)
             showUpdateRequired(after: error)
             noteRefusal(after: error)
+            noteDialFailure(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             isConnecting = false
@@ -1125,6 +1137,9 @@ final class VpnViewModel: ObservableObject {
             failClosedNotice = notice
 
         case .tearDownFailOpen:
+            // MR-2287: counted per relay that never answered, the automatic
+            // retry's included (a no-op unless the user opted in, `FailureCounts`).
+            FailureCounts.shared.record(.tunnelNeverHandshook)
             // Never handshook. Do NOT arm on-demand — that is the trap this exists to
             // avoid. Tear down explicitly so iOS has nothing to re-dial.
             //
@@ -1715,6 +1730,7 @@ final class VpnViewModel: ObservableObject {
             holdAutomaticDials(after: error)
             showUpdateRequired(after: error)
             noteRefusal(after: error)
+            noteDialFailure(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             flagsOwnedElsewhere = await finishRebuild(.configRequestFailed, ctx)
@@ -1783,6 +1799,7 @@ final class VpnViewModel: ObservableObject {
             // restore had failed — leaving the persisted profile, and so the
             // armed on-demand rule's re-dial, on a peer this client had just
             // deleted.
+            noteDialFailure(after: swapError)
             connectRefusal = nil
             self.error = swapError.localizedDescription
             flagsOwnedElsewhere = await finishRebuild(.swapFailed, ctx)
