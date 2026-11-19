@@ -223,6 +223,16 @@ final class VpnViewModel: ObservableObject {
         connectRefusal = error as? ConnectRefusedError
     }
 
+    /// MR-2287: count a failed dial by its reason, when it is one the failure
+    /// counts cover (`DialFailure(dialError:)`). A no-op unless the user opted
+    /// in, which no build offers yet (`FailureCounts`). The code, not the
+    /// message: the message can carry server text.
+    private func noteDialFailure(after error: Error) {
+        guard let failure = DialFailure(dialError: error) else { return }
+        debugLog("[VpnViewModel] dial failed (%@)", failure.rawValue)
+        FailureCounts.shared.record(failure)
+    }
+
     private var dismissedFloors: Set<String> {
         Set(dismissedFloorsRaw.split(separator: ",").map(String.init).filter { !$0.isEmpty })
     }
@@ -669,6 +679,7 @@ final class VpnViewModel: ObservableObject {
                 holdAutomaticDials(after: error)
                 showUpdateRequired(after: error)
                 noteRefusal(after: error)
+                noteDialFailure(after: error)
                 self.error = error.localizedDescription
                 reportUnauthorized(error)
                 isConnecting = false
@@ -840,6 +851,7 @@ final class VpnViewModel: ObservableObject {
             holdAutomaticDials(after: error)
             showUpdateRequired(after: error)
             noteRefusal(after: error)
+            noteDialFailure(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             isConnecting = false
@@ -1093,6 +1105,10 @@ final class VpnViewModel: ObservableObject {
             //
             // A-H15 / MR-2212: before giving up, ONE automatic attempt on another
             // relay in the same location.
+            //
+            // MR-2287: counted per relay that never answered, the sibling retry
+            // included (a no-op unless the user opted in, `FailureCounts`).
+            FailureCounts.shared.record(.tunnelNeverHandshook)
             if retryOnSiblingRelay() { return }
             if let reason = vpnManager.lastDisconnectReason {
                 error = "Tunnel failed: \(reason)"
@@ -1660,6 +1676,7 @@ final class VpnViewModel: ObservableObject {
             holdAutomaticDials(after: error)
             showUpdateRequired(after: error)
             noteRefusal(after: error)
+            noteDialFailure(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             flagsOwnedElsewhere = await finishRebuild(.configRequestFailed, ctx)
@@ -1729,6 +1746,7 @@ final class VpnViewModel: ObservableObject {
             // armed on-demand rule's re-dial, on a peer this client had just
             // deleted.
             connectRefusal = nil
+            noteDialFailure(after: swapError)
             self.error = swapError.localizedDescription
             flagsOwnedElsewhere = await finishRebuild(.swapFailed, ctx)
             return

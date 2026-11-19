@@ -307,6 +307,13 @@ targets:
       # BirdoPQManager.swift (its only caller) imports BirdoPQNative and cannot
       # be compiled into this bundle.
       - path: iosApp/Services/PQNonce.swift
+      # MR-2287: why a post-quantum connect failed closed (PQFailure) and the
+      # order of the checks (PQDecapsulationPlan), then the opt-in, counts-only
+      # failure diagnostics and their consent gate (FailureCounts). Both
+      # Foundation-only, pinned by PQFailureTests and FailureCountsTests;
+      # BirdoPQManager, VPNManager and VpnViewModel cannot be compiled here.
+      - path: iosApp/Services/PQFailure.swift
+      - path: iosApp/Services/FailureCounts.swift
       # Owner item 86: anonymous-or-not and the account number from /auth/me —
       # explicit fields first, the synthetic-email parse as the old-backend
       # fallback. Pinned by AccountIdentityTests; UserProfile, its caller, moved
