@@ -748,7 +748,11 @@ class VpnViewModel @Inject constructor(
         // The next account must not dial this one's server or inherit its plan
         // (REVIEW-AND-007).
         prefs.lastKnownPlan = null
+        // MR-2492 (review of #652, L2): nor who chose it. The flag first, so a
+        // death between the two writes leaves the safe side, the user's.
+        prefs.lastServerAutoPicked = false
         prefs.lastServerId = null
+        automaticPickId = null
         _uiState.value = _uiState.value.copy(
             servers = emptyList(),
             selectedServer = null,

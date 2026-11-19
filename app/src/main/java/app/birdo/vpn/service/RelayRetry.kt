@@ -19,6 +19,11 @@ import app.birdo.vpn.data.model.VpnServer
  *  * the log says a count and a reach class only, never a server's id, name,
  *    city, country or address ([logLine]).
  *
+ * One departure from iOS, by owner decision (2026-11-19, round 3 of #652):
+ * a server deleted from the fleet, so absent from the fresh list, still
+ * moves. The client's own pick goes to the best server anywhere; a user's
+ * location goes inside the country its last cached entry had, else it stops.
+ *
  * On Android the move is made when the heartbeat, or the probe after a dead
  * tunnel, says the server went offline for good (HeartbeatPolicy
  * SERVER_GONE). It used to be a quick connect that skipped that server: the
@@ -92,19 +97,30 @@ object RelayRetry {
      *  3. [SelectionOrigin.USER]: the best other relay in the SAME country;
      *  4. nothing; the caller then says so instead.
      * "Best" is the quick-connect rule ([VpnManager.bestServer]): online,
-     * accessible to this plan, least loaded. null when [failedId] is not in
-     * [list]: without the failed relay's country the user's choice cannot be
-     * kept, so nothing moves (iOS's rule, kept for either origin).
+     * accessible to this plan, least loaded.
+     *
+     * A server DELETED from the fleet is not in [list] (owner decision
+     * 2026-11-19, which departs from iOS's "not listed: nothing moves"):
+     * its location is [lastKnown], the entry the list cached before the
+     * refresh had for [failedId], and the table above applies to it. With
+     * no such entry, a server the client chose still moves to the best
+     * server anywhere (its country never mattered), and a location the user
+     * picked stays put: without its country, it cannot be kept inside it.
      */
     fun next(
         failedId: String,
         list: List<VpnServer>,
         origin: SelectionOrigin,
-        @Suppress("UNUSED_PARAMETER") lastKnown: VpnServer? = null,
+        lastKnown: VpnServer? = null,
     ): Choice? {
-        val failed = list.firstOrNull { it.id == failedId } ?: return null
-        sibling(failedId, list)?.let { return Choice(it, Reach.SAME_CITY) }
         val others = list.filter { it.id != failedId }
+        val failed = list.firstOrNull { it.id == failedId }
+            ?: lastKnown?.takeIf { it.id == failedId }
+            ?: return when (origin) {
+                SelectionOrigin.AUTOMATIC -> VpnManager.bestServer(others)?.let { Choice(it, Reach.OTHER_COUNTRY) }
+                SelectionOrigin.USER -> null
+            }
+        siblingOf(failed, others)?.let { return Choice(it, Reach.SAME_CITY) }
         return when (origin) {
             SelectionOrigin.AUTOMATIC ->
                 VpnManager.bestServer(others)?.let { Choice(it, reach(failed, it)) }
@@ -141,13 +157,16 @@ object RelayRetry {
      */
     fun sibling(failedId: String, list: List<VpnServer>): VpnServer? {
         val failed = list.firstOrNull { it.id == failedId } ?: return null
+        return siblingOf(failed, list.filter { it.id != failedId })
+    }
+
+    /** [sibling] for a failed server known by its entry, among [others] (which exclude it). */
+    private fun siblingOf(failed: VpnServer, others: List<VpnServer>): VpnServer? {
         val city = normalized(failed.city)
         val country = normalized(failed.countryCode)
         if (city.isEmpty() || country.isEmpty()) return null
         return VpnManager.bestServer(
-            list.filter {
-                it.id != failedId && normalized(it.city) == city && normalized(it.countryCode) == country
-            },
+            others.filter { normalized(it.city) == city && normalized(it.countryCode) == country },
         )
     }
 

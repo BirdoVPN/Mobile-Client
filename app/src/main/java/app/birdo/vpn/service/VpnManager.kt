@@ -1270,10 +1270,9 @@ class VpnManager @Inject constructor(
                     // WireGuard handshake is observed. We stay in Connecting.
                     _connectedServer.value = config.serverNode?.name ?: "Unknown Server"
                     _connectedServerId.value = serverId
-                    prefs.lastServerId = serverId
-                    // MR-2492: who chose it goes with it, for the re-dials the
-                    // tile, the widget and a system start make later.
-                    prefs.lastServerAutoPicked = pickedBy == SelectionOrigin.AUTOMATIC
+                    // MR-2492: who chose it goes with it, in the same write, for
+                    // the re-dials the tile, the widget and a system start make later.
+                    prefs.rememberLastServer(serverId, autoPicked = pickedBy == SelectionOrigin.AUTOMATIC)
                     return result
                 }
                 is ApiResult.Error -> {
@@ -1621,6 +1620,10 @@ class VpnManager @Inject constructor(
             return dialSingle(target, null, gen, prior, pickedBy)
         }
         enterConnecting(gen)
+        // Owner decision (round 3): a server deleted from the fleet is gone
+        // from the fresh list; where it was is only in the list cached before
+        // it, so that entry is read first, before the refresh replaces it.
+        val lastKnown = repository.lastKnownServer(goneId)
         // Fresh, as on iOS: a relay depooled since the list was cached (a
         // jurisdiction hold included) is not chosen. The server's connect
         // gate refuses a node that is not online either way.
@@ -1637,25 +1640,44 @@ class VpnManager @Inject constructor(
         if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
         val servers = (serversResult as ApiResult.Success).data
         val spentBefore = relayRetryBudget.spent
-        val planned = RelayRetry.plan(goneId, servers, pickedBy, relayRetryBudget)
+        val planned = RelayRetry.plan(goneId, servers, pickedBy, relayRetryBudget, lastKnown)
         // Counts only: whether it moves and how far, never which relay.
         android.util.Log.i("VpnManager", RelayRetry.logLine(planned, spentBefore))
         if (planned == null) {
             // Round 2 (lead vpn-c6): nothing this plan can use is left anywhere
             // is a plan matter, said as a quick connect says it. Otherwise it
             // is reachability: a location the user picked has nothing left in
-            // its country, or the server is no longer listed; Home offers
-            // Choose server beside it.
+            // its country, or a deleted server's country is unknown; Home
+            // offers Choose server beside it.
             val message = if (bestServer(servers.filter { it.id != goneId }) == null) {
                 SessionCopy.NO_SERVERS
             } else {
                 SessionCopy.SERVER_UNREACHABLE
             }
-            publishError(message, FailureKind.REFUSED)
+            stopOnGoneServer(message)
             return ApiResult.Error(message)
         }
         relayRetryTarget = planned.server.id
         return dialSingle(planned.server.id, null, gen, prior, pickedBy)
+    }
+
+    /**
+     * MR-2492 (review of #652, M1): the server this single-hop session was on
+     * went offline and nothing replaces it; [message] says why, as REFUSED, so
+     * the supervisor stops and never re-dials on its own.
+     *  - Kill switch on: fail-closed. The block the teardown put up stays held
+     *    (giveUp keeps it for a session that was up), as for any such stop.
+     *  - Kill switch off: the user chose fail-open, and the dead tunnel carries
+     *    nothing, so it comes down, as a revoke's does ([endSessionForServer]).
+     *    The Error alone left the interface up on a peer the server had
+     *    removed: no traffic at all, for a user who chose not to block.
+     */
+    private suspend fun stopOnGoneServer(message: String) {
+        if (prefs.killSwitchEnabled) {
+            publishError(message, FailureKind.REFUSED)
+        } else {
+            endSessionForServer(message, FailureKind.REFUSED)
+        }
     }
 
     private suspend fun preferredDial(
@@ -2105,8 +2127,7 @@ class VpnManager @Inject constructor(
             LiveRebuildPolicy.Directive.COMMIT_NEW -> {
                 _connectedServer.value = config!!.serverNode?.name ?: "Unknown Server"
                 _connectedServerId.value = serverId
-                prefs.lastServerId = serverId
-                prefs.lastServerAutoPicked = pickedBy == SelectionOrigin.AUTOMATIC
+                prefs.rememberLastServer(serverId, autoPicked = pickedBy == SelectionOrigin.AUTOMATIC)
                 ApiResult.Success(config)
             }
             LiveRebuildPolicy.Directive.FAILED_CLOSED -> ApiResult.Error(SessionCopy.switchFailedClosed(prefs.killSwitchEnabled))
@@ -3366,7 +3387,14 @@ class VpnManager @Inject constructor(
                 endSessionForServer(context.getString(R.string.session_quota_exceeded), FailureKind.QUOTA_EXCEEDED)
             }
             HeartbeatPolicy.Verdict.SERVER_GONE -> if (activeMultiHop != null) {
-                sessionDeadTeardown(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, FailureKind.REFUSED)
+                // MR-2492 round 3 (review of #652, M1): fail-closed behind the
+                // block with the kill switch on; with it off the dead route
+                // comes down, as stopOnGoneServer does for a single hop.
+                if (prefs.killSwitchEnabled) {
+                    sessionDeadTeardown(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, FailureKind.REFUSED)
+                } else {
+                    endSessionForServer(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, FailureKind.REFUSED)
+                }
             } else {
                 android.util.Log.w("VpnManager", "Heartbeat: this server went offline — the retry rule decides")
                 avoidServerId = prefs.lastServerId
@@ -3405,7 +3433,9 @@ class VpnManager @Inject constructor(
 
     /**
      * The server ended this session on purpose: release the block, show
-     * [message], forget the intent, and never re-dial on our own.
+     * [message], forget the intent, and never re-dial on our own. Also the
+     * fail-open end of a session whose server went offline with nothing to
+     * replace it (MR-2492, kill switch off: there is no block to release).
      */
     private suspend fun endSessionForServer(message: String, kind: FailureKind) {
         _quotaGrace.value = null

@@ -237,7 +237,7 @@ class VpnManagerTest {
         // Connected server name should be set
         assertEquals("London-01", vpnManager.connectedServer.value)
         // Last server preference saved
-        verify { prefs.lastServerId = "srv-1" }
+        verify { prefs.rememberLastServer("srv-1", autoPicked = false) }
     }
 
     @Test
@@ -2954,7 +2954,7 @@ class VpnManagerTest {
 
         assertTrue(switch.await() is ApiResult.Success)
         coVerify(exactly = 1) { repository.disconnectVpn("key-123") }
-        verify { prefs.lastServerId = "srv-2" }
+        verify { prefs.rememberLastServer("srv-2", autoPicked = false) }
         assertEquals("srv-2", vpnManager.connectedServerId.value)
         quiesce()
     }
@@ -3343,7 +3343,7 @@ class VpnManagerTest {
         assertTrue((vpnManager.state.value as VpnState.Reconnecting).waitingForNetwork)
         assertFalse("the re-dial is the old session's, not a switch", vpnManager.switching.value)
         assertTrue(result is ApiResult.Error)
-        verify(exactly = 0) { prefs.lastServerId = "srv-2" }
+        verify(exactly = 0) { prefs.rememberLastServer("srv-2", any()) }
         quiesce()
     }
 

@@ -412,10 +412,15 @@ class AppPreferences @Inject constructor(
         get() = prefs.getBoolean(KEY_LAST_SERVER_AUTO_PICKED, false)
         set(value) = prefs.edit { putBoolean(KEY_LAST_SERVER_AUTO_PICKED, value) }
 
-    /** MR-2492: the server a dial landed on, and who chose it. */
-    fun rememberLastServer(id: String, autoPicked: Boolean) {
-        lastServerId = id
-        lastServerAutoPicked = autoPicked
+    /**
+     * MR-2492: the server a dial landed on, and who chose it, in ONE edit
+     * (review of #652, L1). Two writes could be split by a process death into
+     * a new server the user picked beside the previous "the client chose it",
+     * which a move off that server would read as free to leave the country.
+     */
+    fun rememberLastServer(id: String, autoPicked: Boolean) = prefs.edit {
+        putString(KEY_LAST_SERVER, id)
+        putBoolean(KEY_LAST_SERVER_AUTO_PICKED, autoPicked)
     }
 
     /**
