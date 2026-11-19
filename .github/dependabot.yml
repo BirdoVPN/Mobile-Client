@@ -109,6 +109,12 @@ updates:
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "androidx.activity:*"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # MR-2490: Robolectric's SDK jar (robolectricAndroidAll in
+      # app/build.gradle.kts). Its version is not ours to pick: Robolectric's
+      # DefaultSdkProvider names the exact coordinate per SDK level, and a
+      # "newer" one is another Android release the tests do not pin. It moves by
+      # hand with a Robolectric bump (RobolectricSdkJarsTest says to what).
+      - dependency-name: "org.robolectric:android-all-instrumented"
     groups:
       kotlin:
         patterns: ["org.jetbrains.kotlin*", "org.jetbrains.kotlinx*"]
