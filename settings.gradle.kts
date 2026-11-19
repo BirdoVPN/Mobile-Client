@@ -21,6 +21,43 @@ pluginManagement {
         }
         mavenCentral()
     }
+    // NO PLUGIN-MARKER LOOKUPS (MOBILE-PLUGIN-MARKER-FLAKE). A plugin
+    // requested by id and version is normally found through its marker POM,
+    // <id>:<id>.gradle.plugin:<version>, whose only content is a dependency on
+    // the module that implements it. That lookup was the request Maven
+    // Central's rate limit (429) kept failing: "Plugin [id:
+    // 'org.jetbrains.kotlin.multiplatform', version: '2.4.10'] was not found"
+    // in Lint Check, Unit Tests, Build APK and the release on 2026-11-19, on
+    // main too. Each id below goes straight to the module its marker names
+    // (read from the published markers), so no marker is ever requested and
+    // the module is one gradle/verification-metadata.xml already pins. Not a
+    // blanket org.jetbrains.kotlin.* -> kotlin-gradle-plugin rule: the compose
+    // and serialization plugins live in modules of their own.
+    //
+    // Lint Check configures the build with every marker unreachable, so a
+    // plugin added to the root plugins {} block without a line here fails
+    // there. Versionless requests (the subprojects') are left alone: their
+    // plugins are already on the root build's classpath.
+    resolutionStrategy {
+        val implementations = mapOf(
+            "com.android.application" to "com.android.tools.build:gradle",
+            "com.android.library" to "com.android.tools.build:gradle",
+            "com.android.kotlin.multiplatform.library" to "com.android.tools.build:gradle",
+            "org.jetbrains.kotlin.multiplatform" to "org.jetbrains.kotlin:kotlin-gradle-plugin",
+            "org.jetbrains.kotlin.plugin.compose" to "org.jetbrains.kotlin:compose-compiler-gradle-plugin",
+            "org.jetbrains.kotlin.plugin.serialization" to "org.jetbrains.kotlin:kotlin-serialization",
+            "com.google.dagger.hilt.android" to "com.google.dagger:hilt-android-gradle-plugin",
+            "com.google.devtools.ksp" to "com.google.devtools.ksp:symbol-processing-gradle-plugin",
+            "androidx.baselineprofile" to "androidx.benchmark:benchmark-baseline-profile-gradle-plugin",
+        )
+        eachPlugin {
+            val module = implementations[requested.id.id]
+            val version = requested.version
+            if (module != null && version != null) {
+                useModule("$module:$version")
+            }
+        }
+    }
 }
 
 dependencyResolutionManagement {
