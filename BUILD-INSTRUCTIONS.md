@@ -164,15 +164,6 @@ App Signing key.
   effect from the next pull request; the metadata workflow starts on every pull
   request and skips its jobs when nothing Gradle resolves changed.
 
-  No plugin is resolved through a plugin marker (`<id>:<id>.gradle.plugin`) on
-  Maven Central (MOBILE-PLUGIN-MARKER-FLAKE): `settings.gradle.kts` maps each such
-  plugin (Kotlin multiplatform, compose and serialization, Hilt, KSP), and
-  baselineprofile, to the module its marker names, so the file lists none of those
-  markers and a build never requests one. The three Android Gradle Plugin markers,
-  on Google's Maven, keep their lookup (`settings.gradle.kts` says why). Lint Check configures
-  the build with every Maven Central marker unreachable; a plugin from there added
-  to the root `plugins {}` block fails that check until it has its line in the map.
-
   **Not covered** by the file:
   - `baseline-profile.yml`, which records on a Gradle Managed Device with
     `--dependency-verification lenient` (it reports a checksum it cannot find instead

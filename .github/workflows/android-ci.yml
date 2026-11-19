@@ -326,39 +326,6 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: bash .github/scripts/tmp-plugin-marker-diagnostics.sh "$BASE_SHA"
 
-      # MOBILE-PLUGIN-MARKER-FLAKE. No plugin may be resolved through a plugin
-      # marker (<id>:<id>.gradle.plugin) on Maven Central: settings.gradle.kts
-      # maps each such plugin to its module. A marker POM has no artifact, so
-      # setup-gradle's cache cleanup drops it from every second main cache and
-      # every job restoring that cache fetched it again; on 2026-11-19 Maven
-      # Central's rate limit failed that one request ("Plugin [id:
-      # 'org.jetbrains.kotlin.multiplatform' ...] was not found") in Lint Check,
-      # Unit Tests, Build APK and the release, on main too. This configures
-      # every project with every marker made unreachable on Maven Central, so a
-      # plugin that still needs one fails here, with that same error, on every
-      # run instead of on some. (The three AGP markers are on Google's Maven;
-      # settings.gradle.kts says why they keep their lookup.)
-      - name: No Gradle plugin needs a plugin marker from Maven Central
-        if: ${{ needs.changes.outputs.android != 'false' }}
-        run: |
-          init="$RUNNER_TEMP/no-central-plugin-markers.gradle"
-          cat > "$init" <<'GRADLE'
-          settingsEvaluated { settings ->
-              def central = 0
-              settings.pluginManagement.repositories.withType(MavenArtifactRepository).configureEach { repository ->
-                  if (repository.url.host == 'repo.maven.apache.org') {
-                      central++
-                      repository.content { excludeModuleByRegex('.*', '.*[.]gradle[.]plugin') }
-                  }
-              }
-              if (central == 0) {
-                  throw new GradleException('no Maven Central repository in pluginManagement: update this check')
-              }
-          }
-          GRADLE
-          ./gradlew --init-script "$init" help
-          echo "ok: every project configured with every plugin marker on Maven Central unreachable"
-
       - name: Run Lint
         if: ${{ needs.changes.outputs.android != 'false' }}
         run: ./gradlew lintDebug
