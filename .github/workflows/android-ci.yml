@@ -325,6 +325,11 @@ jobs:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
           cache-cleanup: never
 
+      # TEMPORARY (MR-2511): reverted before the pull request is ready.
+      - name: "Experiment: an offline configuration before and after a cache cleanup"
+        if: ${{ needs.changes.outputs.android != 'false' }}
+        run: bash .github/scripts/tmp-mr2511-cleanup-experiment.sh
+
       - name: Run Lint
         if: ${{ needs.changes.outputs.android != 'false' }}
         run: ./gradlew lintDebug
