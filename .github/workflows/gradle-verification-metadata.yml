@@ -42,9 +42,11 @@ name: Gradle verification metadata
 #     workflow cannot run; that job runs --dependency-verification lenient
 #     (it reports, it does not fail) with a read-only Gradle cache.
 #   - sources and javadoc jars: trusted, never shipped.
-#   - what is downloaded outside Gradle dependency resolution: Robolectric's
-#     android-all-instrumented jars (fetched by Robolectric at test time), SDK
-#     and NDK packages (sdkmanager) and managed-device system images.
+#   - what is downloaded outside Gradle dependency resolution: SDK and NDK
+#     packages (sdkmanager) and managed-device system images. Robolectric's
+#     android-all-instrumented jar is NOT in this list since MR-2490: it is
+#     app/build.gradle.kts's robolectricAndroidAll dependency, which the unit
+#     tests below resolve, so it has entries like any other artifact.
 #
 # Every plugin and dependency resolves from exactly one repository: Google's
 # Maven (content-filtered) or Maven Central. settings.gradle.kts explains why
@@ -169,9 +171,8 @@ jobs:
       #
       # The tests run so their runtime classpath (and anything a test task
       # resolves) is recorded; whether they PASS is Android CI's Unit Tests job.
-      # The init script keeps a failing test, such as a Robolectric android-all
-      # download that flakes, from costing the write: the build still fails on
-      # anything that is not a test result.
+      # The init script keeps a failing test from costing the write: the build
+      # still fails on anything that is not a test result.
       #
       # The writes get a Gradle user home of their own: a new daemon and an
       # empty cache. The native-libs action ran Gradle before the file existed,

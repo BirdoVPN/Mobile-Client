@@ -449,6 +449,7 @@ org.ow2.asm:asm-tree:9.9.1=composeMappingProducerClasspath
 org.ow2.asm:asm:9.10.1=debugUnitTestCompileClasspath,debugUnitTestLintChecksClasspath,debugUnitTestRuntimeClasspath
 org.ow2.asm:asm:9.9=androidLintTool
 org.ow2.asm:asm:9.9.1=composeMappingProducerClasspath
+org.robolectric:android-all-instrumented:14-robolectric-10818077-i7=robolectricAndroidAll
 org.robolectric:annotations:4.17=debugUnitTestCompileClasspath,debugUnitTestLintChecksClasspath,debugUnitTestRuntimeClasspath
 org.robolectric:junit:4.17=debugUnitTestCompileClasspath,debugUnitTestLintChecksClasspath,debugUnitTestRuntimeClasspath
 org.robolectric:nativeruntime-dist-compat:1.0.19=debugUnitTestLintChecksClasspath,debugUnitTestRuntimeClasspath
