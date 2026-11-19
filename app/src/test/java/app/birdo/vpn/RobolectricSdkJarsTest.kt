@@ -8,6 +8,10 @@ import org.robolectric.internal.dependency.DependencyResolver
 import org.robolectric.internal.dependency.LocalDependencyResolver
 import org.robolectric.plugins.DefaultSdkProvider
 import java.io.File
+import java.io.IOException
+import java.net.ConnectException
+import java.net.HttpURLConnection
+import java.net.URI
 import java.nio.file.Files
 
 /**
@@ -27,7 +31,8 @@ import java.nio.file.Files
  * Plain JUnit, not Robolectric. It asks Robolectric's own DefaultSdkProvider
  * which coordinate each SDK level the tests pin needs, through the same
  * LocalDependencyResolver the offline properties select, so it cannot reach
- * the network itself.
+ * the network itself. The one connection it opens is the tripwire check, which
+ * the tripwire refuses on loopback.
  */
 class RobolectricSdkJarsTest {
 
@@ -57,6 +62,39 @@ class RobolectricSdkJarsTest {
             "robolectric.dependency.dir is not set, or not a directory ($dir). It must be " +
                 "the directory syncRobolectricAndroidAll fills (app/build.gradle.kts).",
             dir != null && dir.isDirectory,
+        )
+    }
+
+    /**
+     * The tripwire next to the offline properties in app/build.gradle.kts: an
+     * HTTPS connection from this JVM to the host Robolectric downloads from is
+     * refused by a closed loopback port instead of reaching Maven Central. Every
+     * test JVM of the task gets the same properties, so a Robolectric class that
+     * tried to fetch its SDK jar would fail loudly, not pass on a download.
+     */
+    @Test
+    fun `the test JVM cannot reach Maven Central over HTTPS`() {
+        val tripwire = "the HTTPS tripwire in app/build.gradle.kts"
+        assertEquals("$tripwire: https.proxyHost", "127.0.0.1", System.getProperty("https.proxyHost"))
+        assertEquals("$tripwire: https.proxyPort", "9", System.getProperty("https.proxyPort"))
+        val connection =
+            URI("https://repo1.maven.org/maven2/").toURL().openConnection() as HttpURLConnection
+        connection.connectTimeout = 5_000
+        connection.readTimeout = 5_000
+        val failure = try {
+            connection.connect()
+            null
+        } catch (e: IOException) {
+            e
+        } finally {
+            connection.disconnect()
+        }
+        assertTrue(
+            "an HTTPS connection to Maven Central from the test JVM was not refused by the " +
+                "tripwire (got ${failure ?: "a connection"}), so a Robolectric SDK fetch could " +
+                "download again. See https.proxyHost in app/build.gradle.kts.",
+            failure != null &&
+                generateSequence<Throwable>(failure) { it.cause }.any { it is ConnectException },
         )
     }
 

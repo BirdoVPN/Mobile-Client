@@ -619,6 +619,16 @@ tasks.withType<Test>().configureEach {
         .withPathSensitivity(PathSensitivity.NAME_ONLY)
     systemProperty("robolectric.offline", "true")
     systemProperty("robolectric.dependency.dir", robolectricAndroidAllDir.get().asFile.absolutePath)
+    // MR-2490 tripwire: every HTTPS connection from a test JVM goes through a
+    // "proxy" on a closed loopback port, so it fails at once with "Connection
+    // refused". If Robolectric ever falls back to its Maven resolver, its
+    // download (an HttpURLConnection to https://repo1.maven.org) fails loudly
+    // instead of quietly succeeding. HTTPS only: TunnelClientFallbackTest makes
+    // a real plain-HTTP call to a local server under a made-up hostname, which
+    // an http.proxyHost would break. Loopback stays direct (the JDK's default
+    // http.nonProxyHosts). RobolectricSdkJarsTest checks the tripwire.
+    systemProperty("https.proxyHost", "127.0.0.1")
+    systemProperty("https.proxyPort", "9")
 }
 
 val validateReleaseSecurityConfig = tasks.register("validateReleaseSecurityConfig") {
