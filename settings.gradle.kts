@@ -21,8 +21,8 @@ pluginManagement {
         }
         mavenCentral()
     }
-    // NO PLUGIN MARKER FROM MAVEN CENTRAL (MOBILE-PLUGIN-MARKER-FLAKE). A
-    // plugin requested by id and version is normally found through its marker
+    // PLUGINS WITHOUT THEIR MARKER (MOBILE-PLUGIN-MARKER-FLAKE). A plugin
+    // requested by id and version is normally found through its marker
     // POM, <id>:<id>.gradle.plugin:<version>, whose only content is a
     // dependency on the module that implements it. A marker has no artifact,
     // so a build that finds it in its cache never touches the file, and
@@ -32,18 +32,19 @@ pluginManagement {
     // 2026-11-19 Maven Central's rate limit (429) failed that one request:
     // "Plugin [id: 'org.jetbrains.kotlin.multiplatform', version: '2.4.10']
     // was not found" in Lint Check, Unit Tests, Build APK and the release, on
-    // main too. Each id below goes straight to the module its Maven Central
-    // marker names (read from the published markers): the module's jar is on
-    // the plugin classpath anyway, so it stays cached, and
+    // main too. Each id below goes straight to the module its marker names
+    // (read from the published markers): the module's jar is on the plugin
+    // classpath anyway, so it stays cached, and
     // gradle/verification-metadata.xml already pins it. Not a blanket
     // org.jetbrains.kotlin.* -> kotlin-gradle-plugin rule: the compose and
     // serialization plugins live in modules of their own.
     //
-    // The Android Gradle Plugin and baselineprofile markers are on Google's
-    // Maven and keep their lookup: com.android.application and .library ask
-    // for AGP 9.4.1 while the classpath resolves 9.5.1 (the KMP library
-    // plugin's), so pointing them at com.android.tools.build:gradle:9.4.1
-    // would download and verify a 9.4.1 jar nothing runs.
+    // The three Android Gradle Plugin markers (Google's Maven) keep their
+    // lookup: com.android.application and .library ask for AGP 9.4.1 while the
+    // classpath resolves 9.5.1 (the KMP library plugin's), and Gradle checks a
+    // useModule() target by resolving its jar, so pointing them at
+    // com.android.tools.build:gradle:9.4.1 would download and verify a 9.4.1
+    // jar nothing runs.
     //
     // Lint Check configures the build with every marker unreachable on Maven
     // Central, so a plugin from there added to the root plugins {} block
@@ -57,6 +58,7 @@ pluginManagement {
             "org.jetbrains.kotlin.plugin.serialization" to "org.jetbrains.kotlin:kotlin-serialization",
             "com.google.dagger.hilt.android" to "com.google.dagger:hilt-android-gradle-plugin",
             "com.google.devtools.ksp" to "com.google.devtools.ksp:symbol-processing-gradle-plugin",
+            "androidx.baselineprofile" to "androidx.benchmark:benchmark-baseline-profile-gradle-plugin",
         )
         eachPlugin {
             val module = implementations[requested.id.id]

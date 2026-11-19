@@ -358,8 +358,8 @@ jobs:
       # Unit Tests, Build APK and the release, on main too. This configures
       # every project with every marker made unreachable on Maven Central, so a
       # plugin that still needs one fails here, with that same error, on every
-      # run instead of on some. (The AGP and baselineprofile markers are on
-      # Google's Maven; settings.gradle.kts says why they keep their lookup.)
+      # run instead of on some. (The three AGP markers are on Google's Maven;
+      # settings.gradle.kts says why they keep their lookup.)
       - name: No Gradle plugin needs a plugin marker from Maven Central
         if: ${{ needs.changes.outputs.android != 'false' }}
         run: |
