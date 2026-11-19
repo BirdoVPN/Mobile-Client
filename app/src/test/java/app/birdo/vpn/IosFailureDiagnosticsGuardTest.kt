@@ -79,10 +79,12 @@ class IosFailureDiagnosticsGuardTest {
         }
         assertTrue("the rebuild's swap failure is not counted", "noteDialFailure(after: swapError)" in vm)
 
-        val failOpen = vm.substringAfter("case .tearDownFailOpen:").substringBefore("if retryOnSiblingRelay() { return }")
+        // Up to the automatic retry, whatever it is called (#645 renames it).
+        val verdict = vm.substringAfter("case .tearDownFailOpen:")
+        assertTrue("no automatic retry in .tearDownFailOpen — this check would be vacuous", "if retryOn" in verdict)
         assertTrue(
-            "a tunnel that never handshook is not counted (before the sibling retry)",
-            "FailureCounts.shared.record(.tunnelNeverHandshook)" in failOpen,
+            "a tunnel that never handshook is not counted (before the automatic retry)",
+            "FailureCounts.shared.record(.tunnelNeverHandshook)" in verdict.substringBefore("if retryOn"),
         )
     }
 

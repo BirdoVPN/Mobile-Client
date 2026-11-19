@@ -1095,6 +1095,9 @@ final class VpnViewModel: ObservableObject {
             failClosedNotice = notice
 
         case .tearDownFailOpen:
+            // MR-2287: counted per relay that never answered, the automatic
+            // retry's included (a no-op unless the user opted in, `FailureCounts`).
+            FailureCounts.shared.record(.tunnelNeverHandshook)
             // Never handshook. Do NOT arm on-demand — that is the trap this exists to
             // avoid. Tear down explicitly so iOS has nothing to re-dial.
             //
@@ -1105,10 +1108,6 @@ final class VpnViewModel: ObservableObject {
             //
             // A-H15 / MR-2212: before giving up, ONE automatic attempt on another
             // relay in the same location.
-            //
-            // MR-2287: counted per relay that never answered, the sibling retry
-            // included (a no-op unless the user opted in, `FailureCounts`).
-            FailureCounts.shared.record(.tunnelNeverHandshook)
             if retryOnSiblingRelay() { return }
             if let reason = vpnManager.lastDisconnectReason {
                 error = "Tunnel failed: \(reason)"
