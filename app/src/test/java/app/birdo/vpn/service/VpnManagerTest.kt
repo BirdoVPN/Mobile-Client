@@ -237,7 +237,7 @@ class VpnManagerTest {
         // Connected server name should be set
         assertEquals("London-01", vpnManager.connectedServer.value)
         // Last server preference saved
-        verify { prefs.lastServerId = "srv-1" }
+        verify { prefs.rememberLastServer("srv-1", autoPicked = false) }
     }
 
     @Test
@@ -1540,6 +1540,540 @@ class VpnManagerTest {
         quiesce()
     }
 
+    // ── MR-2492: the retry rule (MR-2212, the same on every client) ────────
+    //
+    // Owner 2026-11-19: a server the client chose may move to another country,
+    // once; a location the user picked never leaves its country without a tap.
+    // The move off a server the heartbeat says went offline used to be a quick
+    // connect that skipped it: the best relay in ANY country, whoever chose.
+
+    /** A relay in [countryCode]/[city]; makeServer's are all in London. */
+    private fun relay(id: String, countryCode: String, city: String, load: Int, isOnline: Boolean = true) =
+        makeServer(id = id, load = load, isOnline = isOnline, accessible = true)
+            .copy(country = "country-of-$countryCode", countryCode = countryCode, city = city)
+
+    /** The last server and who chose it, as AppPreferences keeps them: what a dial writes, the next re-dial reads. */
+    private var lastServer: String? = null
+    private var lastAutoPicked = false
+
+    private fun keepLastServer(id: String? = null, autoPicked: Boolean = false) {
+        lastServer = id
+        lastAutoPicked = autoPicked
+        every { prefs.lastServerId } answers { lastServer }
+        every { prefs.lastServerId = any() } answers { lastServer = firstArg() }
+        every { prefs.lastServerAutoPicked } answers { lastAutoPicked }
+        every { prefs.lastServerAutoPicked = any() } answers { lastAutoPicked = firstArg() }
+        // Round 3 (review L1): both in one write.
+        every { prefs.rememberLastServer(any(), any()) } answers {
+            lastServer = firstArg()
+            lastAutoPicked = secondArg()
+        }
+    }
+
+    private fun serversAre(vararg lists: List<VpnServer>) {
+        coEvery { repository.getServers(any()) } returnsMany lists.map { ApiResult.Success(it) }
+    }
+
+    /**
+     * The session is up; then the heartbeat says its server went offline for
+     * good, and the supervisor acts. With [killSwitch] the teardown puts the
+     * block up first; without it there is no block at all.
+     */
+    private fun TestScope.upThenServerGoesOffline(killSwitch: Boolean = true) {
+        serviceEmits(VpnState.Connected)
+        runCurrent()
+        every { BirdoVpnService.killSwitchActive } returns killSwitch
+        beatsAnswer(valid = false, reason = "server_offline")
+        advanceTimeBy(61_000)
+        assertEquals(killSwitch, BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
+        advanceTimeBy(30_000)
+    }
+
+    @Test
+    fun `MR-2492 a quick connect's server is the client's pick, and moves once to another country when it goes offline`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(
+            listOf(
+                relay("fra", "DE", "Frankfurt", 10),
+                relay("sto", "SE", "Stockholm", 20),
+                relay("ams", "NL", "Amsterdam", 30),
+            ),
+        )
+        try {
+            vpnManager.quickConnect()
+            assertEquals("fra", lastServer)
+            assertTrue("a quick connect's server is the client's pick", lastAutoPicked)
+
+            upThenServerGoesOffline()
+
+            coVerify(exactly = 1) { repository.connectVpn("fra", any()) }
+            coVerify(exactly = 1) { repository.connectVpn("sto", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("ams", any()) }
+            assertEquals("sto", lastServer)
+            assertTrue("the move keeps the rule of the pick it replaces", lastAutoPicked)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a location the user picked never leaves its country when its server goes offline`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        // No other server in Germany; Amsterdam and London are empty.
+        serversAre(
+            listOf(
+                relay("fra", "DE", "Frankfurt", 10),
+                relay("ams", "NL", "Amsterdam", 0),
+                relay("lon", "GB", "London", 0),
+            ),
+        )
+        try {
+            vpnManager.connect("fra")
+            assertEquals("fra", lastServer)
+            assertFalse("a tapped location is the user's", lastAutoPicked)
+
+            upThenServerGoesOffline()
+            advanceTimeBy(30 * 60_000L)
+
+            // Nothing moves, and the app says so in iOS's words.
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+            val error = vpnManager.state.value as? VpnState.Error
+            assertEquals(SessionCopy.SERVER_UNREACHABLE, error?.message)
+            assertEquals(FailureKind.REFUSED, error?.kind)
+            verify { prefs.sessionShouldBeUp = false }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a location the user picked may move to another server in its own country`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(
+            listOf(
+                relay("nyc", "US", "New York", 10),
+                relay("lax", "US", "Los Angeles", 70),
+                relay("yyz", "CA", "Toronto", 0),
+            ),
+        )
+        try {
+            vpnManager.connect("nyc")
+
+            upThenServerGoesOffline()
+
+            coVerify(exactly = 1) { repository.connectVpn("lax", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("yyz", any()) }
+            assertEquals("lax", lastServer)
+            assertFalse("still the user's location", lastAutoPicked)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 the one automatic move is never followed by a second`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn("fra", any()) } returns ApiResult.Success(makeConnectResponse())
+        // The move's own /connect does not get through...
+        coEvery { repository.connectVpn("sto", any()) } returns ApiResult.Error("timeout")
+        coEvery { repository.connectVpn("ams", any()) } returns ApiResult.Success(makeConnectResponse())
+        val first = listOf(
+            relay("fra", "DE", "Frankfurt", 10),
+            relay("sto", "SE", "Stockholm", 20),
+            relay("ams", "NL", "Amsterdam", 30),
+        )
+        // ...and by the next re-dial Stockholm is listed offline too.
+        val later = listOf(
+            relay("fra", "DE", "Frankfurt", 10, isOnline = false),
+            relay("sto", "SE", "Stockholm", 20, isOnline = false),
+            relay("ams", "NL", "Amsterdam", 30),
+        )
+        serversAre(first, first, later)
+        try {
+            vpnManager.quickConnect()
+
+            upThenServerGoesOffline()
+            advanceTimeBy(5 * 60_000L)
+
+            // The supervisor retries the move, never a second relay.
+            coVerify(atLeast = 2) { repository.connectVpn("sto", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("ams", any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 the tile's dial of a last server the user picked keeps it in its country`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer("fra", autoPicked = false)
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 0)))
+        try {
+            vpnManager.connectPreferred()
+            assertFalse(lastAutoPicked)
+
+            upThenServerGoesOffline()
+
+            coVerify(exactly = 0) { repository.connectVpn("sto", any()) }
+            assertEquals(SessionCopy.SERVER_UNREACHABLE, (vpnManager.state.value as? VpnState.Error)?.message)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 the tile's dial of a last server the client picked lets it move country`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer("fra", autoPicked = true)
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 0)))
+        try {
+            vpnManager.connectPreferred()
+            assertTrue("re-dialling the last server keeps who chose it", lastAutoPicked)
+
+            upThenServerGoesOffline()
+
+            coVerify(exactly = 1) { repository.connectVpn("sto", any()) }
+            assertTrue(lastAutoPicked)
+        } finally {
+            quiesce()
+        }
+    }
+
+    // ── MR-2492 round 2 (lead vpn-c6): what the user is told ──────────────
+
+    /**
+     * Every Error the manager publishes, in order, as its one funnel trails it
+     * ("manager state=Error(KIND): message"). The supervisor answers the
+     * server-offline Error with Reconnecting at once, so the state alone
+     * never shows it.
+     */
+    private fun recordPublishedErrors(): MutableList<String> {
+        val trails = mutableListOf<String>()
+        mockkObject(app.birdo.vpn.utils.FaultReporter)
+        every { app.birdo.vpn.utils.FaultReporter.trail(any(), any()) } answers { trails += secondArg<String>() }
+        return trails
+    }
+
+    private fun relayOutOfPlan(id: String, countryCode: String, city: String) =
+        relay(id, countryCode, city, load = 0).copy(accessible = false)
+
+    @Test
+    fun `MR-2492 a location the user picked is never told it is moving to another location`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        val published = recordPublishedErrors()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("nyc", "US", "New York", 10), relay("lax", "US", "Los Angeles", 70)))
+        try {
+            vpnManager.connect("nyc")
+
+            upThenServerGoesOffline()
+
+            // As iOS says while it finds out: neutral, no promise of a move.
+            assertTrue(published.toString(), published.any { it.endsWith("DIED_AFTER_HANDSHAKE): Checking the connection…") })
+            assertFalse(published.toString(), published.any { "another location" in it })
+            // It still moves, inside its own country.
+            coVerify(exactly = 1) { repository.connectVpn("lax", any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a picked location with nothing reachable in its country stops on the sentence that offers another server`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        val published = recordPublishedErrors()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("fra", "DE", "Frankfurt", 10), relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline()
+
+            assertFalse(published.toString(), published.any { "another location" in it })
+            val error = vpnManager.state.value as? VpnState.Error
+            assertEquals("This server isn't reachable right now. Choose a server to connect.", error?.message)
+            assertEquals(FailureKind.REFUSED, error?.kind)
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a user's pick with nothing the plan can use left says so as a plan matter`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        // In its country or out of it, nothing else is online and open to this plan.
+        serversAre(
+            listOf(
+                relay("fra", "DE", "Frankfurt", 10),
+                relay("ber", "DE", "Berlin", 0, isOnline = false),
+                relayOutOfPlan("muc", "DE", "Munich"),
+                relay("ams", "NL", "Amsterdam", 0, isOnline = false),
+                relayOutOfPlan("lon", "GB", "London"),
+            ),
+        )
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline()
+
+            val error = vpnManager.state.value as? VpnState.Error
+            assertEquals(SessionCopy.NO_SERVERS, error?.message)
+            assertEquals(FailureKind.REFUSED, error?.kind)
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 an automatic pick with nothing the plan can use left says so as a plan matter`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(
+            listOf(
+                relay("fra", "DE", "Frankfurt", 10),
+                relay("ams", "NL", "Amsterdam", 0, isOnline = false),
+                relayOutOfPlan("lon", "GB", "London"),
+            ),
+        )
+        try {
+            vpnManager.quickConnect()
+            assertTrue(lastAutoPicked)
+
+            upThenServerGoesOffline()
+
+            val error = vpnManager.state.value as? VpnState.Error
+            assertEquals(SessionCopy.NO_SERVERS, error?.message)
+            assertEquals(FailureKind.REFUSED, error?.kind)
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a server the client chose is told it is moving to another location, and moves`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        val published = recordPublishedErrors()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20)))
+        try {
+            vpnManager.quickConnect()
+
+            upThenServerGoesOffline()
+
+            assertTrue(published.toString(), published.any { it.endsWith("DIED_AFTER_HANDSHAKE): ${SessionCopy.SERVER_OFFLINE}") })
+            coVerify(exactly = 1) { repository.connectVpn("sto", any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    // ── MR-2492 round 3: the kill switch on the stop path (review of #652, M1) ──
+    //
+    // A server that went offline with nothing to replace it ends the session.
+    // Kill switch on: fail-closed, the block the teardown put up stays held.
+    // Kill switch off: the user chose fail-open, and a dead tunnel carries
+    // nothing, so it must come down, as a revoke's does.
+
+    private suspend fun multiHopDialled() {
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Success(makeMultiHopResponse())
+        vpnManager.connectMultiHop("de-1", "nl-1")
+    }
+
+    @Test
+    fun `MR-2492 with the kill switch off, a picked location that stops takes the dead tunnel down`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        every { prefs.killSwitchEnabled } returns false
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("fra", "DE", "Frankfurt", 10), relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline(killSwitch = false)
+            advanceTimeBy(30 * 60_000L)
+
+            assertTrue(dispatchedActions.toString(), BirdoVpnService.ACTION_STOP in dispatchedActions)
+            assertEquals(SessionCopy.SERVER_UNREACHABLE, stringExtras[BirdoVpnService.EXTRA_STOP_REASON])
+            assertEquals(FailureKind.REFUSED.name, stringExtras[BirdoVpnService.EXTRA_STOP_KIND])
+            assertFalse(BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
+            assertNotEquals(VpnState.Connected, vpnManager.state.value)
+            verify { prefs.sessionShouldBeUp = false }
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 with the kill switch on, a picked location that stops keeps the block held`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("fra", "DE", "Frankfurt", 10), relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline(killSwitch = true)
+            advanceTimeBy(30 * 60_000L)
+
+            assertFalse("fail-closed: no STOP", BirdoVpnService.ACTION_STOP in dispatchedActions)
+            assertFalse(BirdoVpnService.ACTION_RELEASE_BLOCK in dispatchedActions)
+            assertEquals(SessionCopy.SERVER_UNREACHABLE, (vpnManager.state.value as? VpnState.Error)?.message)
+            verify { prefs.sessionShouldBeUp = false }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 with the kill switch off, a Multi-Hop route that went offline takes the dead tunnel down`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        every { prefs.killSwitchEnabled } returns false
+        try {
+            multiHopDialled()
+
+            upThenServerGoesOffline(killSwitch = false)
+
+            assertTrue(dispatchedActions.toString(), BirdoVpnService.ACTION_STOP in dispatchedActions)
+            assertEquals(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, stringExtras[BirdoVpnService.EXTRA_STOP_REASON])
+            assertEquals(FailureKind.REFUSED.name, stringExtras[BirdoVpnService.EXTRA_STOP_KIND])
+            assertFalse(BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
+            verify { prefs.sessionShouldBeUp = false }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 with the kill switch on, a Multi-Hop route that went offline keeps the block held`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        try {
+            multiHopDialled()
+
+            upThenServerGoesOffline(killSwitch = true)
+
+            assertFalse("fail-closed: no STOP", BirdoVpnService.ACTION_STOP in dispatchedActions)
+            assertFalse(BirdoVpnService.ACTION_RELEASE_BLOCK in dispatchedActions)
+            assertEquals(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, (vpnManager.state.value as? VpnState.Error)?.message)
+        } finally {
+            quiesce()
+        }
+    }
+
+    // ── MR-2492 round 3: a server deleted from the fleet (owner decision) ──
+    //
+    // server_offline also covers a delete, and a deleted node is gone from the
+    // next /vpn/servers. A server the client chose moves to the best eligible
+    // server anywhere; a location the user picked moves only inside the
+    // country the list cached before the refresh had it in, else it stops.
+
+    @Test
+    fun `MR-2492 an automatic pick whose server was deleted moves to the best server anywhere`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(
+            listOf(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20), relay("ams", "NL", "Amsterdam", 30)),
+            // Frankfurt was deleted: not in the fresh list at all.
+            listOf(relay("sto", "SE", "Stockholm", 20), relay("ams", "NL", "Amsterdam", 30)),
+        )
+        try {
+            vpnManager.quickConnect()
+            assertEquals("fra", lastServer)
+
+            upThenServerGoesOffline()
+
+            coVerify(exactly = 1) { repository.connectVpn("sto", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("ams", any()) }
+            assertTrue(lastAutoPicked)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a location the user picked whose server was deleted moves inside the country it was last listed in`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        every { repository.lastKnownServer("fra") } returns relay("fra", "DE", "Frankfurt", 10)
+        serversAre(listOf(relay("ber", "DE", "Berlin", 50), relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline()
+
+            coVerify(exactly = 1) { repository.connectVpn("ber", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("ams", any()) }
+            assertFalse("still the user's location", lastAutoPicked)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a location the user picked whose server was deleted, with nothing left in its country, stops and offers another server`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        every { repository.lastKnownServer("fra") } returns relay("fra", "DE", "Frankfurt", 10)
+        serversAre(listOf(relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline()
+
+            val error = vpnManager.state.value as? VpnState.Error
+            assertEquals(SessionCopy.SERVER_UNREACHABLE, error?.message)
+            assertEquals(
+                app.birdo.vpn.ui.screen.Remedy.CHOOSE_SERVER,
+                app.birdo.vpn.ui.screen.homeRemedy(app.birdo.vpn.ui.viewmodel.VpnUiState(vpnState = error!!)),
+            )
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a location the user picked whose deleted server's country is unknown stops`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        every { repository.lastKnownServer(any()) } returns null
+        serversAre(listOf(relay("ber", "DE", "Berlin", 50), relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline()
+
+            assertEquals(SessionCopy.SERVER_UNREACHABLE, (vpnManager.state.value as? VpnState.Error)?.message)
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
     @Test
     fun `not_found is a reap after a long silence and a revoke while beats were flowing`() = runTest {
         var now = 0L
@@ -2420,7 +2954,7 @@ class VpnManagerTest {
 
         assertTrue(switch.await() is ApiResult.Success)
         coVerify(exactly = 1) { repository.disconnectVpn("key-123") }
-        verify { prefs.lastServerId = "srv-2" }
+        verify { prefs.rememberLastServer("srv-2", autoPicked = false) }
         assertEquals("srv-2", vpnManager.connectedServerId.value)
         quiesce()
     }
@@ -2809,7 +3343,7 @@ class VpnManagerTest {
         assertTrue((vpnManager.state.value as VpnState.Reconnecting).waitingForNetwork)
         assertFalse("the re-dial is the old session's, not a switch", vpnManager.switching.value)
         assertTrue(result is ApiResult.Error)
-        verify(exactly = 0) { prefs.lastServerId = "srv-2" }
+        verify(exactly = 0) { prefs.rememberLastServer("srv-2", any()) }
         quiesce()
     }
 

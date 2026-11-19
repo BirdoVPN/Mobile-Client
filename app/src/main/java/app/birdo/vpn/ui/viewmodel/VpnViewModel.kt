@@ -20,6 +20,7 @@ import app.birdo.vpn.service.BirdoVpnService
 import app.birdo.vpn.service.MultiHopPolicy
 import app.birdo.vpn.service.QuotaGrace
 import app.birdo.vpn.service.BirdoPqManager
+import app.birdo.vpn.service.SelectionOrigin
 import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnManager
 import app.birdo.vpn.service.VpnState
@@ -306,6 +307,16 @@ class VpnViewModel @Inject constructor(
     /** See [PendingDial]. Cleared when the permission is granted or denied. */
     private var pendingDial: PendingDial? = null
 
+    /**
+     * MR-2492 (MR-2212's rule; iOS VpnViewModel.selectionOrigin): the id of
+     * the selection the CLIENT made, not the user ([preselect]). Connect dials
+     * it as [SelectionOrigin.AUTOMATIC], which may move to another country
+     * once if its server goes offline. Any pick of the user's clears it, the
+     * pre-selected server included, so a location the user chose never leaves
+     * its country without a tap.
+     */
+    private var automaticPickId: String? = null
+
     /** The stats poll, alive only while connected (A1-036). */
     private var statsJob: Job? = null
 
@@ -418,7 +429,9 @@ class VpnViewModel @Inject constructor(
 
             if (lastServerId != null) {
                 tracing("Auto-connecting to last server: $lastServerId")
-                when (val result = vpnManager.connect(lastServerId)) {
+                // MR-2492: as whoever chose it, which the dial that landed on it recorded.
+                val pickedBy = SelectionOrigin.ofLastServer(prefs.lastServerAutoPicked)
+                when (val result = vpnManager.connect(lastServerId, pickedBy = pickedBy)) {
                     is ApiResult.Success -> { /* state syncs via startStateSync */ }
                     is ApiResult.Error -> if (fallsBackToQuickConnect(result)) {
                         tracing("Auto-connect: the saved server is gone or locked, trying quick connect")
@@ -590,9 +603,7 @@ class VpnViewModel @Inject constructor(
                         // Connect tap moved the user — São Paulo became Toronto
                         // on the emulator — and an Always-on boot then dialled
                         // Toronto as "the last server".
-                        selectedServer = _uiState.value.selectedServer
-                            ?: lastUsableServer(servers)
-                            ?: VpnManager.bestServer(servers),
+                        selectedServer = _uiState.value.selectedServer ?: preselect(servers),
                     )
                     pruneRetiredMultiHopNodes(servers)
                 }
@@ -609,6 +620,19 @@ class VpnViewModel @Inject constructor(
     private fun lastUsableServer(servers: List<VpnServer>): VpnServer? {
         val last = prefs.lastServerId ?: return null
         return servers.firstOrNull { it.id == last && it.accessible && it.isOnline }
+    }
+
+    /**
+     * The selection a screen with none starts with: the user's last server,
+     * else the best one (K10, above). MR-2492: records whether that is the
+     * client's own pick ([automaticPickId]): the best server always is; the
+     * last server is when the client had picked it too.
+     */
+    private fun preselect(servers: List<VpnServer>): VpnServer? {
+        val last = lastUsableServer(servers)
+        val pick = last ?: VpnManager.bestServer(servers)
+        automaticPickId = pick?.id?.takeIf { last == null || prefs.lastServerAutoPicked }
+        return pick
     }
 
     /** The server a single-hop recovery re-dials (VpnManager.redial: prefs.lastServerId), if listed. */
@@ -724,7 +748,11 @@ class VpnViewModel @Inject constructor(
         // The next account must not dial this one's server or inherit its plan
         // (REVIEW-AND-007).
         prefs.lastKnownPlan = null
+        // MR-2492 (review of #652, L2): nor who chose it. The flag first, so a
+        // death between the two writes leaves the safe side, the user's.
+        prefs.lastServerAutoPicked = false
         prefs.lastServerId = null
+        automaticPickId = null
         _uiState.value = _uiState.value.copy(
             servers = emptyList(),
             selectedServer = null,
@@ -863,6 +891,9 @@ class VpnViewModel @Inject constructor(
         // actually accepted, so a banner cannot outlive the tap that caused it.
         val relabelOnly = !onTunnel || prev?.id == server.id
         val seq = ++switchSeq
+        // MR-2492: the user chose this location, even when it is the one the
+        // client had pre-selected; a live switch below dials it as theirs.
+        automaticPickId = null
         _uiState.value = _uiState.value.copy(
             selectedServer = server,
             connectError = null,
@@ -1013,9 +1044,12 @@ class VpnViewModel @Inject constructor(
         }
 
         _uiState.value = _uiState.value.copy(connectError = null)
+        // MR-2492: the client's own pick may move country once if its server
+        // goes offline; anything else is the user's and never leaves its country.
+        val pickedBy = if (server.id == automaticPickId) SelectionOrigin.AUTOMATIC else SelectionOrigin.USER
         // A failure is published by VpnManager as the session's Error, with
         // the canonical copy (426 included); nothing to copy here.
-        viewModelScope.launch { vpnManager.connect(server.id) }
+        viewModelScope.launch { vpnManager.connect(server.id, pickedBy = pickedBy) }
     }
 
     fun quickConnect() {
