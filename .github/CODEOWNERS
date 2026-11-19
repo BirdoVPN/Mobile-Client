@@ -10,5 +10,7 @@
 /.github/workflows/gradle-verification-metadata.yml @1Birdo
 /scripts/check_verification_metadata.py             @1Birdo
 /scripts/tests/check_verification_metadata_test.py  @1Birdo
+/scripts/check_dependency_verification_on.py        @1Birdo
+/scripts/tests/check_dependency_verification_on_test.py @1Birdo
 /settings.gradle.kts                                @1Birdo
 /.github/CODEOWNERS                                 @1Birdo
