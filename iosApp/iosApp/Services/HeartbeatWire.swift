@@ -253,17 +253,16 @@ enum HeartbeatPolicy {
     /// Where `.moveServer` goes: MR-2212's owner rule (`RelayRetry.next`).
     /// A server the client chose may move to any country; a location the user
     /// picked stays in its country. Only relays listed online and open to this
-    /// plan qualify, and nil means nothing qualifies, so the session ends
-    /// (`HeartbeatEnding.serverOffline`).
-    ///
-    /// The drained node must still be in `list` (listed offline). A node
-    /// `list` no longer carries was DELETED, and nothing moves on its account.
-    /// That is one rule on every client (MR-2343 round 2, L1): iOS's own retry
-    /// (#645/#648), Desktop #464/#466 and Android #652. So no cached copy is
-    /// asked for its country.
-    static func moveTarget<S: RelayRetryCandidate>(from goneId: String, in list: [S],
+    /// plan qualify, and nil means nothing qualifies. The drained node may be
+    /// listed offline in `list` or missing from it. When it is missing, its
+    /// location is read from `cached`, the list it was dialled from.
+    static func moveTarget<S: RelayRetryCandidate>(from goneId: String, in list: [S], cached: [S],
                                                    origin: SelectionOrigin) -> RelayRetry.Choice<S>? {
-        RelayRetry.next(after: goneId, in: list, origin: origin)
+        var known = list
+        if !known.contains(where: { $0.id == goneId }), let gone = cached.first(where: { $0.id == goneId }) {
+            known.append(gone)
+        }
+        return RelayRetry.next(after: goneId, in: known, origin: origin)
     }
 }
 

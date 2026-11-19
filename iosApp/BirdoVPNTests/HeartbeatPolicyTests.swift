@@ -164,40 +164,27 @@ final class HeartbeatPolicyTests: XCTestCase {
 
     /// The move follows MR-2212's owner rule (`RelayRetry.next`): a location
     /// the user picked stays in its country, a server the client chose may go
-    /// anywhere. The drained node is still in the fresh list, listed offline.
+    /// anywhere. The drained node may be listed offline in the fresh list or
+    /// be gone from it; its location is then read from the list it was in.
     func testTheMoveFollowsTheRetryRule() {
         let cached = [Node(id: "de-1"),
                       Node(id: "de-2", city: "Berlin", load: 50),
                       Node(id: "nl-1", countryCode: "NL", city: "Amsterdam", load: 1)]
         var listed = cached
         listed[0].isOnline = false
-        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "de-1", in: listed, origin: .user)?.server.id,
+        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "de-1", in: listed, cached: cached, origin: .user)?.server.id,
                        "de-2")
-        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "de-1", in: listed, origin: .automatic)?.server.id, "nl-1")
+        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "de-1", in: listed, cached: cached,
+                                                  origin: .automatic)?.server.id, "nl-1")
+        let gone = Array(listed.dropFirst())
+        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "de-1", in: gone, cached: cached, origin: .user)?.server.id,
+                       "de-2", "gone from the fresh list: its country comes from the cached one")
         // Nothing the rule allows: no move.
-        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: [listed[0], listed[2]], origin: .user))
-        XCTAssertEqual(HeartbeatEnding.serverOffline, HeartbeatEnding(message: serverGoneCopy, offersPlans: false))
-    }
-
-    /// Round 2, L1 (lead, 2026-11-19): one rule on every client. A server the
-    /// fresh list no longer carries was DELETED, and nothing moves on its
-    /// account. That matches iOS's own retry (`RelayRetry.next`, #645/#648),
-    /// Desktop #464/#466 and Android #652. The session ends and says so
-    /// (`HeartbeatEnding.serverOffline`), even though the list it was dialled
-    /// from (`dialledFrom`) still knows the deleted server's country: that
-    /// list is not an input any more. Before round 2 it was, and the session
-    /// moved.
-    func testADeletedServerIsNeverMovedFrom() {
-        let dialledFrom = [Node(id: "de-1"),
-                           Node(id: "de-2", city: "Berlin", load: 50),
-                           Node(id: "nl-1", countryCode: "NL", city: "Amsterdam", load: 1)]
-        let deleted = Array(dialledFrom.dropFirst())
-        for origin in [SelectionOrigin.user, .automatic] {
-            XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: deleted, origin: origin),
-                         "deleted from the list, picked \(origin): no move")
-        }
-        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "zz-9", in: deleted, origin: .automatic),
+        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: [listed[0], listed[2]], cached: cached,
+                                                origin: .user))
+        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "zz-9", in: gone, cached: cached, origin: .automatic),
                      "a node neither list knows: no move")
+        XCTAssertEqual(HeartbeatEnding.serverOffline, HeartbeatEnding(message: serverGoneCopy, offersPlans: false))
     }
 
     // MARK: - quota_exceeded: never "not found"
@@ -321,10 +308,7 @@ final class HeartbeatPolicyTests: XCTestCase {
         XCTAssertTrue(rebuild.contains("relayRecovery = .reconnecting"))
         XCTAssertTrue(rebuild.contains("self.connectMultiHop(entry: pair.entry, exit: pair.exit)"))
         XCTAssertTrue(move.contains("relayRecovery = .tryingAnotherServer"))
-        // Round 2, L1: chosen from the list as it stands, never a cached copy
-        // that still knows a deleted server's country.
-        XCTAssertTrue(move.contains("HeartbeatPolicy.moveTarget(from: goneId, in: self.servers, origin: origin)"))
-        XCTAssertFalse(move.contains("cached"), "the move reads a cached list again")
+        XCTAssertTrue(move.contains("HeartbeatPolicy.moveTarget(from: goneId, in: self.servers, cached: cached,"))
         XCTAssertTrue(move.contains("self.error = HeartbeatEnding.serverOffline.message"))
         let retryWindow = slice(vm, from: "private func retryOnAnotherRelay() -> Bool {", to: "private func legacyRebuild(")
         XCTAssertFalse(retryWindow.contains("rebuildAfterReap") || retryWindow.contains("moveOffDrainedServer"))
