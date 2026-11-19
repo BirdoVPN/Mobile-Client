@@ -15,9 +15,10 @@ import java.io.File
  * FailureCountsTests). What those cannot see is the wiring, because
  * BirdoPQManager, VPNManager and VpnViewModel do not compile into the
  * un-hosted iOS test bundle, so this reads them, as the other Ios*GuardTests
- * do. It also pins the privacy claim of the change: nothing in the app turns
- * the opt-in failure counts on or hands them to a sender until the owner
- * decides the consent copy and the destination.
+ * do. It also pins the privacy claim of the change, as the owner decided it
+ * on 2026-11-19: the counts are switched only by the Settings toggle, read
+ * only by Settings' Copy Diagnostics (to the clipboard, clearing them), and
+ * never sent anywhere.
  *
  * The rules live in [FailureDiagnosticsRules] as pure functions of source
  * text, so the second half of this class can prove each one CATCHES the
@@ -122,9 +123,10 @@ class IosFailureDiagnosticsGuardTest {
     }
 
     /**
-     * Owner decision pending (MR-2287): the choice is not offered and there is
-     * no destination. Whoever adds the switch or the sender updates this test,
-     * the consent copy, /privacy and the App Store privacy answers together.
+     * Owner decisions 2026-11-19 (MR-2287): a Settings toggle, off by default;
+     * the counts stay on the device; Copy Diagnostics is the one reader; no
+     * send path of any kind. Whoever changes that updates this test, the
+     * Settings copy, /privacy and the App Store privacy answers together.
      */
     @Test
     fun `the store is off by default and has no way out of the device`() {
@@ -132,13 +134,14 @@ class IosFailureDiagnosticsGuardTest {
     }
 
     @Test
-    fun `nothing outside the store turns the counts on, reads them or sends them`() {
+    fun `only the Settings toggle switches the counts and only Copy Diagnostics reads them`() {
         assertTrue("the store itself was not found by the walk", storePath in appSources)
         assertTrue("the walk misses the PacketTunnel extension", appSources.keys.any { it.startsWith("iosApp/PacketTunnel/") })
         assertEquals(emptyList<String>(), FailureDiagnosticsRules.appViolations(appSources - storePath))
-        // The app's only use is recording: one helper and the never-handshook verdict.
-        val uses = (appSources - storePath).values.sumOf { Regex("""FailureCounts\.shared\.record\(""").findAll(it).count() }
-        assertEquals("FailureCounts.shared.record( call sites", 2, uses)
+        // Recording: one helper and the never-handshook verdict. Reading: Copy Diagnostics only.
+        val others = (appSources - storePath).values
+        assertEquals("FailureCounts.shared.record( call sites", 2, others.sumOf { Regex("""FailureCounts\.shared\.record\(""").findAll(it).count() })
+        assertEquals("FailureCounts.shared.takeReport() call sites", 1, others.sumOf { Regex("""FailureCounts\.shared\.takeReport\(\)""").findAll(it).count() })
     }
 
     // ── The rules catch what they exist for (mutants of the real files) ──────
@@ -204,6 +207,28 @@ class IosFailureDiagnosticsGuardTest {
     }
 
     @Test
+    fun `a Settings screen that reads more, switches it on or sends is caught`() {
+        val path = FailureDiagnosticsRules.SETTINGS
+        val settings = source(path)
+        assertEquals("the real Settings screen", emptyList<String>(), FailureDiagnosticsRules.appViolations(mapOf(path to settings)))
+        val mutants = listOf(
+            settings + "\nfunc peek() { _ = FailureCounts.shared.takeReport() }\n",
+            settings + "\nfunc on() { FailureCounts.shared.setEnabled(true) }\n",
+            settings + "\nfunc held() -> Int { FailureCounts.shared.counts.count }\n",
+            mutate(
+                settings,
+                "        Clipboard.copy(report.text)\n",
+                "        Clipboard.copy(report.text)\n        URLSession.shared.dataTask(with: URL(string: \"https://example.invalid\")!).resume()\n",
+            ),
+            mutate(settings, "Clipboard.copy(report.text)", "Clipboard.copy(\"\\(report)\")"),
+            mutate(settings, "FailureCounts.shared.setEnabled(on)", "FailureCounts.shared.setEnabled(true)"),
+        )
+        mutants.forEachIndexed { i, text ->
+            assertTrue("Settings mutant #$i not caught", FailureDiagnosticsRules.appViolations(mapOf(path to text)).isNotEmpty())
+        }
+    }
+
+    @Test
     fun `a resolveEffectivePsk that falls back to the classical key is caught`() {
         val catchBody = "            BirdoPQManager.shared.recordDisabled()\n" +
             "            throw VPNManagerError.quantumHandshakeFailed(error as? PQFailure ?? .deriveFailed)\n"
@@ -266,22 +291,50 @@ internal object FailureDiagnosticsRules {
         return out
     }
 
+    /** The one file that may switch or read the counts (owner decisions 1-2, 2026-11-19). */
+    const val SETTINGS = "iosApp/iosApp/Views/SettingsView.swift"
+
     /**
-     * Every other Swift file: the store's only use is `FailureCounts.shared.record(`.
-     * No other handle on it, no second instance, no report, no switch, no
-     * direct read of its keys.
+     * Every other Swift file. Anywhere, the store's only use is
+     * `FailureCounts.shared.record(`. In [SETTINGS] also `.isEnabled`, the
+     * toggle's `.setEnabled(on)` and Copy Diagnostics' `.takeReport()`, once
+     * each where it counts ([settingsViolations]). Never a second instance,
+     * the store's keys, `.counts` or `setEnabled(true`.
      */
     fun appViolations(files: Map<String, String>): List<String> = files.flatMap { (path, text) ->
         val src = code(text)
+        val settings = path == SETTINGS
         val names = src.contains("FailureCounts")
-        listOfNotNull(
-            "a handle on the shared store other than .record(".takeIf { Regex("""FailureCounts\.shared(?!\.record\()""").containsMatchIn(src) },
+        val handle = if (settings) {
+            Regex("""FailureCounts\.shared(?!\.record\(|\.isEnabled\b|\.setEnabled\(on\)|\.takeReport\(\))""")
+        } else {
+            Regex("""FailureCounts\.shared(?!\.record\()""")
+        }
+        val found = listOfNotNull(
+            "a handle on the shared store this file may not use".takeIf { handle.containsMatchIn(src) },
             "a second store".takeIf { Regex("""\bFailureCounts\s*\(""").containsMatchIn(src) },
-            "takeReport(".takeIf { "takeReport(" in src },
+            "takeReport(".takeIf { !settings && "takeReport(" in src },
             "its keys".takeIf { "\"failure_counts" in src || Regex("""FailureCounts\.(enabledKey|countsKey|versionKey)""").containsMatchIn(src) },
-            "setEnabled(".takeIf { names && "setEnabled(" in src },
+            "setEnabled(".takeIf { names && !settings && "setEnabled(" in src },
+            "setEnabled(true".takeIf { names && "setEnabled(true" in src },
             ".counts".takeIf { names && Regex("""\.counts\b""").containsMatchIn(src) },
-        ).map { "$path: $it" }
+        ) + (if (settings) settingsViolations(src) else emptyList())
+        found.map { "$path: $it" }
+    }
+
+    /** [SETTINGS]: one writer (the toggle), one reader (Copy Diagnostics, to the clipboard only). */
+    private fun settingsViolations(src: String): List<String> {
+        val out = mutableListOf<String>()
+        if (Regex("""takeReport\(""").findAll(src).count() != 1) out += "takeReport( is called other than once"
+        if (Regex("""setEnabled\(""").findAll(src).count() != 1 || "FailureCounts.shared.setEnabled(on)" !in src) {
+            out += "the toggle's setEnabled(on) is not the one writer"
+        }
+        val copy = src.substringAfter("private func copyDiagnostics() {", "").substringBefore("\n    }\n")
+        if ("FailureCounts.shared.takeReport()" !in copy || "Clipboard.copy(report.text)" !in copy) {
+            out += "Copy Diagnostics does not take the report and copy only its text"
+        }
+        for (needle in networkTokens) if (needle in copy) out += "Copy Diagnostics uses $needle"
+        return out
     }
 
     /**

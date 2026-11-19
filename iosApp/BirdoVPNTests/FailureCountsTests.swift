@@ -130,6 +130,27 @@ final class FailureCountsTests: XCTestCase {
         XCTAssertEqual(json["appVersion"] as? String, "1.4.99")
     }
 
+    // MARK: - Copy Diagnostics (owner decision 2, 2026-11-19)
+
+    /// Settings' Copy Diagnostics copies `takeReport()?.text`: exactly the
+    /// report, one field per line, and taking it clears the device's counts.
+    func testCopyDiagnosticsCopiesTheReportOnlyAndClears() throws {
+        store.setEnabled(true)
+        store.record(.tunnelNeverHandshook)
+        store.record(.pqNonceInvalid)
+        store.record(.tunnelNeverHandshook)
+        let copied = try XCTUnwrap(report()).text
+        XCTAssertEqual(copied, """
+            BirdoVPN failure counts
+            platform: \(FailureCounts.platform)
+            app version: 1.4.99
+            pq_nonce_invalid: 1
+            tunnel_never_handshook: 2
+            """)
+        XCTAssertTrue(store.counts.isEmpty, "a copy must clear what it copied")
+        XCTAssertNil(report(), "a second copy right after the first has nothing to copy")
+    }
+
     // MARK: - The report's values are this build's, not a caller's (L2)
 
     func testThePlatformIsTheBuildsOwn() {

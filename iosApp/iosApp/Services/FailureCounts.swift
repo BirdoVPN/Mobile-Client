@@ -53,6 +53,14 @@ struct FailureCountsReport: Codable, Equatable, Sendable {
     let platform: String
     let appVersion: String
     let counts: [String: Int]
+
+    /// What Copy Diagnostics puts on the clipboard: the report's fields, one
+    /// per line, codes sorted, and nothing else.
+    var text: String {
+        var lines = ["BirdoVPN failure counts", "platform: \(platform)", "app version: \(appVersion)"]
+        lines += counts.keys.sorted().map { "\($0): \(counts[$0] ?? 0)" }
+        return lines.joined(separator: "\n")
+    }
 }
 
 /// Opt-in, counts-only failure diagnostics for the iOS and macOS app.
@@ -79,15 +87,18 @@ struct FailureCountsReport: Codable, Equatable, Sendable {
 /// took. A report's `platform` and `appVersion` are this build's own facts
 /// (`platform`, `reportableVersion`), never a caller's text.
 ///
-/// ## Not switched on in this build
+/// ## On the device only (owner decisions 2026-11-19, MR-2287)
 ///
-/// There is no switch for it in the app yet and no destination: whether to
-/// show the choice (consent screen and Settings, as on Android) and where a
-/// report would go are owner decisions (MR-2287), because either one changes
-/// the consent copy, /privacy and the App Store privacy answers. Until then
-/// `isEnabled` is false on every device, every `record` is a no-op and
-/// `takeReport` is always nil. The failure REASON is already visible without
-/// it: it travels with the error and its code is in the message the user sees.
+/// 1. The choice is a Settings toggle, off by default, with no consent-screen
+///    item and no consent-version bump (`SettingsView.diagnosticsSection`).
+/// 2. The counts never leave the app by themselves. Settings' Copy
+///    Diagnostics is the ONE reader: it puts `takeReport()`'s `text` on the
+///    clipboard, which clears what was held. There is no endpoint and no send
+///    path of any kind.
+/// 3. No crash-reporting SDK.
+///
+/// The failure REASON is visible without any of this: it travels with the
+/// error and its code is in the message the user sees.
 /// `IosFailureDiagnosticsGuardTest` (JVM) pins all of this, this file included.
 final class FailureCounts: @unchecked Sendable {
     static let shared = FailureCounts(defaults: .standard)
@@ -175,9 +186,9 @@ final class FailureCounts: @unchecked Sendable {
         return out
     }
 
-    /// The report a sender would deliver; everything held is cleared in the
+    /// The report Copy Diagnostics copies; everything held is cleared in the
     /// same step. Nil while the user has not opted in (the gate: nothing is
-    /// ever handed to a sender without consent) and when this version counted
+    /// ever handed out without consent) and when this version counted
     /// nothing. Codes this build does not know are dropped.
     func takeReport() -> FailureCountsReport? {
         lock.lock(); defer { lock.unlock() }
