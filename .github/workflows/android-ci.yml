@@ -324,29 +324,7 @@ jobs:
         if: ${{ needs.changes.outputs.android != 'false' }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set +e
-          files="$HOME/.gradle/caches/modules-2/files-2.1"
-          echo "== plugin-marker POMs in the restored cache:"
-          find "$files" -path '*.gradle.plugin/*' -name '*.pom' -printf '%P\n' 2>/dev/null | sort
-          echo "== (end)"
-          offline() {
-            ./gradlew --offline help > "$RUNNER_TEMP/offline-$1.log" 2>&1
-            echo "== $1: --offline help exit $?"
-            grep -E "Plugin \[id|No cached version|could not resolve|BUILD (SUCCESSFUL|FAILED)" "$RUNNER_TEMP/offline-$1.log" | head -10
-          }
-          offline this-change
-          git fetch --quiet --depth=1 origin "$BASE_SHA"
-          for f in settings.gradle.kts gradle/verification-metadata.xml; do
-            cp "$f" "$RUNNER_TEMP/$(basename "$f").pr"
-            git show "$BASE_SHA:$f" > "$f"
-          done
-          offline "base-$BASE_SHA"
-          for f in settings.gradle.kts gradle/verification-metadata.xml; do
-            cp "$RUNNER_TEMP/$(basename "$f").pr" "$f"
-          done
-          git diff --quiet HEAD -- settings.gradle.kts gradle/verification-metadata.xml || { echo "::error::the diagnostics did not restore the tree"; exit 1; }
-          exit 0
+        run: bash .github/scripts/tmp-plugin-marker-diagnostics.sh "$BASE_SHA"
 
       # MOBILE-PLUGIN-MARKER-FLAKE. No plugin may be resolved through a plugin
       # marker (<id>:<id>.gradle.plugin) on Maven Central: settings.gradle.kts
@@ -718,29 +696,7 @@ jobs:
       - name: "Diagnostics: offline configuration on the restored cache, this change vs base"
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set +e
-          files="$HOME/.gradle/caches/modules-2/files-2.1"
-          echo "== plugin-marker POMs in the restored cache:"
-          find "$files" -path '*.gradle.plugin/*' -name '*.pom' -printf '%P\n' 2>/dev/null | sort
-          echo "== (end)"
-          offline() {
-            ./gradlew --offline help > "$RUNNER_TEMP/offline-$1.log" 2>&1
-            echo "== $1: --offline help exit $?"
-            grep -E "Plugin \[id|No cached version|could not resolve|BUILD (SUCCESSFUL|FAILED)" "$RUNNER_TEMP/offline-$1.log" | head -10
-          }
-          offline this-change
-          git fetch --quiet --depth=1 origin "$BASE_SHA"
-          for f in settings.gradle.kts gradle/verification-metadata.xml; do
-            cp "$f" "$RUNNER_TEMP/$(basename "$f").pr"
-            git show "$BASE_SHA:$f" > "$f"
-          done
-          offline "base-$BASE_SHA"
-          for f in settings.gradle.kts gradle/verification-metadata.xml; do
-            cp "$RUNNER_TEMP/$(basename "$f").pr" "$f"
-          done
-          git diff --quiet HEAD -- settings.gradle.kts gradle/verification-metadata.xml || { echo "::error::the diagnostics did not restore the tree"; exit 1; }
-          exit 0
+        run: bash .github/scripts/tmp-plugin-marker-diagnostics.sh "$BASE_SHA"
 
       # Go module + build caches for the two 32-bit Xray engines built from
       # source. Never the engines themselves (see the action). Restored on
