@@ -1739,6 +1739,143 @@ class VpnManagerTest {
         }
     }
 
+    // ── MR-2492 round 2 (lead vpn-c6): what the user is told ──────────────
+
+    /**
+     * Every Error the manager publishes, in order, as its one funnel trails it
+     * ("manager state=Error(KIND): message"). The supervisor answers the
+     * server-offline Error with Reconnecting at once, so the state alone
+     * never shows it.
+     */
+    private fun recordPublishedErrors(): MutableList<String> {
+        val trails = mutableListOf<String>()
+        mockkObject(app.birdo.vpn.utils.FaultReporter)
+        every { app.birdo.vpn.utils.FaultReporter.trail(any(), any()) } answers { trails += secondArg<String>() }
+        return trails
+    }
+
+    private fun relayOutOfPlan(id: String, countryCode: String, city: String) =
+        relay(id, countryCode, city, load = 0).copy(accessible = false)
+
+    @Test
+    fun `MR-2492 a location the user picked is never told it is moving to another location`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        val published = recordPublishedErrors()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("nyc", "US", "New York", 10), relay("lax", "US", "Los Angeles", 70)))
+        try {
+            vpnManager.connect("nyc")
+
+            upThenServerGoesOffline()
+
+            // As iOS says while it finds out: neutral, no promise of a move.
+            assertTrue(published.toString(), published.any { it.endsWith("DIED_AFTER_HANDSHAKE): Checking the connection…") })
+            assertFalse(published.toString(), published.any { "another location" in it })
+            // It still moves, inside its own country.
+            coVerify(exactly = 1) { repository.connectVpn("lax", any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a picked location with nothing reachable in its country stops on the sentence that offers another server`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        val published = recordPublishedErrors()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("fra", "DE", "Frankfurt", 10), relay("ams", "NL", "Amsterdam", 0)))
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline()
+
+            assertFalse(published.toString(), published.any { "another location" in it })
+            val error = vpnManager.state.value as? VpnState.Error
+            assertEquals("This server isn't reachable right now. Choose a server to connect.", error?.message)
+            assertEquals(FailureKind.REFUSED, error?.kind)
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a user's pick with nothing the plan can use left says so as a plan matter`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        // In its country or out of it, nothing else is online and open to this plan.
+        serversAre(
+            listOf(
+                relay("fra", "DE", "Frankfurt", 10),
+                relay("ber", "DE", "Berlin", 0, isOnline = false),
+                relayOutOfPlan("muc", "DE", "Munich"),
+                relay("ams", "NL", "Amsterdam", 0, isOnline = false),
+                relayOutOfPlan("lon", "GB", "London"),
+            ),
+        )
+        try {
+            vpnManager.connect("fra")
+
+            upThenServerGoesOffline()
+
+            val error = vpnManager.state.value as? VpnState.Error
+            assertEquals(SessionCopy.NO_SERVERS, error?.message)
+            assertEquals(FailureKind.REFUSED, error?.kind)
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 an automatic pick with nothing the plan can use left says so as a plan matter`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(
+            listOf(
+                relay("fra", "DE", "Frankfurt", 10),
+                relay("ams", "NL", "Amsterdam", 0, isOnline = false),
+                relayOutOfPlan("lon", "GB", "London"),
+            ),
+        )
+        try {
+            vpnManager.quickConnect()
+            assertTrue(lastAutoPicked)
+
+            upThenServerGoesOffline()
+
+            val error = vpnManager.state.value as? VpnState.Error
+            assertEquals(SessionCopy.NO_SERVERS, error?.message)
+            assertEquals(FailureKind.REFUSED, error?.kind)
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2492 a server the client chose is told it is moving to another location, and moves`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        val published = recordPublishedErrors()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(listOf(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20)))
+        try {
+            vpnManager.quickConnect()
+
+            upThenServerGoesOffline()
+
+            assertTrue(published.toString(), published.any { it.endsWith("DIED_AFTER_HANDSHAKE): ${SessionCopy.SERVER_OFFLINE}") })
+            coVerify(exactly = 1) { repository.connectVpn("sto", any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
     @Test
     fun `not_found is a reap after a long silence and a revoke while beats were flowing`() = runTest {
         var now = 0L

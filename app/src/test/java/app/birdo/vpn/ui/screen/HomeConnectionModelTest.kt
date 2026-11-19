@@ -173,6 +173,25 @@ class HomeConnectionModelTest {
         assertNull(homeRemedy(VpnUiState(vpnState = VpnState.Error("x", FailureKind.PLAN_REQUIRED), connectError = "screen")))
     }
 
+    /**
+     * MR-2492 round 2 (lead vpn-c6, as Desktop #464): a location the user
+     * picked whose server went offline, with nothing reachable left in its
+     * country, stops and offers the server list. Only that sentence: other
+     * refusals keep no remedy, and a plan with nothing it can use is no
+     * server choice.
+     */
+    @Test
+    fun `MR-2492 a location with nothing reachable left offers Choose server`() {
+        assertEquals("This server isn't reachable right now. Choose a server to connect.", SessionCopy.SERVER_UNREACHABLE)
+        assertEquals(
+            Remedy.CHOOSE_SERVER,
+            homeRemedy(VpnUiState(vpnState = VpnState.Error(SessionCopy.SERVER_UNREACHABLE, FailureKind.REFUSED))),
+        )
+        assertNull(homeRemedy(VpnUiState(vpnState = VpnState.Error(SessionCopy.NO_SERVERS, FailureKind.REFUSED))))
+        assertNull(homeRemedy(VpnUiState(vpnState = VpnState.Error("x", FailureKind.REFUSED))))
+        assertNull(homeRemedy(VpnUiState(vpnState = VpnState.Error(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, FailureKind.REFUSED))))
+    }
+
     // ── MR-945: the server pickers' row markers follow Home ──────────────
 
     private val amsterdam = VpnServer(id = "nl-1", name = "Amsterdam 1", country = "Netherlands", countryCode = "NL")
