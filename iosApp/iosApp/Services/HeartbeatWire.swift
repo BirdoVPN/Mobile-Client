@@ -81,3 +81,93 @@ extension HeartbeatResult: Decodable {
         quotaGraceSecondsRemaining = try? c.decodeIfPresent(TimeInterval.self, forKey: .quotaGraceSecondsRemaining)
     }
 }
+
+// MARK: - What the host does with a reply (MR-2343)
+//
+// TESTS FIRST (commit 1 of MR-2343): this section is TODAY's host decision,
+// `VpnViewModel.sendHeartbeat`'s three branches moved here verbatim and not
+// yet called, plus inert stand-ins for what iOS does not do at all yet (no
+// grace notice, no rebuild, no move). It exists so HeartbeatPolicyTests and
+// ConnectContractTests compile against the API and fail by name. The next
+// commit replaces it with the decision and wires VpnViewModel to it.
+
+/// What `VpnViewModel.sendHeartbeat` does with one reply.
+enum HeartbeatOutcome: Equatable, Sendable {
+    /// The session stays as it is. `nodeOffline`: its node reports it is not
+    /// ONLINE (logged only). `grace`: the Free plan's grace notice, nil for none.
+    case keep(nodeOffline: Bool, grace: QuotaGrace?)
+    /// One quiet rebuild of the same route.
+    case rebuild
+    /// Connect to a different server.
+    case moveServer
+    /// The server ended the session: stop, say why, never reconnect on our own.
+    case end(HeartbeatEnding)
+}
+
+/// How a session the server ended is told.
+struct HeartbeatEnding: Equatable, Sendable {
+    let message: String
+    /// Home offers the plans under the banner.
+    let offersPlans: Bool
+
+    static let revoked = HeartbeatEnding(
+        message: "Connection has been revoked. Please reconnect.", offersPlans: false)
+    static let evicted = HeartbeatEnding(
+        message: "Another device on your account connected, so this one was disconnected. "
+            + "Tap Connect to take it back.",
+        offersPlans: false)
+    static let quotaExceeded = HeartbeatEnding(
+        message: "You've used this month's free data allowance. Upgrade to keep using BirdoVPN.",
+        offersPlans: true)
+    static let multiHopRouteOffline = HeartbeatEnding(
+        message: "A server on your Multi-Hop route went offline. Choose another entry or exit.",
+        offersPlans: false)
+    static let serverOffline = HeartbeatEnding(
+        message: "This server went offline. Choose another location.", offersPlans: false)
+}
+
+/// The Free plan's grace notice.
+struct QuotaGrace: Equatable, Sendable {
+    let minutesLeft: Int?
+
+    var message: String {
+        if let minutesLeft {
+            return "Free data allowance used — your connection ends in \(minutesLeft) min."
+        }
+        return "Free data allowance used — your connection ends soon."
+    }
+
+    /// Today: iOS shows no grace notice.
+    static func from(_ reply: HeartbeatResult, now: Date) -> QuotaGrace? { nil }
+}
+
+enum HeartbeatPolicy {
+    static let reapWindow: TimeInterval = 5 * 60
+
+    /// Today's `VpnViewModel.sendHeartbeat`, verbatim: `valid: false` ends the
+    /// session in the reply's own words; otherwise it stays, logging a node
+    /// that reports offline. `reason` and the quota fields are not read.
+    static func outcome(of reply: HeartbeatResult, sinceLastOk: TimeInterval,
+                        multiHop: Bool, now: Date) -> HeartbeatOutcome {
+        if !reply.valid {
+            return .end(HeartbeatEnding(message: reply.message ?? "Connection has been revoked. Please reconnect.",
+                                        offersPlans: false))
+        }
+        return .keep(nodeOffline: reply.serverOnline == false, grace: nil)
+    }
+
+    /// Today: iOS never moves off a server the heartbeat reports gone.
+    static func moveTarget<S: RelayRetryCandidate>(from goneId: String, in list: [S], cached: [S],
+                                                   origin: SelectionOrigin) -> RelayRetry.Choice<S>? {
+        nil
+    }
+}
+
+/// Today: there is no rebuild to budget.
+struct HeartbeatRebuildBudget: Equatable, Sendable {
+    static let window: TimeInterval = 10 * 60
+
+    init() {}
+
+    mutating func admit(_ outcome: HeartbeatOutcome, now: Date) -> HeartbeatOutcome { outcome }
+}
