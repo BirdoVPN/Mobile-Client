@@ -394,6 +394,9 @@ struct HomeView: View {
         // A live server switch tears the tunnel down and rebuilds it on the new
         // node — never show "Protected" over the new name until it lands.
         if vpnVM.isSwitching { return "Switching server…" }
+        // MR-2212: the automatic retry on another server, or the check that
+        // follows a dial no relay answered.
+        if let recovery = vpnVM.relayRecovery { return recovery.label }
         // Guests can never be connected; say what is true rather than the bare
         // "Not Connected", which reads like a failure the user should fix.
         // Not "Not signed in": nothing needs signing in to any more, and the
@@ -413,7 +416,9 @@ struct HomeView: View {
     }
 
     private var statusTone: StatusBadgePill.Tone {
-        if vpnVM.isSwitching || vpnVM.connectionPhase == .reconnecting { return .warning }
+        if vpnVM.isSwitching || vpnVM.relayRecovery != nil || vpnVM.connectionPhase == .reconnecting {
+            return .warning
+        }
         switch vpnVM.tunnelPhase {
         case .protected: return .success
         case .connecting: return .warning
@@ -422,7 +427,9 @@ struct HomeView: View {
     }
 
     private var statusIcon: String? {
-        if vpnVM.isSwitching || vpnVM.connectionPhase == .reconnecting { return "arrow.triangle.2.circlepath" }
+        if vpnVM.isSwitching || vpnVM.relayRecovery != nil || vpnVM.connectionPhase == .reconnecting {
+            return "arrow.triangle.2.circlepath"
+        }
         switch vpnVM.tunnelPhase {
         case .protected: return nil // pulse dot instead
         case .connecting: return "arrow.triangle.2.circlepath"
