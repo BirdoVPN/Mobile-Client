@@ -1641,8 +1641,18 @@ class VpnManager @Inject constructor(
         // Counts only: whether it moves and how far, never which relay.
         android.util.Log.i("VpnManager", RelayRetry.logLine(planned, spentBefore))
         if (planned == null) {
-            publishError(SessionCopy.SERVER_UNREACHABLE, FailureKind.REFUSED)
-            return ApiResult.Error(SessionCopy.SERVER_UNREACHABLE)
+            // Round 2 (lead vpn-c6): nothing this plan can use is left anywhere
+            // is a plan matter, said as a quick connect says it. Otherwise it
+            // is reachability: a location the user picked has nothing left in
+            // its country, or the server is no longer listed; Home offers
+            // Choose server beside it.
+            val message = if (bestServer(servers.filter { it.id != goneId }) == null) {
+                SessionCopy.NO_SERVERS
+            } else {
+                SessionCopy.SERVER_UNREACHABLE
+            }
+            publishError(message, FailureKind.REFUSED)
+            return ApiResult.Error(message)
         }
         relayRetryTarget = planned.server.id
         return dialSingle(planned.server.id, null, gen, prior, pickedBy)
@@ -3358,9 +3368,11 @@ class VpnManager @Inject constructor(
             HeartbeatPolicy.Verdict.SERVER_GONE -> if (activeMultiHop != null) {
                 sessionDeadTeardown(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, FailureKind.REFUSED)
             } else {
-                android.util.Log.w("VpnManager", "Heartbeat: this server went offline — moving to another")
+                android.util.Log.w("VpnManager", "Heartbeat: this server went offline — the retry rule decides")
                 avoidServerId = prefs.lastServerId
-                sessionDeadTeardown(SessionCopy.SERVER_OFFLINE, FailureKind.DIED_AFTER_HANDSHAKE)
+                // MR-2492 round 2: "another location" only for a server the
+                // client chose; a location the user picked may not move at all.
+                sessionDeadTeardown(SessionCopy.serverOffline(lastServerOrigin()), FailureKind.DIED_AFTER_HANDSHAKE)
             }
         }
     }

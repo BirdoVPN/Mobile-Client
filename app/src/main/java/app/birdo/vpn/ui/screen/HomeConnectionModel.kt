@@ -223,6 +223,10 @@ internal fun homeRemedy(state: VpnUiState): Remedy? {
     if (state.connectError != null || killSwitchWarning(state) != null) return null
     val error = state.vpnState as? VpnState.Error ?: return null
     if (SessionCopy.isKillSwitchNotArmed(error.message)) return null
+    // MR-2492: a location the user picked went offline with nothing reachable
+    // left in its country. A refusal like any other to the supervisor, but
+    // this one is fixed by choosing a server (its sentence says so).
+    if (error.message == SessionCopy.SERVER_UNREACHABLE) return Remedy.CHOOSE_SERVER
     val remedy = remedyFor(error.kind)
     // No review button without a link of this site to open.
     if (remedy == Remedy.ASK_REVIEW && ConnectNotices.siteUrl(state.accountRestriction?.appealPath) == null) return null
