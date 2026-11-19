@@ -714,6 +714,15 @@ internal object SessionCopy {
     const val SERVER_OFFLINE = "This server went offline. Reconnecting to another location…"
     const val MULTI_HOP_ROUTE_OFFLINE =
         "A server on your Multi-Hop route went offline. Choose another entry or exit."
+
+    /**
+     * MR-2492: the server went offline and no relay qualifies for the one
+     * move (RelayRetry): a location the user picked has no other server in
+     * its country, and it never leaves its country without a tap; or nothing
+     * else is online. iOS's words for a relay that does not answer
+     * (RelayProbeVerdict.serverUnreachable, Mobile #645).
+     */
+    const val SERVER_UNREACHABLE = "This server isn't reachable right now."
     const val REAPED = "The server dropped this connection while the device was idle. Reconnecting…"
     const val NO_TUNNEL = "Couldn't establish a secure tunnel to this server. Try another location."
     const val QUANTUM_FAILED =

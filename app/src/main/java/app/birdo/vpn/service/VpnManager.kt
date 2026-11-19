@@ -729,10 +729,12 @@ class VpnManager @Inject constructor(
      *   stealth transport regardless of plan, because plain WireGuard has been
      *   observed failing on this network. Null on an ordinary connect, which
      *   always tries the fast path first.
+     * @param pickedBy MR-2492: who chose [serverId].
      */
     suspend fun connect(
         serverId: String,
         fallbackReason: String? = null,
+        @Suppress("UNUSED_PARAMETER") pickedBy: SelectionOrigin = SelectionOrigin.USER,
     ): ApiResult<ConnectResponse> = runDial {
         val prior = _state.value
         val gen = beginDial(DialOrigin.USER, prior)
