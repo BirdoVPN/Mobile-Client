@@ -140,8 +140,27 @@ jobs:
       # log instead of failing the monthly recording. What it produces is a
       # profile text a pull request then reviews; every build that ships runs
       # strict (Android CI, the release).
+      #
+      # The two -D properties raise Gradle's per-request retry (MR-2405). The
+      # :baselineprofile test graph (benchmark-macro-junit4 and what it pulls
+      # from Maven Central: wire-runtime, kotlinx-coroutines 1.8.1's POM) is in
+      # no cache this job restores. setup-gradle hands it Android CI's "build"
+      # entry, and this job writes none of its own (read-only above; a monthly
+      # entry would be evicted after 7 days anyway). So every run downloads that
+      # graph, and run 44193060502 met "429 Too Many Requests" from Maven
+      # Central doing so. Gradle's default is 3 tries, 1 s then 2 s apart, after
+      # which it DISABLES the repository for the rest of the build: three
+      # seconds of rate limiting failed the month's recording. 8 tries starting
+      # at 2 s wait up to 254 s in all for one file, long enough to outlast a
+      # rate-limit window; an outage still fails, minutes later. Gradle reads
+      # both in ErrorHandlingModuleComponentRepository (checked against 9.9.0)
+      # and retries only 408, 429, 5xx, timeouts and dropped connections --
+      # never a 404, a 401 or a 403.
       - name: Record the profile
-        run: ./gradlew :app:generateReleaseBaselineProfile --no-daemon --dependency-verification lenient
+        run: |
+          ./gradlew :app:generateReleaseBaselineProfile --no-daemon --dependency-verification lenient \
+            -Dorg.gradle.internal.repository.max.tentatives=8 \
+            -Dorg.gradle.internal.repository.initial.backoff=2000
 
       # THE ACTUAL ASSERTION. Everything above is setup.
       #
