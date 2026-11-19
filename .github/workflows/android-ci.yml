@@ -180,6 +180,36 @@ jobs:
           fi
           echo "::warning file=$props::distributionSha256Sum is not set yet, so the wrapper would run any distribution served at $url. Mobile #459 adds it; from then on removing it fails this check."
 
+      # MR-2434: gradle/verification-metadata.xml (MR-1794) protects only a
+      # build that verifies. This fails if the file is gone, or if any
+      # .properties file, workflow, script or build script turns verification
+      # lenient or off (baseline-profile.yml's recording line excepted; the
+      # script says why). On a pull request the BASE commit's copy of the guard
+      # runs as well as the pull request's (MR-2437): a pull request cannot
+      # loosen the check it is judged by. Its self-test runs first, so a guard
+      # that could never fail does not pass.
+      - name: Gradle dependency verification stays on
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          guard=scripts/check_dependency_verification_on.py
+          python3 scripts/tests/check_dependency_verification_on_test.py
+          rc=0
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --quiet --depth=1 origin "$BASE_SHA"
+            if git cat-file -e "$BASE_SHA:$guard" 2>/dev/null; then
+              git show "$BASE_SHA:$guard" > "$RUNNER_TEMP/base-guard.py"
+              echo "== the base commit's $guard"
+              python3 -I "$RUNNER_TEMP/base-guard.py" --root . || rc=1
+            else
+              echo "::notice::$BASE_SHA has no $guard yet (this change adds it); only this change's copy runs."
+            fi
+          fi
+          echo "== this change's $guard"
+          python3 -I "$guard" --root . || rc=1
+          exit "$rc"
+
       # Every action here is SHA-pinned, which is correct. But a SHA is opaque, so
       # the trailing `# vX` comment is the only readable handle on what actually
       # runs -- and a bad action ref fails as `startup_failure`: zero jobs, no
