@@ -360,7 +360,9 @@ targets:
       # session (only a 401 signs out; a 429 keeps it and waits Retry-After,
       # else details.retryAfter, else 60 s; a 403, a 5xx or no answer keeps it
       # and backs off), the hold, and the single-flight RefreshCoordinator.
-      # Foundation-only by design, pinned by RefreshAnswerTests; it clamps with
+      # Foundation-only by design, pinned by RefreshAnswerTests; it clamps a
+      # named wait its own way (RefreshRetry.serverWait, 1 s .. 60 s, one table
+      # with Desktop #467), and RefreshAnswerTests checks it against
       # ConnectRetryAfter (the file above). APIClient.swift (its caller)
       # cannot be compiled into this bundle.
       - path: iosApp/Services/RefreshAnswer.swift

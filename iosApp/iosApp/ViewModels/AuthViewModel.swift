@@ -1155,6 +1155,9 @@ final class AuthViewModel: ObservableObject {
             keychain.setSignedInWithApple(false)
             isLoggedIn = true
             Task { [weak self] in
+                // L1: a new session owes nothing to the last one's refresh
+                // wait, before its first request.
+                await self?.api.beginSession()
                 if let profile = try? await self?.api.fetchProfile() {
                     self?.applyProfile(profile)
                 }
@@ -1672,6 +1675,9 @@ final class AuthViewModel: ObservableObject {
             error = "Could not securely store your session. Please try again."
             return false
         }
+        // L1 (review of #653): a refresh wait, backoff or retry the previous
+        // session earned is not this one's, with or without a sign-out first.
+        await api.beginSession()
         switch context {
         case .anonymousLogin, .anonymousCreate:
             // #485 review: with no number for THIS account (a registration

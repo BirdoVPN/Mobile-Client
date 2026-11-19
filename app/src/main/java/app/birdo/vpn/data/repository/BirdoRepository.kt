@@ -114,10 +114,11 @@ class BirdoRepository @Inject constructor(
      * (birdo-web backend/contract/README.md, "Token refresh"); its Retry-After
      * says when to ask again. Before, the next 401 — the heartbeat's, 30 s
      * later, or any of the cold-start calls — asked again at once and earned
-     * another 429. Clamped by [RetryAfter] to ten minutes at most, well inside
-     * an access token's hour, so a sign-in never needs it cleared. MR-2500: a
-     * refresh that got no verdict holds the next one too, for its backoff
-     * ([backOffRefresh], five minutes at most).
+     * another 429. Clamped to 1 s .. 60 s ([RefreshRetry.serverWaitMs]).
+     * MR-2500: a refresh that got no verdict holds the next one too, for its
+     * backoff ([backOffRefresh], 30 s at most unless the server named longer).
+     * The hold is the session's: a sign-out or a sign-in forgets it
+     * ([forgetRefreshState], L1 of the #653 review).
      */
     @Volatile private var refreshHold: Pair<Long, Long>? = null
 
@@ -135,10 +136,12 @@ class BirdoRepository @Inject constructor(
     /**
      * MR-2500: refreshes in a row that got no verdict (a 5xx, a 403, an
      * unexpected status, no answer at all): the exponent of their backoff
-     * ([RefreshRetry.backoffMs]). A 2xx or a 401 starts it over. Read and
-     * written only under [refreshMutex].
+     * ([RefreshRetry.backoffMs]). A 2xx or a 401 starts it over, and so does
+     * a sign-out or a sign-in ([forgetRefreshState]). Written under
+     * [refreshMutex] or [sessionLock] (the sign-in or sign-out side), hence
+     * volatile.
      */
-    private var refreshFailures = 0
+    @Volatile private var refreshFailures = 0
 
     /** The jitter for [RefreshRetry.backoffMs], in [0, 1]. Replaced by tests. */
     internal var jitter: () -> Double = { RefreshRetry.jitter() }
@@ -146,7 +149,8 @@ class BirdoRepository @Inject constructor(
     /**
      * MR-2500: after a refresh that got no verdict, hold the next one for the
      * backoff, and never for less than a [serverWaitMs] the server named. The
-     * token stays exactly as it is: the next refresh presents it again.
+     * token stays exactly as it is: the next refresh presents it again. Run
+     * through [holdIfSameSession].
      */
     private fun backOffRefresh(serverWaitMs: Long?) {
         refreshFailures += 1
@@ -160,6 +164,39 @@ class BirdoRepository @Inject constructor(
      * [retryHeldRefresh] pays it when the app comes to the foreground.
      */
     @Volatile private var refreshPending = false
+
+    /**
+     * L1 (review of #653), as Desktop's `RetryGate::forget_session`: the hold,
+     * the backoff count and the retry owed belong to the session that earned
+     * them. A sign-out or a sign-in forgets them, so the next session's first
+     * refresh is sent, its first failure waits the first step, and its first
+     * foreground owes nothing. Before, a sign-out during a hold left the next
+     * sign-in's refreshes held, and its foreground spent a rotation of the new
+     * pair on the old session's debt. Called under [sessionLock], with the
+     * clear or the write it belongs to.
+     */
+    private fun forgetRefreshState() {
+        refreshHold = null
+        refreshFailures = 0
+        refreshPending = false
+    }
+
+    /**
+     * Records what a refresh that kept the session left behind ([hold]: a
+     * hold, a backoff, a retry owed) only while the session is still the one
+     * the refresh was sent for: the generation it started in ([genAtStart]),
+     * and the refresh token it [presented] still the stored one. A refresh
+     * outlives its caller, so a sign-out and a sign-in ([forgetRefreshState])
+     * can land while it is on the wire; its answer then says nothing about the
+     * new session, which must not inherit its hold (L1). Under [sessionLock],
+     * so a sign-out or a sign-in comes wholly before the check or wholly after
+     * the hold, which it then forgets.
+     */
+    private inline fun holdIfSameSession(genAtStart: Long, presented: String, hold: () -> Unit) {
+        synchronized(sessionLock) {
+            if (sessionGeneration.get() == genAtStart && tokenManager.getRefreshToken() == presented) hold()
+        }
+    }
 
     /**
      * MR-1771 / MR-2500: the app came to the foreground. A refresh that was
@@ -204,10 +241,14 @@ class BirdoRepository @Inject constructor(
      * outside it could land between the check and the write, and a refresh of
      * the previous session then wrote its rotated pair over the one just
      * signed in (review of #463). BirdoRepositoryTest pins that each sign-in path holds
-     * the lock while it writes.
+     * the lock while it writes. A new session owes nothing to a hold the last
+     * one earned ([forgetRefreshState], L1), with or without a sign-out first.
      */
     private fun storeSignInTokens(accessToken: String, refreshToken: String) {
-        synchronized(sessionLock) { tokenManager.setTokens(accessToken, refreshToken) }
+        synchronized(sessionLock) {
+            tokenManager.setTokens(accessToken, refreshToken)
+            forgetRefreshState()
+        }
     }
 
     // ── Server cache ─────────────────────────────────────────────
@@ -541,6 +582,7 @@ class BirdoRepository @Inject constructor(
                     ) {
                         sessionGeneration.incrementAndGet()
                         tokenManager.clearAll()
+                        forgetRefreshState()
                         RefreshOutcome.UNAUTHORIZED
                     } else {
                         RefreshOutcome.TRANSIENT
@@ -559,32 +601,43 @@ class BirdoRepository @Inject constructor(
                 // Auto-Connect does not read it as the server refusing the relay.
                 // The refresh backs off like a 5xx instead of being re-sent by
                 // every request's 401.
-                backOffRefresh(null)
+                holdIfSameSession(genAtStart, presented) { backOffRefresh(null) }
                 RefreshOutcome.TRANSIENT
             } else if (response.code() == 429) {
                 // MR-1771: every limiter on the route answers before the token
                 // is read, so the 429 is never a verdict on it: nothing is
                 // cleared, no refresh is sent before the wait is over (the
                 // Retry-After header, else `details.retryAfter`, else 60 s), and
-                // the next one presents the same token.
-                refreshHold = clock() to RefreshRetry.rateLimitedWaitMs(
+                // the next one presents the same token. A named wait is
+                // clamped to 1 s .. 60 s, and a 0 is 1 s (one table with
+                // Desktop #467).
+                val wait = RefreshRetry.rateLimitedWaitMs(
                     runCatching { response.headers()["Retry-After"] }.getOrNull(),
                     runCatching { response.errorBody()?.string() }.getOrNull(),
                 )
-                refreshPending = true
+                holdIfSameSession(genAtStart, presented) {
+                    refreshHold = clock() to wait
+                    refreshPending = true
+                }
                 RefreshOutcome.TRANSIENT
             } else {
-                // MR-2500: a 5xx or an unexpected status. The credentials may
-                // still be valid, and a 503 says the token is intact (a store
-                // outage, or a failed rotation that restored it): keep it, and
-                // back off, never sooner than a Retry-After the server sent.
-                backOffRefresh(RetryAfter.fromHeader(runCatching { response.headers()["Retry-After"] }.getOrNull()))
+                // MR-2500: a 5xx, an unexpected status (a 426 included), or a
+                // 2xx without a pair in it. The credentials may still be valid,
+                // and a 503 says the token is intact (a session-store outage;
+                // once the server half of MR-2500 lands, also a failed rotation
+                // that restored the token): keep it, and back off, never sooner
+                // than a Retry-After the server sent (clamped to 1 s .. 60 s).
+                // The caller is told it is transient, and nothing retries until
+                // the next request or the foreground after the hold.
+                val serverWait = RefreshRetry.headerWaitMs(runCatching { response.headers()["Retry-After"] }.getOrNull())
+                holdIfSameSession(genAtStart, presented) { backOffRefresh(serverWait) }
                 RefreshOutcome.TRANSIENT
             }
         } catch (e: Exception) {
-            // Network error / timeout — transient, keep the session, and back
-            // off before the same token is presented again (MR-2500).
-            if (e !is CancellationException) backOffRefresh(null)
+            // Network error / timeout / a pin failure / a body that would not
+            // parse — transient, keep the session, and back off before the
+            // same token is presented again (MR-2500).
+            if (e !is CancellationException) holdIfSameSession(genAtStart, presented) { backOffRefresh(null) }
             RefreshOutcome.TRANSIENT
         }
     }
@@ -782,6 +835,7 @@ class BirdoRepository @Inject constructor(
         synchronized(sessionLock) {
             sessionGeneration.incrementAndGet()
             tokenManager.clearAll()
+            forgetRefreshState()
         }
         invalidateServerCache()
         invalidateSubscriptionCache()
@@ -920,6 +974,7 @@ class BirdoRepository @Inject constructor(
         synchronized(sessionLock) {
             sessionGeneration.incrementAndGet()
             tokenManager.clearAll()
+            forgetRefreshState()
         }
         invalidateServerCache()
         invalidateSubscriptionCache()

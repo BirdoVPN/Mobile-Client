@@ -951,8 +951,19 @@ final class APIClient: @unchecked Sendable {
     /// keychain.clear(): it bumps the session generation so a refresh whose
     /// network call was already in flight drops its rotated pair instead of
     /// re-persisting valid tokens over the wiped keychain (finding #1).
+    /// The session's refresh wait, backoff and retry owed go with it (L1,
+    /// `RefreshCoordinator.forgetSession`).
     func invalidateSession() async {
         await sessionGeneration.bump()
+        await refreshActor.forgetSession()
+    }
+
+    /// L1 (review of #653): a sign-in stored a new session's pair. It owes
+    /// nothing to a refresh wait, a backoff or a retry the last session earned,
+    /// with or without a sign-out first. AuthViewModel calls this right after
+    /// each sign-in's keychain save, before the session's first request.
+    func beginSession() async {
+        await refreshActor.forgetSession()
     }
 
     // MARK: - Token Refresh
@@ -1000,10 +1011,23 @@ final class APIClient: @unchecked Sendable {
             throw error
         }
         let (data, http) = answer
+        let tokens: RefreshTokensResponse
         switch RefreshAnswer.classify(status: http.statusCode,
                                       retryAfterHeader: http.value(forHTTPHeaderField: "Retry-After"),
                                       body: data) {
         case .rotated:
+            // Lead decision L2 (2026-11-19): a 2xx whose pair cannot be read
+            // keeps the session and HOLDS like no answer at all, and its error
+            // surfaces; nothing retries before the wait is over. Before, it
+            // started the backoff over and held nothing, so every request's
+            // 401 sent the token again at once. Only a readable pair starts
+            // the backoff over.
+            do {
+                tokens = try decoder.decode(RefreshTokensResponse.self, from: data)
+            } catch {
+                await refreshActor.backOff(serverWait: nil)
+                throw error
+            }
             await refreshActor.reset()
         case .dead:
             await refreshActor.reset()
@@ -1023,14 +1047,14 @@ final class APIClient: @unchecked Sendable {
             await refreshActor.hold(for: retryAfter)
             throw APIError.httpError(http.statusCode)
         case .unavailable(let retryAfter):
-            // MR-2500: a 5xx (a deploy window, a session-store outage, a
-            // rotation that failed and restored the token) or an unexpected
-            // status. The session is kept, and the refresh backs off, never
-            // sooner than a Retry-After the server sent.
+            // MR-2500: a 5xx (a deploy window, a session-store outage; once
+            // the server half of MR-2500 lands, also a rotation that failed
+            // and restored the token), a 426 or an unexpected status. The
+            // session is kept, and the refresh backs off, never sooner than a
+            // Retry-After the server sent (clamped to 1 s ... 60 s).
             await refreshActor.backOff(serverWait: retryAfter)
             throw APIError.httpError(http.statusCode)
         }
-        let tokens = try decoder.decode(RefreshTokensResponse.self, from: data)
 
         // Compare-and-swap fence (finding #1): only persist if the session the
         // refresh belongs to still exists. Two things must hold —

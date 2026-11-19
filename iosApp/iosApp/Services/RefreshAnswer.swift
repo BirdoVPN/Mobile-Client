@@ -12,8 +12,19 @@ import Foundation
 // after `Retry-After` (else the body's `details.retryAfter`, web #912, else
 // 60 s). A 5xx, or no answer at all, keeps the session too, and the same token
 // is presented again after a capped exponential backoff with jitter: a 503
-// says the token is intact (a session-store outage, or a rotation that failed
-// and restored it, MR-2500).
+// says the token is intact (a session-store outage). Once the server half of
+// MR-2500 lands (not on birdo-web main yet; it follows web #929), a rotation
+// that fails after consuming the token will restore it and answer 503 too;
+// until then that failure is a 401 from the server.
+//
+// A 426, a 2xx whose pair cannot be read and a TLS-pin failure keep the
+// session and hold the same way (lead decision L2, 2026-11-19): the error
+// surfaces, and nothing retries until the wait is over.
+//
+// One timing table with Desktop #467 (`refresh_policy.rs`, `error.rs`
+// `RETRY_AFTER_MAX_SECS`; lead decision L2): the backoff starts at 1 s,
+// doubles, is capped at 30 s and jitters in the step's upper half; a wait the
+// server names is clamped to 1 s ... 60 s, and a named 0 is 1 s.
 //
 // A 403 keeps the session as well (MR-1771; the owner's rule supersedes the
 // lead decision of 2026-10-23 that it signed out): an infrastructure block
@@ -41,9 +52,9 @@ enum RefreshAnswer: Equatable, Sendable {
     /// 429: the session is kept, and no refresh is sent for `retryAfter`
     /// seconds; then the same token is presented again.
     case rateLimited(retryAfter: TimeInterval)
-    /// Any other status (a 5xx, an unexpected one): the session is kept and
-    /// the refresh backs off, never for less than `retryAfter` when the
-    /// server named one.
+    /// Any other status (a 5xx, a 426, an unexpected one): the session is
+    /// kept and the refresh backs off, never for less than `retryAfter` when
+    /// the server named one (clamped by `RefreshRetry.serverWait`).
     case unavailable(retryAfter: TimeInterval?)
 
     static func classify(status: Int, retryAfterHeader: String?, body: Data? = nil) -> RefreshAnswer {
@@ -58,16 +69,17 @@ enum RefreshAnswer: Equatable, Sendable {
             // Every limiter on the route sends Retry-After and, since web
             // #912, `details.retryAfter`; a 429 that lost both still must not
             // be re-asked at once.
-            return .rateLimited(retryAfter: ConnectRetryAfter.clamped(seconds: seconds(retryAfterHeader))
-                                ?? ConnectRetryAfter.clamped(seconds: detailsRetryAfter(body))
+            return .rateLimited(retryAfter: RefreshRetry.serverWait(seconds: seconds(retryAfterHeader))
+                                ?? RefreshRetry.serverWait(seconds: detailsRetryAfter(body))
                                 ?? RefreshRetry.rateLimitedDefault)
         default:
-            return .unavailable(retryAfter: ConnectRetryAfter.clamped(seconds: seconds(retryAfterHeader)))
+            return .unavailable(retryAfter: RefreshRetry.serverWait(seconds: seconds(retryAfterHeader)))
         }
     }
 
-    /// A delta-seconds `Retry-After`. An HTTP date is ignored: the device
-    /// clock is not the server's (as on Android, `RetryAfter.fromHeader`).
+    /// A delta-seconds `Retry-After`, as sent. An HTTP date is ignored: the
+    /// device clock is not the server's (as on Android,
+    /// `RetryAfter.headerSeconds`).
     static func seconds(_ header: String?) -> Double? {
         guard let text = header?.trimmingCharacters(in: .whitespaces), let value = Int(text) else {
             return nil
@@ -96,22 +108,44 @@ enum RefreshAnswer: Equatable, Sendable {
 }
 
 /// MR-1771 / MR-2500: the waits after a refresh that kept the session.
-/// Android twin: `RefreshRetry.kt`.
+/// Android twin: `RefreshRetry.kt`. One table with Desktop #467
+/// (`refresh_policy.rs`, `error.rs`; lead decision L2, 2026-11-19).
 enum RefreshRetry {
     /// The wait after a 429 that named none this client can use.
     static let rateLimitedDefault: TimeInterval = 60
     /// The first backoff's ceiling; each failure in a row doubles it.
-    static let backoffBase: TimeInterval = 2
-    /// The backoff never grows past this.
-    static let backoffCap: TimeInterval = 5 * 60
+    /// Desktop `BACKOFF_BASE`.
+    static let backoffBase: TimeInterval = 1
+    /// The backoff never grows past this, jitter included. Desktop
+    /// `BACKOFF_CAP`.
+    static let backoffCap: TimeInterval = 30
+    /// The shortest wait the server may name for a refresh: a named 0 is
+    /// this.
+    static let serverWaitMinimum: TimeInterval = 1
+    /// The longest wait the server may name for a refresh. Desktop
+    /// `RETRY_AFTER_MAX_SECS`.
+    static let serverWaitMaximum: TimeInterval = 60
+
+    /// A wait the server named for a refresh (`Retry-After`, or the body's
+    /// `details.retryAfter`), clamped to `serverWaitMinimum` ...
+    /// `serverWaitMaximum`: a 0 is 1 s (as on Desktop) and a day is a
+    /// minute. Nil when there is none to use: absent, negative or not
+    /// finite, which the caller replaces with its own wait. Not
+    /// `ConnectRetryAfter.clamped`: a connect refusal's wait keeps its own
+    /// rule (a 0 is no wait there, and ten minutes the most).
+    static func serverWait(seconds: Double?) -> TimeInterval? {
+        guard let seconds, seconds.isFinite, seconds >= 0 else { return nil }
+        return min(max(seconds, serverWaitMinimum), serverWaitMaximum)
+    }
 
     /// The wait after the `failures`th refresh in a row that got no verdict:
     /// a ceiling of `backoffBase` doubled per failure, capped at `backoffCap`,
-    /// and a random point in the ceiling's upper half (`random` in 0...1).
-    /// The jitter keeps clients that failed together from coming back
-    /// together; the lower bound keeps any wait from being zero.
+    /// and a random point in the ceiling's upper half (`random` in 0...1):
+    /// Desktop's "equal jitter". The jitter keeps clients that failed
+    /// together from coming back together; the lower bound keeps any wait
+    /// from being zero.
     static func backoff(failures: Int, random: Double) -> TimeInterval {
-        // 2 s doubled 8 times is past the cap; more doublings only risk an overflow.
+        // 1 s doubled 5 times is past the cap; more doublings only risk an overflow.
         let doublings = min(max(failures, 1) - 1, 16)
         let ceiling = min(backoffBase * Double(1 << doublings), backoffCap)
         let draw = random.isNaN ? 0 : min(max(random, 0), 1)
@@ -122,8 +156,10 @@ enum RefreshRetry {
 /// While a wait runs, no refresh is sent: asking sooner only earns another
 /// refusal. A 429's wait is the server's (MR-1771); any other answer that kept
 /// the session, or no answer at all, waits the backoff (MR-2500). Every wait
-/// is at most `ConnectRetryAfter.maximum` (ten minutes), well inside an access
-/// token's hour, so a new sign-in never needs it cleared.
+/// is at most a minute (`RefreshRetry.serverWaitMaximum`). The wait, the
+/// backoff count and the retry owed are the session's: a sign-out or a
+/// sign-in replaces them with a fresh `RefreshHoldOff`
+/// (`RefreshCoordinator.forgetSession`, L1).
 struct RefreshHoldOff: Equatable, Sendable {
     private(set) var since: Date?
     private(set) var wait: TimeInterval = 0
@@ -191,7 +227,14 @@ struct RefreshHoldOff: Equatable, Sendable {
 /// owns the one instance; `refreshTokens()` sets the waits.
 actor RefreshCoordinator {
     private var inFlight: Task<Void, any Error>?
-    private var holdOff = RefreshHoldOff()
+    /// The current wait, backoff count and retry owed. RefreshAnswerTests
+    /// reads it.
+    private(set) var holdOff = RefreshHoldOff()
+    /// Which signed-in session the waits belong to: `forgetSession()` (a
+    /// sign-out or a sign-in) moves it on.
+    private var session: UInt64 = 0
+    /// The `session` the refresh in flight was sent in.
+    private var inFlightSession: UInt64 = 0
     /// How many callers joined a refresh already in flight instead of
     /// starting their own. RefreshAnswerTests reads it.
     private(set) var joined = 0
@@ -214,6 +257,7 @@ actor RefreshCoordinator {
         if holdOff.isHeld(now: Date()) {
             throw heldError(holdOff.heldStatus)
         }
+        inFlightSession = session
         let task = Task<Void, any Error> { try await work() }
         inFlight = task
         defer { inFlight = nil }
@@ -222,13 +266,35 @@ actor RefreshCoordinator {
 
     /// A 429: hold every refresh for the server's `wait` seconds from now.
     func hold(for wait: TimeInterval) {
+        guard waitIsThisSessions else { return }
         holdOff.hold(for: wait, now: Date())
     }
 
-    /// A 5xx, a 403 or no answer: hold every refresh for the next backoff
-    /// step from now, never for less than `serverWait`.
+    /// A 5xx, a 403, a 426, an unreadable 2xx or no answer: hold every
+    /// refresh for the next backoff step from now, never for less than
+    /// `serverWait`. The jitter is uniform in 0..<1, as on Desktop.
     func backOff(serverWait: TimeInterval?) {
-        holdOff.backOff(serverWait: serverWait, random: Double.random(in: 0...1), now: Date())
+        guard waitIsThisSessions else { return }
+        holdOff.backOff(serverWait: serverWait, random: Double.random(in: 0..<1), now: Date())
+    }
+
+    /// L1 (review of #653), as Desktop's `RetryGate::forget_session`: the
+    /// session ended (a sign-out) or a new one began (a sign-in, with or
+    /// without a sign-out first). Its wait, backoff count and retry owed go
+    /// with it, so the next session's first refresh is sent, its first
+    /// failure waits the first step, and its first foreground owes nothing.
+    /// A refresh still in flight from before answers for the old session:
+    /// the wait it records is dropped (`waitIsThisSessions`).
+    func forgetSession() {
+        session &+= 1
+        holdOff = RefreshHoldOff()
+    }
+
+    /// Whether a wait recorded now is this session's: no refresh is in flight
+    /// (a direct call), or the one in flight was sent in this session. A
+    /// refresh sent before `forgetSession()` must not hold the next session.
+    private var waitIsThisSessions: Bool {
+        inFlight == nil || inFlightSession == session
     }
 
     /// A 2xx or a 401: the backoff starts over.

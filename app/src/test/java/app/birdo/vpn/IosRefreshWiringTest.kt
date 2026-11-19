@@ -27,7 +27,12 @@ import java.io.File
  *   a 403, a 5xx and a transport failure record a backoff, and none of them
  *   writes or clears the keychain;
  * - `APIClient` refreshes through the one `RefreshCoordinator`, which lives
- *   in RefreshAnswer.swift, a source of the iOS unit bundle.
+ *   in RefreshAnswer.swift, a source of the iOS unit bundle;
+ * - a 2xx whose pair cannot be read holds like no answer (lead decision L2);
+ * - a sign-out and every sign-in forget the session's wait (L1 of the #653
+ *   review): `invalidateSession()` and `beginSession()` call
+ *   `RefreshCoordinator.forgetSession()`, and every sign-in's keychain save
+ *   is followed by `beginSession()`.
  *
  * Messages report counts and paths only, never source text.
  */
@@ -132,6 +137,78 @@ class IosRefreshWiringTest {
         // A rotation and a 401 start the backoff over.
         assertTrue("$apiClientPath: a rotation does not reset the backoff", branch(".rotated:").contains("refreshActor.reset()"))
         assertTrue("$apiClientPath: a 401 does not reset the backoff", branch(".dead:").contains("refreshActor.reset()"))
+    }
+
+    /**
+     * Lead decision L2 (2026-11-19): a 2xx whose pair cannot be read keeps the
+     * session and HOLDS like no answer at all, and its error surfaces. Before,
+     * it reset the backoff and held nothing. Only a readable pair resets it.
+     */
+    @Test
+    fun `a 2xx whose pair cannot be read backs off, and only a readable pair resets the backoff`() {
+        val rotated = branch(".rotated:")
+        val decode = rotated.indexOf("tokens = try decoder.decode(RefreshTokensResponse.self, from: data)")
+        val caught = rotated.indexOf("} catch {")
+        val held = rotated.indexOf("refreshActor.backOff(serverWait: nil)")
+        val rethrown = rotated.indexOf("throw error")
+        val reset = rotated.indexOf("refreshActor.reset()")
+        assertTrue("$apiClientPath: `case .rotated:` no longer decodes the pair", decode >= 0)
+        assertTrue("$apiClientPath: an unreadable 2xx is not caught", caught > decode)
+        assertTrue("$apiClientPath: an unreadable 2xx does not back off", held > caught)
+        assertTrue("$apiClientPath: an unreadable 2xx's error does not surface", rethrown > held)
+        assertTrue("$apiClientPath: the backoff resets before the pair is read", reset > rethrown)
+        assertFalse("$apiClientPath: an unreadable 2xx signs out", rotated.contains("unauthorized"))
+        assertEquals(
+            "$apiClientPath: decoder.decode(RefreshTokensResponse calls in refreshTokens()",
+            1,
+            Regex("""decoder\.decode\(RefreshTokensResponse""").findAll(refreshTokens).count(),
+        )
+    }
+
+    /**
+     * L1 (review of #653): the refresh wait, the backoff and the retry owed
+     * are the session's. A sign-out (`invalidateSession()`, which
+     * AuthViewModel.completeLocalLogout calls) and every sign-in
+     * (`beginSession()`, after each keychain save of a new pair) forget them,
+     * as Desktop's `forget_session` does. RefreshAnswerTests pins
+     * `forgetSession()` itself.
+     */
+    @Test
+    fun `a sign-out and every sign-in forget the refresh wait`() {
+        val invalidate = apiClient.substringAfter("func invalidateSession() async {").substringBefore("\n    }\n")
+        assertTrue("$apiClientPath: invalidateSession() not found", apiClient.contains("func invalidateSession() async {"))
+        assertTrue("$apiClientPath: a sign-out does not bump the generation", invalidate.contains("sessionGeneration.bump()"))
+        assertTrue("$apiClientPath: a sign-out keeps the refresh wait", invalidate.contains("refreshActor.forgetSession()"))
+        val begin = apiClient.substringAfter("func beginSession() async {").substringBefore("\n    }\n")
+        assertTrue("$apiClientPath: beginSession() not found", apiClient.contains("func beginSession() async {"))
+        assertTrue("$apiClientPath: a sign-in keeps the refresh wait", begin.contains("refreshActor.forgetSession()"))
+
+        val forget = coordinator.substringAfter("func forgetSession() {").substringBefore("\n    }\n")
+        assertTrue("$refreshAnswerPath: forgetSession() does not replace the hold", forget.contains("holdOff = RefreshHoldOff()"))
+        for (wait in listOf("func hold(for wait: TimeInterval) {", "func backOff(serverWait: TimeInterval?) {")) {
+            val body = coordinator.substringAfter(wait).substringBefore("\n    }\n")
+            assertTrue("$refreshAnswerPath: `$wait` records an old session's wait", body.contains("guard waitIsThisSessions else { return }"))
+        }
+
+        val vmPath = "iosApp/iosApp/ViewModels/AuthViewModel.swift"
+        val vm = source(vmPath)
+        val saves = Regex("""keychain\.save\(accessToken:""").findAll(vm).map { it.range.first }.toList()
+        val begins = Regex("""api\.beginSession\(\)""").findAll(vm).map { it.range.first }.toList()
+        assertEquals("$vmPath: sign-in keychain saves", 2, saves.size)
+        assertEquals("$vmPath: a sign-in keychain save is not followed by beginSession()", saves.size, begins.size)
+        for ((save, begin) in saves.zip(begins)) {
+            assertTrue("$vmPath: beginSession() runs before its keychain save", begin > save)
+        }
+        // ...and before the session's first request after it.
+        for (signIn in listOf("func acknowledgeAnonymousId() {", "private func completeAuthentication(")) {
+            val body = vm.substringAfter(signIn)
+            val begin = body.indexOf("api.beginSession()")
+            val fetch = body.indexOf("api.fetchProfile()")
+            assertTrue("$vmPath: `$signIn` has no beginSession()", begin >= 0)
+            assertTrue("$vmPath: `$signIn` fetches the profile before beginSession()", fetch > begin)
+        }
+        val logout = vm.substringAfter("private func completeLocalLogout() {").substringBefore("\n    }\n")
+        assertTrue("$vmPath: a local sign-out does not invalidate the API session", logout.contains("api.invalidateSession()"))
     }
 
     @Test
