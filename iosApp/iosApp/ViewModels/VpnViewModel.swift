@@ -2513,6 +2513,11 @@ final class VpnViewModel: ObservableObject {
                 self.relayRecovery = nil
                 self.heartbeatEnding = .serverOffline
                 self.error = HeartbeatEnding.serverOffline.message
+                // Round 2 (owner rule): a user pick stops with #648's one tap
+                // beside the notice (MR-2493). It is chosen from a fresh list
+                // only, and never dialled until tapped.
+                let offer = fresh.flatMap { HeartbeatPolicy.offer(from: goneId, in: $0, origin: origin) }
+                self.relayOffer = self.makeRelayOffer(offer, beside: HeartbeatEnding.serverOffline.message, fits: true)
                 return
             }
             // Counts only: how far the move reaches, never which relay.

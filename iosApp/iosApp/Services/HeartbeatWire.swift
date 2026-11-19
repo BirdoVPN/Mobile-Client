@@ -280,11 +280,17 @@ enum HeartbeatPolicy {
         }
     }
 
-    /// TESTS FIRST (round 2): today no offer stands beside the stop. The next
-    /// commit replaces this.
+    /// The one tap (#648's `RelayOffer`, MR-2493) beside the stop, for a USER
+    /// pick that could not move because nothing qualified in its country.
+    /// The tap offers the best server in `fresh` other than the gone one,
+    /// which by then can only be outside that country. The caller passes a
+    /// FRESH list only, as #648 does. An automatic pick stops only when
+    /// nothing anywhere qualifies, so it is never offered anything. Nothing
+    /// is dialled until the user taps (`VpnViewModel.acceptRelayOffer`).
     static func offer<S: RelayRetryCandidate>(from goneId: String, in fresh: [S],
                                               origin: SelectionOrigin) -> S? {
-        nil
+        guard origin == .user else { return nil }
+        return QuickSelect.bestServer(in: fresh.filter { $0.id != goneId })
     }
 
     /// How far an automatic move reaches, for the log line (counts only). A
