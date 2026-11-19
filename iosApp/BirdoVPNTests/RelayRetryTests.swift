@@ -6,6 +6,10 @@ import XCTest
 /// relay in any country; a location the user picked never leaves its country;
 /// never a node the server lists offline (a jurisdiction hold depools the
 /// node) or one this plan cannot use; ONE retry; the log says counts only.
+///
+/// Owner decision, 2026-11-19 (~21:29Z): a relay DELETED from the fresh list
+/// moves an automatic pick to the best relay anywhere, and a user's pick
+/// within its country as the cached (pre-fetch) list gives it, else nothing.
 final class RelayRetryTests: XCTestCase {
 
     private struct Node: RelayRetryCandidate {
@@ -218,6 +222,157 @@ final class RelayRetryTests: XCTestCase {
         }
     }
 
+    // MARK: - A relay DELETED from the fresh list (owner decision, 2026-11-19)
+
+    /// The list the failed dial was chosen from: the caller's `cached`, held
+    /// before the retry's fresh `/vpn/servers` replaced it.
+    private var dialledFrom: [Node] {
+        [Node(id: "fra", countryCode: "DE", city: "Frankfurt", load: 10),
+         Node(id: "fra2", countryCode: "DE", city: "Frankfurt", load: 60),
+         Node(id: "ber", countryCode: "DE", city: "Berlin", load: 50),
+         Node(id: "ams", countryCode: "NL", city: "Amsterdam", load: 30),
+         Node(id: "sto", countryCode: "SE", city: "Stockholm", load: 20)]
+    }
+
+    private func without(_ ids: String..., in list: [Node]) -> [Node] {
+        list.filter { !ids.contains($0.id) }
+    }
+
+    /// An AUTOMATIC pick whose relay was deleted moves to the best relay
+    /// anywhere in the fresh list: QuickSelect's least loaded eligible relay,
+    /// past a busier one in the same city (nobody asked for that location).
+    func testADeletedAutomaticPickMovesToTheBestRelayAnywhere() {
+        let fresh = without("fra", in: dialledFrom)
+        let choice = RelayRetry.next(after: "fra", in: fresh, cached: dialledFrom, origin: .automatic)
+        XCTAssertEqual(choice?.server.id, "sto", "the least loaded eligible relay, in any country")
+        XCTAssertEqual(choice?.reach, .otherCountry, "measured from where the cached list had it")
+        // The best may be at home, and the log's reach says so.
+        let berlinEmpty = fresh.map { node -> Node in
+            var node = node
+            if node.id == "ber" { node.load = 0 }
+            return node
+        }
+        let home = RelayRetry.next(after: "fra", in: berlinEmpty, cached: dialledFrom, origin: .automatic)
+        XCTAssertEqual(home?.server.id, "ber")
+        XCTAssertEqual(home?.reach, .sameCountry)
+        // Only relays listed online and open to this plan qualify.
+        let closed = fresh.map { node -> Node in
+            var node = node
+            if node.id == "sto" { node.isOnline = false }
+            if node.id == "ams" { node.accessible = false }
+            return node
+        }
+        XCTAssertEqual(RelayRetry.next(after: "fra", in: closed, cached: dialledFrom, origin: .automatic)?.server.id,
+                       "ber")
+        XCTAssertNil(RelayRetry.next(after: "fra", in: without("fra2", "ber", in: closed), cached: dialledFrom,
+                                     origin: .automatic))
+    }
+
+    /// Deleted and unknown even to the cached list: an automatic pick needs
+    /// no location to move, so it still goes to the best relay anywhere. With
+    /// nothing to measure from, the log says the widest existing reach,
+    /// "other-country" (no new class).
+    func testADeletedAutomaticPickUnknownEvenToTheCacheStillMoves() {
+        let fresh = without("fra", in: dialledFrom)
+        let caches: [[Node]] = [[], fresh]
+        for cached in caches {
+            let choice = RelayRetry.next(after: "fra", in: fresh, cached: cached, origin: .automatic)
+            XCTAssertEqual(choice?.server.id, "sto")
+            XCTAssertEqual(choice?.reach, .otherCountry)
+            XCTAssertEqual(RelayRetry.logLine(for: choice, alreadySpent: false),
+                           "[RelayRetry] no handshake: automatic retry 1 of 1 (other-country)")
+        }
+    }
+
+    /// A USER pick whose relay was deleted stays in its country, read from
+    /// the cached list: the same city first, as for a listed relay, then the
+    /// rest of the country. Never abroad, however empty abroad is.
+    func testADeletedUserPickStaysInItsCountryFromTheCache() {
+        let fresh = without("fra", in: dialledFrom)
+        let sameCity = RelayRetry.next(after: "fra", in: fresh, cached: dialledFrom, origin: .user)
+        XCTAssertEqual(sameCity?.server.id, "fra2")
+        XCTAssertEqual(sameCity?.reach, .sameCity)
+        let noTwin = without("fra2", in: fresh)
+        let sameCountry = RelayRetry.next(after: "fra", in: noTwin, cached: dialledFrom, origin: .user)
+        XCTAssertEqual(sameCountry?.server.id, "ber", "never Stockholm or Amsterdam, however empty")
+        XCTAssertEqual(sameCountry?.reach, .sameCountry)
+        // The country is matched whatever its case and spacing.
+        let spaced = noTwin.map { node -> Node in
+            var node = node
+            if node.id == "ber" { node.countryCode = " de " }
+            return node
+        }
+        XCTAssertEqual(RelayRetry.next(after: "fra", in: spaced, cached: dialledFrom, origin: .user)?.server.id, "ber")
+    }
+
+    /// Deleted, and nothing eligible left in its country: a user's pick stops
+    /// there (the message, "Choose a server"), whatever is free abroad.
+    func testADeletedUserPickWithNothingLeftInItsCountryStops() {
+        let abroad = dialledFrom.filter { $0.countryCode != "DE" }
+        XCTAssertNil(RelayRetry.next(after: "fra", in: abroad, cached: dialledFrom, origin: .user))
+        let closed = without("fra", in: dialledFrom).map { node -> Node in
+            var node = node
+            if node.id == "fra2" { node.isOnline = false }
+            if node.id == "ber" { node.accessible = false }
+            return node
+        }
+        XCTAssertNil(RelayRetry.next(after: "fra", in: closed, cached: dialledFrom, origin: .user))
+    }
+
+    /// Deleted, and the cached list does not know its country either: a
+    /// user's choice cannot be kept, so nothing moves.
+    func testADeletedUserPickUnknownEvenToTheCacheStops() {
+        let fresh = without("fra", in: dialledFrom)
+        XCTAssertNil(RelayRetry.next(after: "fra", in: fresh, cached: fresh, origin: .user))
+        XCTAssertNil(RelayRetry.next(after: "fra", in: fresh, cached: [], origin: .user))
+        let noCountry = [Node(id: "fra", countryCode: " ", city: "Frankfurt")]
+        XCTAssertNil(RelayRetry.next(after: "fra", in: fresh, cached: noCountry, origin: .user))
+    }
+
+    /// The cached list says where the deleted relay was, nothing more: the
+    /// target always comes from the fresh list, so a relay deleted with it is
+    /// never dialled, however empty it was.
+    func testADeletedRelaysTargetComesOnlyFromTheFreshList() {
+        let cached = dialledFrom + [Node(id: "fra3", countryCode: "DE", city: "Frankfurt", load: 0)]
+        let fresh = without("fra", in: dialledFrom)
+        for origin in [SelectionOrigin.automatic, .user] {
+            let choice = RelayRetry.next(after: "fra", in: fresh, cached: cached, origin: origin)
+            XCTAssertNotNil(choice, "\(origin)")
+            XCTAssertNotEqual(choice?.server.id, "fra3", "\(origin)")
+            XCTAssertTrue(fresh.contains { $0.id == choice?.server.id }, "\(origin)")
+        }
+    }
+
+    /// A relay the fresh list still carries (online or not) is decided as
+    /// before: its own listing wins, and a cached list, even one that
+    /// remembers it somewhere else, changes nothing. A caller that passes no
+    /// cached list keeps #645's rule for a deleted relay.
+    func testAListedFailedRelayIgnoresTheCache() {
+        let misremembered = fleet.map { node -> Node in
+            var node = node
+            node.countryCode = "QX"
+            node.city = "Elsewhere"
+            return node
+        }
+        for node in fleet {
+            var drained = fleet
+            drained.removeAll { $0.id == node.id }
+            drained.append(Node(id: node.id, countryCode: node.countryCode, city: node.city, isOnline: false))
+            for list in [fleet, drained] {
+                for origin in [SelectionOrigin.automatic, .user] {
+                    let before = RelayRetry.next(after: node.id, in: list, origin: origin)
+                    let after = RelayRetry.next(after: node.id, in: list, cached: misremembered, origin: origin)
+                    XCTAssertEqual(after?.server.id, before?.server.id, "\(node.id) \(origin)")
+                    XCTAssertEqual(after?.reach, before?.reach, "\(node.id) \(origin)")
+                }
+            }
+        }
+        let fresh = without("fra", in: dialledFrom)
+        for origin in [SelectionOrigin.automatic, .user] {
+            XCTAssertNil(RelayRetry.next(after: "fra", in: fresh, origin: origin), "no cached list: \(origin)")
+        }
+    }
+
     // MARK: - Exactly one retry
 
     func testTheBudgetAllowsExactlyOneRetry() {
@@ -353,7 +508,8 @@ final class RelayRetryTests: XCTestCase {
         let retryBody = slice(vm, from: "private func retryOnAnotherRelay() -> Bool {", to: "\n    }\n")
         XCTAssertTrue(retryBody.contains(
             "RelayRetry.plan(after: failedId, in: servers, origin: origin, budget: &relayRetryBudget)"))
-        XCTAssertTrue(retryBody.contains("RelayRetry.next(after: failedId, in: self.servers, origin: origin)"))
+        XCTAssertTrue(retryBody.contains(
+            "RelayRetry.next(after: failedId, in: self.servers, cached: cached, origin: origin)"))
         XCTAssertTrue(retryBody.contains("self.connect(userInitiated: false)"), "the retry must not refill its own budget")
         let finish = slice(vm, from: "private func finishUnansweredRelay(", to: "\n    }\n")
         XCTAssertTrue(finish.contains("await RelayProbe.verdict(host: host)"))
@@ -364,6 +520,25 @@ final class RelayRetryTests: XCTestCase {
         XCTAssertTrue(refill.contains("relayRetryBudget.refill()"))
         XCTAssertEqual(vm.components(separatedBy: "relayRetryBudget.refill()").count - 1, 2,
                        "refilled by a user's connect and by a proven handshake, nowhere else")
+    }
+
+    /// Owner decision, 2026-11-19: the retry hands `next` the list the failed
+    /// dial was chosen from, read before the wait (a refresh meanwhile would
+    /// replace it), so a relay the fresh list no longer carries still has a
+    /// country. The target is chosen after the fresh list is in.
+    func testTheRetryHandsNextTheListTheDialWasChosenFrom() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        let body = slice(vm, from: "private func retryOnAnotherRelay() -> Bool {", to: "\n    }\n")
+        let plan = try XCTUnwrap(body.range(of: "RelayRetry.plan(after: failedId, in: servers,"))
+        let capture = try XCTUnwrap(body.range(of: "let cached = servers\n"))
+        let wait = try XCTUnwrap(body.range(of: "Task {"))
+        let replace = try XCTUnwrap(body.range(of: "self.servers = fresh"))
+        let choose = try XCTUnwrap(body.range(of:
+            "RelayRetry.next(after: failedId, in: self.servers, cached: cached, origin: origin)"))
+        XCTAssertLessThan(plan.lowerBound, capture.lowerBound)
+        XCTAssertLessThan(capture.lowerBound, wait.lowerBound)
+        XCTAssertLessThan(replace.lowerBound, choose.lowerBound)
+        XCTAssertEqual(body.components(separatedBy: "let cached = ").count - 1, 1, "read once, before the wait")
     }
 
     /// No log line in the retry and probe path carries anything but a count:

@@ -98,7 +98,9 @@ enum RelayRetry {
     /// "Best" is QuickSelect's rule: online, accessible to this plan, least
     /// loaded. nil when `failedId` is not in `list`: without the failed
     /// relay's country the user's choice cannot be kept, so nothing moves.
+    /// `cached`: the list the failed dial was chosen from. Not read yet.
     static func next<S: RelayRetryCandidate>(after failedId: String, in list: [S],
+                                             cached: [S]? = nil,
                                              origin: SelectionOrigin) -> Choice<S>? {
         guard let failed = list.first(where: { $0.id == failedId }) else { return nil }
         if let sibling = sibling(of: failedId, in: list) {
@@ -250,7 +252,9 @@ extension RelayRetry {
     /// plan, least loaded), applied to the list given, which the caller
     /// fetches fresh: the server's list is the only authority. Nothing is
     /// dialled until the user taps it.
+    /// `cached`: the list the failed dial was chosen from. Not read yet.
     static func offer<S: RelayRetryCandidate>(after failedId: String, in list: [S],
+                                              cached: [S]? = nil,
                                               origin: SelectionOrigin,
                                               budget: RelayRetryBudget) -> S? {
         guard origin == .user else { return nil }
