@@ -154,6 +154,16 @@ App Signing key.
   `./gradlew --write-verification-metadata sha256 help <the tasks you run>` adds
   what is missing. Never `--dependency-verification off`.
 
+  Android CI's Lint Check (required) fails if the file is missing or if anything
+  committed turns verification lenient or off: `org.gradle.dependency.verification`
+  in a `.properties` file or a `-D`, `--dependency-verification`/`-F`,
+  `disableDependencyVerification()`, or `--write-verification-metadata`/`-M` outside
+  the writer workflow (`scripts/check_dependency_verification_on.py`, MR-2434; the one
+  exception is `baseline-profile.yml`'s recording line, below). On a pull request both
+  guards run as the BASE commit has them (MR-2437), so a change to a guard takes
+  effect from the next pull request; the metadata workflow starts on every pull
+  request and skips its jobs when nothing Gradle resolves changed.
+
   **Not covered** by the file:
   - `baseline-profile.yml`, which records on a Gradle Managed Device with
     `--dependency-verification lenient` (it reports a checksum it cannot find instead
