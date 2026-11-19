@@ -234,6 +234,32 @@ final class HeartbeatPolicyTests: XCTestCase {
                                                 origin: .automatic))
     }
 
+    /// Round 2: when a USER pick cannot move (nothing qualifies in its
+    /// country), the stop "This server went offline. Choose another location."
+    /// carries #648's one tap (MR-2493, `RelayOffer`). The tap offers the best
+    /// server from the fresh list, which by then can only be outside that
+    /// country, and never the gone one. An automatic pick stops only when
+    /// nothing anywhere qualifies, so it is never offered anything.
+    func testAUserPickThatCannotMoveIsOfferedOneTapElsewhere() {
+        let dialledFrom = [Node(id: "de-1"),
+                           Node(id: "nl-1", countryCode: "NL", city: "Amsterdam", load: 40),
+                           Node(id: "se-1", countryCode: "SE", city: "Stockholm", load: 30)]
+        let fresh = Array(dialledFrom.dropFirst())
+        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: fresh, cached: dialledFrom, origin: .user),
+                     "the premise: nothing left in Germany")
+        XCTAssertEqual(HeartbeatPolicy.offer(from: "de-1", in: fresh, origin: .user)?.id, "se-1")
+        XCTAssertNil(HeartbeatPolicy.offer(from: "de-1", in: fresh, origin: .automatic))
+        // Never the gone server, even listed online and idle in a stale answer.
+        let stale = [Node(id: "de-1", load: 0)] + fresh
+        XCTAssertEqual(HeartbeatPolicy.offer(from: "de-1", in: stale, origin: .user)?.id, "se-1")
+        // Only what is listed online and open to this plan; nothing, no offer.
+        var closed = fresh
+        closed[1].isOnline = false
+        XCTAssertEqual(HeartbeatPolicy.offer(from: "de-1", in: closed, origin: .user)?.id, "nl-1")
+        closed[0].accessible = false
+        XCTAssertNil(HeartbeatPolicy.offer(from: "de-1", in: closed, origin: .user))
+    }
+
     // MARK: - quota_exceeded: never "not found"
 
     func testTheAllowancesEndIsNeverShownAsNotFound() {
@@ -357,6 +383,12 @@ final class HeartbeatPolicyTests: XCTestCase {
         XCTAssertTrue(move.contains("relayRecovery = .tryingAnotherServer"))
         XCTAssertTrue(move.contains("HeartbeatPolicy.moveTarget(from: goneId, in: self.servers, cached: cached,"))
         XCTAssertTrue(move.contains("self.error = HeartbeatEnding.serverOffline.message"))
+        // Round 2: the stop carries #648's one tap for a user pick, chosen
+        // only from a fresh list (never the list already held).
+        XCTAssertTrue(move.contains("fresh.flatMap { HeartbeatPolicy.offer(from: goneId, in: $0, origin: origin) }"),
+                      "the stop offers nothing")
+        XCTAssertTrue(move.contains(
+            "self.relayOffer = self.makeRelayOffer(offer, beside: HeartbeatEnding.serverOffline.message, fits: true)"))
         let retryWindow = slice(vm, from: "private func retryOnAnotherRelay() -> Bool {", to: "private func legacyRebuild(")
         XCTAssertFalse(retryWindow.contains("rebuildAfterReap") || retryWindow.contains("moveOffDrainedServer"))
         // The grace notice and the reap clock belong to one session.

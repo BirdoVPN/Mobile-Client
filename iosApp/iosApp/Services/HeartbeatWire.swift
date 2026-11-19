@@ -280,6 +280,13 @@ enum HeartbeatPolicy {
         }
     }
 
+    /// TESTS FIRST (round 2): today no offer stands beside the stop. The next
+    /// commit replaces this.
+    static func offer<S: RelayRetryCandidate>(from goneId: String, in fresh: [S],
+                                              origin: SelectionOrigin) -> S? {
+        nil
+    }
+
     /// How far an automatic move reaches, for the log line (counts only). A
     /// gone server neither list knows logs as other-country.
     private static func reach<S: RelayRetryCandidate>(from gone: S?, to target: S) -> RelayRetry.Reach {
