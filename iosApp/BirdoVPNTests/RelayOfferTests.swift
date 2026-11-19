@@ -10,6 +10,10 @@ import XCTest
 /// silently moved to another country; never a held or plan-excluded relay
 /// (the server list, online and accessible, fetched fresh, is the only
 /// authority); logs are counts only.
+///
+/// Review of #648, point 4 (lead, 2026-11-19): when the same-country retry
+/// also fails, the user is still offered a way out: the best eligible relay
+/// OUTSIDE the country, never either relay that failed.
 final class RelayOfferTests: XCTestCase {
 
     private struct Node: RelayRetryCandidate {
@@ -43,32 +47,97 @@ final class RelayOfferTests: XCTestCase {
     /// country), so there is nothing to offer it.
     func testAnAutomaticPickIsNeverOfferedAnything() {
         for node in fleet {
-            XCTAssertNil(RelayRetry.offer(after: node.id, in: fleet, origin: .automatic), node.id)
+            XCTAssertNil(RelayRetry.offer(after: node.id, in: fleet, origin: .automatic,
+                                          budget: RelayRetryBudget()), node.id)
         }
         // Not even when its own retry has nowhere to go.
         let nothingElse = [Node(id: "fra"),
                            Node(id: "ams", countryCode: "NL", city: "Amsterdam", isOnline: false),
                            Node(id: "lon", countryCode: "GB", city: "London", accessible: false)]
         XCTAssertNil(RelayRetry.next(after: "fra", in: nothingElse, origin: .automatic))
-        XCTAssertNil(RelayRetry.offer(after: "fra", in: nothingElse, origin: .automatic))
+        XCTAssertNil(RelayRetry.offer(after: "fra", in: nothingElse, origin: .automatic, budget: RelayRetryBudget()))
+    }
+
+    /// Review of #648, point 4: an automatic pick whose own retry (which may
+    /// leave the country) did not answer either is still offered nothing.
+    func testAnAutomaticPickWhoseRetryAlsoFailedIsStillNeverOfferedAnything() {
+        var budget = RelayRetryBudget()
+        // Stockholm, the client's choice, does not answer: the one retry may
+        // leave Sweden, and goes to the least loaded relay anywhere.
+        let retry = RelayRetry.plan(after: "sto", in: fleet, origin: .automatic, budget: &budget)
+        XCTAssertEqual(retry?.server.id, "fra")
+        XCTAssertEqual(retry?.reach, .otherCountry)
+        // Frankfurt does not answer either: no second retry, and no offer.
+        XCTAssertNil(RelayRetry.plan(after: "fra", in: fleet, origin: .automatic, budget: &budget))
+        XCTAssertNil(RelayRetry.offer(after: "fra", in: fleet, origin: .automatic, budget: budget))
+        // Not for any relay, with the retry spent or still to come.
+        for node in fleet {
+            XCTAssertNil(RelayRetry.offer(after: node.id, in: fleet, origin: .automatic, budget: budget), node.id)
+            XCTAssertNil(RelayRetry.offer(after: node.id, in: fleet, origin: .automatic,
+                                          budget: RelayRetryBudget()), node.id)
+        }
     }
 
     // MARK: - A user's pick with somewhere to go in its country: the retry
 
     func testAUserPickWithASameCountryCandidateRetriesAndIsOfferedNothing() {
+        // While the retry is still to come, a relay left in the country is
+        // the retry's to try, not an offer's.
+        XCTAssertNil(RelayRetry.offer(after: "nyc", in: fleet, origin: .user, budget: RelayRetryBudget()))
         var budget = RelayRetryBudget()
         let retry = RelayRetry.plan(after: "nyc", in: fleet, origin: .user, budget: &budget)
         XCTAssertEqual(retry?.server.id, "lax")
         XCTAssertEqual(retry?.reach, .sameCountry)
-        XCTAssertNil(RelayRetry.offer(after: "nyc", in: fleet, origin: .user))
-        // The retry did not answer either: New York is still listed, in the
-        // same country, so there is still nothing abroad to offer.
-        XCTAssertNil(RelayRetry.offer(after: "lax", in: fleet, origin: .user))
         // A relay in the same city counts the same way.
         let sameCity = [Node(id: "fra"), Node(id: "fra2", load: 90),
                         Node(id: "ams", countryCode: "NL", city: "Amsterdam", load: 0)]
         XCTAssertNotNil(RelayRetry.next(after: "fra", in: sameCity, origin: .user))
-        XCTAssertNil(RelayRetry.offer(after: "fra", in: sameCity, origin: .user))
+        XCTAssertNil(RelayRetry.offer(after: "fra", in: sameCity, origin: .user, budget: RelayRetryBudget()))
+    }
+
+    // MARK: - Review of #648, point 4: the same-country retry also fails
+
+    /// New York, the user's pick, does not answer; the one retry goes to Los
+    /// Angeles, in the same country, and that does not answer either. The
+    /// message offers the best eligible relay outside the United States, and
+    /// neither relay that failed, even when they are the least loaded.
+    func testWhenTheSameCountryRetryAlsoFailsTheOfferLeavesTheCountryAndNamesNeither() {
+        let list = fleet.map { node -> Node in
+            var node = node
+            if node.id == "nyc" { node.load = 1 }
+            if node.id == "lax" { node.load = 2 }
+            return node
+        }
+        var budget = RelayRetryBudget()
+        let retry = RelayRetry.plan(after: "nyc", in: list, origin: .user, budget: &budget)
+        XCTAssertEqual(retry?.server.id, "lax")
+        XCTAssertEqual(retry?.reach, .sameCountry)
+        XCTAssertEqual(budget.retriedFrom, "nyc", "the budget remembers the relay its retry left")
+        // Los Angeles does not answer either: no second retry...
+        XCTAssertNil(RelayRetry.plan(after: "lax", in: list, origin: .user, budget: &budget))
+        // ...and the one tap names the best relay abroad.
+        let offered = RelayRetry.offer(after: "lax", in: list, origin: .user, budget: budget)
+        XCTAssertEqual(offered?.id, "fra", "the least loaded eligible relay outside the United States")
+        XCTAssertNotEqual(offered?.countryCode, "US")
+        for failed in ["nyc", "lax"] {
+            XCTAssertNotEqual(offered?.id, failed, "never a relay that did not answer: \(failed)")
+        }
+        // Another US relay, emptier still: the retry is spent, so the offer
+        // still leaves the country.
+        let third = list + [Node(id: "chi", countryCode: "US", city: "Chicago", load: 0)]
+        XCTAssertEqual(RelayRetry.offer(after: "lax", in: third, origin: .user, budget: budget)?.id, "fra")
+        // Held or out of plan abroad: never offered, here either.
+        let narrow = list.filter { $0.countryCode == "US" } + [
+                      Node(id: "ams-held", countryCode: "NL", city: "Amsterdam", load: 0, isOnline: false),
+                      Node(id: "lon-paid", countryCode: "GB", city: "London", load: 0, accessible: false),
+                      Node(id: "sto", countryCode: "SE", city: "Stockholm", load: 70)]
+        XCTAssertEqual(RelayRetry.offer(after: "lax", in: narrow, origin: .user, budget: budget)?.id, "sto")
+        XCTAssertNil(RelayRetry.offer(after: "lax", in: Array(narrow.dropLast()), origin: .user, budget: budget))
+        // A connect the user asks for refills the budget and forgets New York:
+        // Los Angeles failing then has New York, in its country, to retry.
+        budget.refill()
+        XCTAssertNil(budget.retriedFrom)
+        XCTAssertNil(RelayRetry.offer(after: "lax", in: list, origin: .user, budget: budget))
     }
 
     // MARK: - A user's pick with nowhere to go in its country: the offer
@@ -79,11 +148,11 @@ final class RelayOfferTests: XCTestCase {
         XCTAssertNil(RelayRetry.plan(after: "sto", in: fleet, origin: .user, budget: &budget))
         XCTAssertFalse(budget.spent)
         // ...and the message offers the least loaded relay elsewhere.
-        XCTAssertEqual(RelayRetry.offer(after: "sto", in: fleet, origin: .user)?.id, "fra")
-        XCTAssertEqual(RelayRetry.offer(after: "fra", in: fleet, origin: .user)?.id, "nyc")
+        XCTAssertEqual(RelayRetry.offer(after: "sto", in: fleet, origin: .user, budget: budget)?.id, "fra")
+        XCTAssertEqual(RelayRetry.offer(after: "fra", in: fleet, origin: .user, budget: budget)?.id, "nyc")
         // Every relay outside the United States is in that position today.
         for node in fleet where node.countryCode != "US" {
-            let offered = RelayRetry.offer(after: node.id, in: fleet, origin: .user)
+            let offered = RelayRetry.offer(after: node.id, in: fleet, origin: .user, budget: budget)
             XCTAssertNotNil(offered, node.id)
             XCTAssertNotEqual(offered?.id, node.id, "never the relay that did not answer")
         }
@@ -131,7 +200,7 @@ final class RelayOfferTests: XCTestCase {
                     Node(id: "ams-held", countryCode: "NL", city: "Amsterdam", load: 0, isOnline: false),
                     Node(id: "lon-paid", countryCode: "GB", city: "London", load: 0, accessible: false),
                     Node(id: "fra", countryCode: "DE", city: "Frankfurt", load: 60)]
-        let offered = RelayRetry.offer(after: "sto", in: list, origin: .user)
+        let offered = RelayRetry.offer(after: "sto", in: list, origin: .user, budget: RelayRetryBudget())
         XCTAssertEqual(offered?.id, "fra", "the least loaded relay that is online AND open to this plan")
         let offer = offered.map {
             RelayOffer(serverId: $0.id, name: $0.name, city: $0.city, country: $0.countryCode, message: "m")
@@ -141,7 +210,8 @@ final class RelayOfferTests: XCTestCase {
             XCTAssertFalse(offer?.accessibilityLabel.contains(word) ?? true, word)
         }
         // Nothing eligible: no offer at all.
-        XCTAssertNil(RelayRetry.offer(after: "sto", in: Array(list.dropLast()), origin: .user))
+        XCTAssertNil(RelayRetry.offer(after: "sto", in: Array(list.dropLast()), origin: .user,
+                                      budget: RelayRetryBudget()))
         // At the tap: only a relay still listed online and open to this plan.
         XCTAssertEqual(RelayRetry.offered("fra", in: list)?.id, "fra")
         for id in ["ams-held", "lon-paid", "zzz"] {
@@ -255,7 +325,8 @@ final class RelayOfferTests: XCTestCase {
         let choosing = lines.filter { $0.contains("RelayRetry.offer(") }
         XCTAssertEqual(choosing.count, 2, "the retry's end and the probe's")
         for line in choosing {
-            XCTAssertTrue(line.contains("RelayRetry.offer(after: failedId, in: fresh, origin: origin)"), line)
+            XCTAssertTrue(line.contains("RelayRetry.offer(after: failedId, in: fresh, origin: origin, budget: budget)"),
+                          line)
         }
         let finish = slice(vm, from: "private func finishUnansweredRelay(", to: "\n    }\n")
         let setting = lines.filter { $0.contains("relayOffer = ") && !$0.contains("relayOffer = nil") }
@@ -265,5 +336,22 @@ final class RelayOfferTests: XCTestCase {
         }
         // Never beside the blocked-network message.
         XCTAssertTrue(finish.contains("RelayRetry.offerFits(verdict)"))
+    }
+
+    /// Review of #648, point 4: the offer sees the budget as the failed dial
+    /// left it (the relay the retry left, if one ran), read before the wait,
+    /// at both ends; and the retry records the relay it leaves.
+    func testBothEndsHandTheOfferTheBudgetAsTheFailedDialLeftIt() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        for start in ["private func retryOnAnotherRelay() -> Bool {",
+                      "private func diagnoseUnansweredRelay(host: String) {"] {
+            let body = slice(vm, from: start, to: "\n    }\n")
+            let capture = try XCTUnwrap(body.range(of: "let budget = relayRetryBudget"), start)
+            let wait = try XCTUnwrap(body.range(of: "Task {"), start)
+            XCTAssertLessThan(capture.lowerBound, wait.lowerBound, start)
+        }
+        let plan = try source("iosApp/Services/RelayRetry.swift")
+        XCTAssertTrue(slice(plan, from: "static func plan<", to: "\n    }\n")
+            .contains("_ = budget.take(leaving: failedId)"))
     }
 }
