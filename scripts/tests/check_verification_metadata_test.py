@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Self-test for scripts/check_verification_metadata.py (MR-1794).
+"""Self-test for scripts/check_verification_metadata.py (MR-1794, MR-2435).
 
 On a pull request with no dependency change the guard has nothing to find, so
 a guard that could never fail would look the same. These fixtures prove each
-failure it exists to catch, and that a plain version bump passes.
+failure it exists to catch, and that a plain version bump passes. The MR-2435
+cases are shapes Gradle accepts (it reads raw element names and merges every
+copy of an artifact) that the first version of the guard read differently,
+so each one passed it while Gradle accepted a substituted checksum.
 Run: python3 scripts/tests/check_verification_metadata_test.py
 """
 from __future__ import annotations
@@ -37,10 +40,16 @@ CONFIG = """
    </configuration>"""
 
 
+NS = "https://schema.gradle.org/dependency-verification"
+
+
+def raw(inner: str, root_attrs: str = f'xmlns="{NS}"', prolog: str = "") -> str:
+    return (f'<?xml version="1.0" encoding="UTF-8"?>\n{prolog}'
+            f"<verification-metadata {root_attrs}>{inner}\n</verification-metadata>\n")
+
+
 def doc(components: str, config: str = CONFIG) -> str:
-    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
-            '<verification-metadata xmlns="https://schema.gradle.org/dependency-verification">'
-            f"{config}\n   <components>{components}\n   </components>\n</verification-metadata>\n")
+    return raw(f"{config}\n   <components>{components}\n   </components>")
 
 
 def component(group: str, name: str, version: str, sha: str, extra: str = "") -> str:
@@ -125,6 +134,143 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertEqual(out.count("::error::CHANGED CHECKSUM"), 2, out)
         self.assertEqual(out.count("::error::CONFIGURATION CHANGED"), 1, out)
+
+    # --- MR-2435: shapes Gradle accepts -------------------------------------
+
+    def test_new_file_under_an_existing_version_is_listed(self):
+        with_module = OKHTTP_1.replace(
+            "\n      </component>",
+            f'\n         <artifact name="okhttp-5.5.1.module">\n            <sha256 value="{C}"/>'
+            "\n         </artifact>\n      </component>")
+        rc, out = self.run_guard(doc(OKHTTP_1), doc(with_module))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("+ com.squareup.okhttp3:okhttp:5.5.1 okhttp-5.5.1.module (new file under an existing version)",
+                      out)
+        self.assertIn("1 new file(s) under a version the base already lists", out)
+
+    def test_duplicate_component_whose_first_checksum_is_bad_fails(self):
+        # Gradle merges both copies and accepts either checksum.
+        bad = component("com.squareup.okhttp3", "okhttp", "5.5.1", B, "/>")
+        rc, out = self.run_guard(doc(OKHTTP_1), doc(bad + OKHTTP_1))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::DUPLICATE COMPONENT in candidate", out)
+        self.assertIn("::error::CHANGED CHECKSUM com.squareup.okhttp3:okhttp:5.5.1 okhttp-5.5.1.jar", out)
+
+    def test_duplicate_artifact_fails(self):
+        twice = OKHTTP_1.replace(
+            '\n         <artifact name="okhttp-5.5.1.jar">',
+            f'\n         <artifact name="okhttp-5.5.1.jar">\n            <sha256 value="{B}"/>\n         </artifact>'
+            '\n         <artifact name="okhttp-5.5.1.jar">', 1)
+        rc, out = self.run_guard(doc(OKHTTP_1), doc(twice))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::DUPLICATE ARTIFACT in candidate", out)
+        self.assertIn("::error::CHANGED CHECKSUM com.squareup.okhttp3:okhttp:5.5.1 okhttp-5.5.1.jar", out)
+
+    def test_also_trust_beside_the_checksum_fails(self):
+        # Gradle keeps the last checksum kind until </artifact>, so a sibling
+        # <also-trust> is an accepted alternative too.
+        sibling = component("com.squareup.okhttp3", "okhttp", "5.5.1", A, f'/>\n            <also-trust value="{B}"/>')
+        rc, out = self.run_guard(doc(OKHTTP_1), doc(sibling))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::UNEXPECTED SHAPE in candidate", out)
+        self.assertIn("::error::CHANGED CHECKSUM com.squareup.okhttp3:okhttp:5.5.1", out)
+
+    def test_second_configuration_fails(self):
+        trust_all = '\n   <configuration><trusted-artifacts><trust group=".*" regex="true"/></trusted-artifacts></configuration>'
+        rc, out = self.run_guard(doc(OKHTTP_1), doc(OKHTTP_1, CONFIG + trust_all))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::MORE THAN ONE <configuration> in candidate", out)
+        self.assertIn("::error::CONFIGURATION CHANGED", out)
+
+    def test_second_components_fails(self):
+        bad = component("com.squareup.okhttp3", "okhttp", "5.5.1", B, "/>")
+        rc, out = self.run_guard(doc(OKHTTP_1), doc(OKHTTP_1).replace(
+            "\n</verification-metadata>", f"\n   <components>{bad}\n   </components>\n</verification-metadata>"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::MORE THAN ONE <components> in candidate", out)
+        self.assertIn("::error::CHANGED CHECKSUM com.squareup.okhttp3:okhttp:5.5.1", out)
+
+    def test_foreign_default_namespace_fails(self):
+        # Gradle reads <configuration xmlns="urn:..."> as a configuration; a
+        # namespace-aware reader does not see it at all.
+        foreign = '\n   <configuration xmlns="urn:example:not-gradle"><verify-metadata>false</verify-metadata></configuration>'
+        rc, out = self.run_guard(doc(OKHTTP_1), doc(OKHTTP_1, CONFIG + foreign))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::FOREIGN NAMESPACE in candidate", out)
+        self.assertIn("::error::CONFIGURATION CHANGED", out)
+
+    def test_foreign_namespace_components_fail(self):
+        bad = component("com.squareup.okhttp3", "okhttp", "5.5.1", B, "/>")
+        hidden = f'\n   <components xmlns="urn:example:not-gradle">{bad}\n   </components>'
+        rc, out = self.run_guard(doc(OKHTTP_1), doc(OKHTTP_1).replace(
+            "\n</verification-metadata>", hidden + "\n</verification-metadata>"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::FOREIGN NAMESPACE in candidate", out)
+        self.assertIn("::error::CHANGED CHECKSUM com.squareup.okhttp3:okhttp:5.5.1", out)
+
+    def test_prefixed_copy_gradle_does_not_read_fails(self):
+        # Gradle sees only the plain (bad) entry; a namespace-aware reader also
+        # takes the prefixed copy for a component and may let it win.
+        bad = component("com.squareup.okhttp3", "okhttp", "5.5.1", B, "/>")
+        prefixed = (f'\n      <g:component xmlns:g="{NS}" group="com.squareup.okhttp3" name="okhttp" version="5.5.1">'
+                    f'<g:artifact name="okhttp-5.5.1.jar"><g:sha256 value="{A}"/></g:artifact></g:component>')
+        rc, out = self.run_guard(doc(OKHTTP_1), doc(bad + prefixed))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::FOREIGN NAMESPACE in candidate", out)
+        self.assertIn("::error::CHANGED CHECKSUM com.squareup.okhttp3:okhttp:5.5.1 okhttp-5.5.1.jar", out)
+
+    def test_root_namespace_must_be_gradles(self):
+        rc, out = self.run_guard(doc(OKHTTP_1), raw(f"{CONFIG}\n   <components>{OKHTTP_1}\n   </components>",
+                                                    root_attrs='xmlns="urn:example:not-gradle"'))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::FOREIGN NAMESPACE in candidate", out)
+
+    def test_verify_metadata_text_gradle_reads_as_false_fails(self):
+        # Boolean.parseBoolean(" true ") and the last of "tr", "u", "e" are false.
+        for text in (" true ", "tr&#117;e", "true\n"):
+            with self.subTest(text=text):
+                odd = CONFIG.replace("<verify-metadata>true<", f"<verify-metadata>{text}<")
+                rc, out = self.run_guard(doc(OKHTTP_1), doc(OKHTTP_1, odd))
+                self.assertEqual(rc, 1, out)
+                self.assertIn("::error::CONFIGURATION CHANGED", out)
+
+    def test_comment_and_cdata_inside_the_root_fail(self):
+        for odd in ("<verify-metadata>tr<!-- -->ue<", "<verify-metadata><![CDATA[true]]><"):
+            with self.subTest(odd=odd):
+                rc, out = self.run_guard(doc(OKHTTP_1), doc(OKHTTP_1, CONFIG.replace("<verify-metadata>true<", odd)))
+                self.assertEqual(rc, 1, out)
+                self.assertIn("::error::UNEXPECTED SHAPE in candidate", out)
+
+    def test_element_outside_its_place_fails(self):
+        stray = '\n      <trust group=".*" regex="true"/>'
+        rc, out = self.run_guard(doc(OKHTTP_1), doc(OKHTTP_1 + stray))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::UNEXPECTED SHAPE in candidate", out)
+
+    def test_doctype_fails(self):
+        rc, out = self.run_guard(doc(OKHTTP_1), raw(f"{CONFIG}\n   <components>{OKHTTP_1}\n   </components>",
+                                                    prolog="<!DOCTYPE verification-metadata>\n"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("has a DOCTYPE", out)
+
+    def test_shape_problems_in_the_base_are_reported(self):
+        bad = component("com.squareup.okhttp3", "okhttp", "5.5.1", B, "/>")
+        rc, out = self.run_guard(doc(OKHTTP_1 + bad), doc(OKHTTP_1))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::DUPLICATE COMPONENT in the base branch's file", out)
+
+    def test_the_committed_file_reads_clean(self):
+        # The Gradle-written file has none of the shapes above.
+        path = os.path.join(ROOT, "gradle", "verification-metadata.xml")
+        if not os.path.isfile(path):
+            self.skipTest("no gradle/verification-metadata.xml in this checkout")
+        meta = guard.Metadata(path, "committed")
+        self.assertEqual(meta.problems, [])
+        self.assertGreater(len(meta.entries), 100)
+        with open(path, encoding="utf-8") as f:
+            committed = f.read()
+        rc, out = self.run_guard(committed, committed)
+        self.assertEqual(rc, 0, out)
 
 
 if __name__ == "__main__":
