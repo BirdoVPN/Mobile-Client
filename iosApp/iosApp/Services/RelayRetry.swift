@@ -131,11 +131,15 @@ enum RelayRetry {
     /// It takes the whole choice so that no caller needs the server in hand to
     /// write a line; RelayRetryTests feeds it marked servers and checks that
     /// none of their fields comes out.
-    static func logLine<S: RelayRetryCandidate>(for choice: Choice<S>?) -> String {
-        guard let choice else {
-            return "[RelayRetry] no handshake: no automatic retry (0 of 1)"
+    /// - Parameter alreadySpent: the budget was spent before this decision
+    ///   (the retry's own dial did not answer either).
+    static func logLine<S: RelayRetryCandidate>(for choice: Choice<S>?, alreadySpent: Bool) -> String {
+        if let choice {
+            return "[RelayRetry] no handshake: automatic retry 1 of 1 (\(choice.reach.rawValue))"
         }
-        return "[RelayRetry] no handshake: automatic retry 1 of 1 (\(choice.reach.rawValue))"
+        return alreadySpent
+            ? "[RelayRetry] no handshake: the automatic retry is spent (1 of 1)"
+            : "[RelayRetry] no handshake: no relay qualifies for a retry (0 of 1)"
     }
 
     private static func reach<S: RelayRetryCandidate>(from failed: S, to target: S) -> Reach {

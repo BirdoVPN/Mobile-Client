@@ -2041,10 +2041,11 @@ final class VpnViewModel: ObservableObject {
         guard activeMultiHop == nil,
               let failedId = connectedServerId ?? selectedServer?.id else { return false }
         let origin = selectionOrigin
+        let spentBefore = relayRetryBudget.spent
         let planned = RelayRetry.plan(after: failedId, in: servers, origin: origin, budget: &relayRetryBudget)
         // Counts only: whether a retry happens and how far it reaches, never
         // which relay (`RelayRetry.logLine`).
-        debugLog(RelayRetry.logLine(for: planned))
+        debugLog(RelayRetry.logLine(for: planned, alreadySpent: spentBefore))
         guard planned != nil else { return false }
         let host = lastDialRelayHost
         let selectedAtFailure = selectedServer?.id

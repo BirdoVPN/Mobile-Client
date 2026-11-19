@@ -250,15 +250,22 @@ final class RelayRetryTests: XCTestCase {
         let near = Node(id: "id-marker-near", countryCode: "QX", city: "Nearcityx", load: 2)
         let far = Node(id: "id-marker-far", countryCode: "QZ", city: "Farcityx", load: 0)
         let list = [failed, near, far]
+        var budget = RelayRetryBudget()
+        let retried = RelayRetry.plan(after: failed.id, in: list, origin: .automatic, budget: &budget)
+        let spent = RelayRetry.plan(after: far.id, in: list, origin: .automatic, budget: &budget)
         let lines = [
-            RelayRetry.logLine(for: RelayRetry.next(after: failed.id, in: list, origin: .automatic)),
-            RelayRetry.logLine(for: RelayRetry.next(after: failed.id, in: list, origin: .user)),
-            RelayRetry.logLine(for: RelayRetry.next(after: failed.id, in: [failed], origin: .user)),
+            RelayRetry.logLine(for: RelayRetry.next(after: failed.id, in: list, origin: .automatic), alreadySpent: false),
+            RelayRetry.logLine(for: RelayRetry.next(after: failed.id, in: list, origin: .user), alreadySpent: false),
+            RelayRetry.logLine(for: RelayRetry.next(after: failed.id, in: [failed], origin: .user), alreadySpent: false),
+            RelayRetry.logLine(for: retried, alreadySpent: false),
+            RelayRetry.logLine(for: spent, alreadySpent: true),
         ]
         XCTAssertEqual(lines, [
             "[RelayRetry] no handshake: automatic retry 1 of 1 (other-country)",
             "[RelayRetry] no handshake: automatic retry 1 of 1 (same-country)",
-            "[RelayRetry] no handshake: no automatic retry (0 of 1)",
+            "[RelayRetry] no handshake: no relay qualifies for a retry (0 of 1)",
+            "[RelayRetry] no handshake: automatic retry 1 of 1 (other-country)",
+            "[RelayRetry] no handshake: the automatic retry is spent (1 of 1)",
         ])
         for line in lines {
             for node in list {
@@ -369,7 +376,8 @@ final class RelayRetryTests: XCTestCase {
         XCTAssertEqual(logs.count, 2, "one line for the retry decision, one for the probe")
         for line in logs {
             let call = line.trimmingCharacters(in: .whitespaces)
-            XCTAssertTrue(call == "debugLog(RelayRetry.logLine(for: planned))" || call == "debugLog(verdict.logLine)",
+            XCTAssertTrue(call == "debugLog(RelayRetry.logLine(for: planned, alreadySpent: spentBefore))"
+                            || call == "debugLog(verdict.logLine)",
                           "unexpected log call: \(call)")
         }
         // The address the probe dials is never interpolated anywhere on the path.

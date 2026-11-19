@@ -53,17 +53,47 @@ final class RelayProbeTests: XCTestCase {
                        "This network appears to block VPN connections. Try mobile data or another Wi-Fi.")
     }
 
+    /// A TCP port on 127.0.0.1 that is bound but never listening, held for
+    /// the test: a connect to it is refused, every time. (A listener that was
+    /// just cancelled is not: `NWListener.cancel()` is asynchronous, and the
+    /// first run of this test connected to one still closing.)
+    private final class RefusingPort {
+        let fd: Int32
+        private(set) var port: UInt16 = 0
+
+        init() throws {
+            fd = socket(AF_INET, SOCK_STREAM, 0)
+            guard fd >= 0 else { throw POSIXError(.EBADF) }
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = 0
+            addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+            var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let bound = withUnsafeMutablePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, length) }
+            }
+            let named = withUnsafeMutablePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
+            }
+            guard bound == 0, named == 0 else {
+                close(fd)
+                throw POSIXError(.EADDRNOTAVAIL)
+            }
+            port = UInt16(bigEndian: addr.sin_port)
+        }
+
+        deinit { close(fd) }
+    }
+
     func testARelayThatDoesNotAcceptTcpIsUnreachable() async throws {
-        // A port that was just listening and is now closed: refused.
-        let relay = try LoopbackListener()
-        await relay.start(self)
-        let closedPort = relay.port
-        relay.stop()
-        XCTAssertNotEqual(closedPort, 0)
+        let closed = try RefusingPort()
+        XCTAssertNotEqual(closed.port, 0)
 
         let started = ContinuousClock.now
-        let verdict = await RelayProbe.verdict(host: "127.0.0.1", port: closedPort, timeout: .seconds(1))
+        let verdict = await RelayProbe.verdict(host: "127.0.0.1", port: closed.port, timeout: .seconds(1))
         let elapsed = started.duration(to: ContinuousClock.now)
+        withExtendedLifetime(closed) {}
 
         XCTAssertEqual(verdict, .serverUnreachable)
         XCTAssertEqual(verdict.message, "This server isn't reachable right now.")
