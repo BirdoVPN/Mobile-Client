@@ -15,9 +15,14 @@ import Foundation
 // says the token is intact (a session-store outage, or a rotation that failed
 // and restored it, MR-2500).
 //
-// A 403 keeps the session as well (MR-1771). It signed out until now, by the
-// lead decision of 2026-10-23, but an infrastructure block answers it too: the
-// error is surfaced, the keychain is not touched, and the refresh backs off.
+// A 403 keeps the session as well (MR-1771; the owner's rule supersedes the
+// lead decision of 2026-10-23 that it signed out): an infrastructure block
+// answers it too. The keychain is not touched, the refresh backs off, and the
+// error surfaces as a transient 503, never as a 403: an auth failure is not a
+// server refusing a relay (lead, 2026-11-19; Android does the same).
+//
+// No timer retries a held refresh: the next request does, or the app coming
+// to the foreground (`RefreshCoordinator.retryIsDue`, ContentView).
 //
 // Foundation-only by design so RefreshAnswerTests can pin it: APIClient.swift
 // (its caller) cannot be compiled into the test bundle.
@@ -31,7 +36,7 @@ enum RefreshAnswer: Equatable, Sendable {
     /// the keychain (`AuthViewModel.logoutIfUnauthorized`).
     case dead
     /// 403: refused, but not a verdict on the token. The session is kept, the
-    /// error is surfaced, and the refresh backs off.
+    /// error surfaces as a transient 503, and the refresh backs off.
     case refused
     /// 429: the session is kept, and no refresh is sent for `retryAfter`
     /// seconds; then the same token is presented again.
@@ -128,12 +133,17 @@ struct RefreshHoldOff: Equatable, Sendable {
     /// The status a refresh held by this wait reports: 429 while a rate
     /// limit's wait runs, 503 during a backoff.
     private(set) var heldStatus = 503
+    /// Whether the last refresh got no verdict (a 403, a 429, a 5xx, no
+    /// answer) and nothing has rotated or ended the session since: a retry is
+    /// owed, which the app pays when it comes to the foreground.
+    private(set) var retryOwed = false
 
     /// Start holding at `now` for a 429's `wait` seconds.
     mutating func hold(for wait: TimeInterval, now: Date) {
         since = now
         self.wait = wait
         heldStatus = 429
+        retryOwed = true
     }
 
     /// A refresh got no verdict: hold at `now` for the next backoff step,
@@ -145,12 +155,22 @@ struct RefreshHoldOff: Equatable, Sendable {
         since = now
         self.wait = wait
         heldStatus = 503
+        retryOwed = true
         return wait
     }
 
-    /// A 2xx or a 401: the next failure waits the first step again.
+    /// A 2xx or a 401: the next failure waits the first step again, and no
+    /// retry is owed.
     mutating func reset() {
         failures = 0
+        retryOwed = false
+    }
+
+    /// Whether the app coming to the foreground should retry the refresh at
+    /// `now`: one is owed and its wait is over. Never sooner, and nothing
+    /// retries on a timer.
+    func retryIsDue(now: Date) -> Bool {
+        retryOwed && !isHeld(now: now)
     }
 
     /// Whether a refresh must still wait at `now`. A clock set back before
@@ -214,5 +234,11 @@ actor RefreshCoordinator {
     /// A 2xx or a 401: the backoff starts over.
     func reset() {
         holdOff.reset()
+    }
+
+    /// MR-1771 / MR-2500: whether the app coming to the foreground should
+    /// retry: a refresh is owed, none is in flight, and the wait is over.
+    func retryIsDue() -> Bool {
+        inFlight == nil && holdOff.retryIsDue(now: Date())
     }
 }

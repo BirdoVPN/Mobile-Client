@@ -324,6 +324,10 @@ struct ContentView: View {
             // banner has to survive long enough for the user to read it.
             guard phase == .active else { return }
             vpnVM.checkCircuitBreaker()
+            // MR-1771 / MR-2500: a token refresh the server held or that is
+            // backing off is retried on coming back, once its wait is over.
+            // No timer: a backgrounded app sends nothing.
+            Task { @MainActor in await authVM.retryHeldRefresh() }
         }
         .onOpenURL { url in
             // `birdo://` deep links (Android parity: connect / servers /

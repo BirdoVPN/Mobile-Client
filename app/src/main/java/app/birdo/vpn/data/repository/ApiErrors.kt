@@ -221,14 +221,6 @@ class ApiErrorMapper(private val strings: StringLookup) {
     fun temporarilyUnavailable(): ApiResult.Error =
         ApiResult.Error(textFor(FailureReason.SERVER_UNAVAILABLE), 503, FailureReason.SERVER_UNAVAILABLE)
 
-    /**
-     * The refresh was refused with a 403 (MR-1771). Not a verdict on the
-     * token: the session and the stored tokens stay. NOT a 401, so nothing
-     * downstream signs the user out over it.
-     */
-    fun refreshRefused(): ApiResult.Error =
-        ApiResult.Error(textFor(FailureReason.REFUSED), 403, FailureReason.REFUSED)
-
     /** A 2xx body that could not be used (missing tokens, an empty body where one was required). */
     fun unexpected(): ApiResult.Error =
         ApiResult.Error(textFor(FailureReason.UNEXPECTED), 0, FailureReason.UNEXPECTED)

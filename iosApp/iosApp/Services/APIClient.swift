@@ -957,6 +957,19 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Token Refresh
 
+    /// MR-1771 / MR-2500: the app came to the foreground. A refresh the server
+    /// held (429) or that is backing off (403, 5xx, no answer) is retried now,
+    /// with the same token and through the same single-flight coordinator,
+    /// once its wait is over: never sooner, and never on a timer. Nothing is
+    /// sent when no retry is owed. Throws what the refresh throws
+    /// (`.unauthorized` only for a 401).
+    func retryHeldRefresh() async throws {
+        guard await refreshActor.retryIsDue() else { return }
+        try await refreshActor.refresh { [weak self] in
+            try await self?.refreshTokens()
+        }
+    }
+
     private func refreshTokens() async throws {
         guard let refresh = keychain.refreshToken else {
             throw APIError.unauthorized
@@ -997,10 +1010,12 @@ final class APIClient: @unchecked Sendable {
             throw APIError.unauthorized
         case .refused:
             // MR-1771: a 403 is not a verdict on the token (an infrastructure
-            // block answers it too). The session and the keychain stay, the
-            // caller gets the refusal, and the refresh backs off.
+            // block answers it too). The session and the keychain stay, and
+            // the refresh backs off. The caller gets a transient 503, never
+            // the 403: an auth failure must not read as a server refusing a
+            // relay (lead, 2026-11-19; Android does the same).
             await refreshActor.backOff(serverWait: nil)
-            throw APIError.httpError(http.statusCode)
+            throw APIError.httpError(503)
         case .rateLimited(let retryAfter):
             // MR-1771: the route's rate limit, answered before the token is
             // read. The session is kept, and no refresh is sent before the

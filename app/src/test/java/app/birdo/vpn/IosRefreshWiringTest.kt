@@ -120,6 +120,10 @@ class IosRefreshWiringTest {
             assertTrue("$apiClientPath: `case $label` drops its wait", kept.contains(wait))
             assertTrue("$apiClientPath: `case $label` does not throw", kept.contains("throw APIError.httpError("))
         }
+        // Lead, 2026-11-19: a refused refresh surfaces as a transient 503, never
+        // the 403 itself (an auth failure is not a server refusing a relay).
+        assertTrue("$apiClientPath: a refused refresh is not a 503", branch(".refused:").contains("throw APIError.httpError(503)"))
+        assertFalse("$apiClientPath: a refused refresh passes its 403 on", branch(".refused:").contains("httpError(http.statusCode)"))
         // No answer at all: the transport error propagates as it is, after a backoff.
         val transport = refreshTokens.substringAfter("} catch {").substringBefore("\n        }\n")
         assertTrue("$apiClientPath: a transport failure sets no backoff", transport.contains("refreshActor.backOff(serverWait: nil)"))
@@ -162,6 +166,51 @@ class IosRefreshWiringTest {
             "$refreshAnswerPath: RefreshCoordinator.backOff(serverWait:) does not back off",
             coordinator.substringAfter("func backOff(serverWait: TimeInterval?)").contains("holdOff.backOff(serverWait: serverWait"),
         )
+    }
+
+    /**
+     * Lead, 2026-11-19: no background timer. A held or backing-off refresh is
+     * retried by the next request or when the app comes to the foreground,
+     * through the same single-flight path and only once its wait is over; a
+     * 401 from that retry signs out like any other.
+     */
+    @Test
+    fun `coming to the foreground retries a held refresh on both platforms, through the one path`() {
+        val scenePhase = source("iosApp/iosApp/ContentView.swift")
+            .substringAfter(".onChange(of: scenePhase) {").substringBefore("\n        }\n")
+        val active = scenePhase.indexOf("guard phase == .active else { return }")
+        assertTrue("ContentView: the scenePhase handler no longer gates on .active", active >= 0)
+        assertTrue(
+            "ContentView: coming to the foreground does not retry a held refresh",
+            scenePhase.indexOf("authVM.retryHeldRefresh()") > active,
+        )
+
+        val retry = apiClient.substringAfter("func retryHeldRefresh() async throws {").substringBefore("\n    }\n")
+        val due = retry.indexOf("refreshActor.retryIsDue()")
+        val sent = retry.indexOf("refreshActor.refresh {")
+        assertTrue("$apiClientPath: retryHeldRefresh() does not ask whether a retry is due", due >= 0)
+        assertTrue("$apiClientPath: retryHeldRefresh() does not go through the coordinator", sent >= 0)
+        assertTrue("$apiClientPath: retryHeldRefresh() sends before asking", due < sent)
+        assertTrue("$apiClientPath: retryHeldRefresh() does not refresh", retry.contains("refreshTokens()"))
+
+        val vm = source("iosApp/iosApp/ViewModels/AuthViewModel.swift")
+            .substringAfter("func retryHeldRefresh() async {").substringBefore("\n    }\n")
+        assertTrue("AuthViewModel.swift: a 401 from the foreground retry does not sign out", vm.contains("logoutIfUnauthorized(error)"))
+        assertTrue(
+            "$refreshAnswerPath: the coordinator does not check the hold before a foreground retry",
+            coordinator.substringAfter("func retryIsDue() -> Bool {").contains("holdOff.retryIsDue(now:"),
+        )
+
+        // Android: the activity's ON_START, through the same single-flight refresh.
+        val graph = source("app/src/main/java/app/birdo/vpn/ui/navigation/BirdoNavGraph.kt")
+        assertTrue(
+            "BirdoNavGraph.kt: ON_START does not retry a held refresh",
+            Regex("""Lifecycle\.Event\.ON_START\)\s*authViewModel\.onAppForeground\(\)""").containsMatchIn(graph),
+        )
+        val repo = source("app/src/main/java/app/birdo/vpn/data/repository/BirdoRepository.kt")
+            .substringAfter("internal suspend fun retryHeldRefresh(): RefreshOutcome? {").substringBefore("\n    }\n")
+        assertTrue("BirdoRepository.kt: retryHeldRefresh() ignores the hold", repo.contains("refreshHoldMs() != null"))
+        assertTrue("BirdoRepository.kt: retryHeldRefresh() bypasses the single-flight refresh", repo.contains("refreshToken("))
     }
 
     @Test

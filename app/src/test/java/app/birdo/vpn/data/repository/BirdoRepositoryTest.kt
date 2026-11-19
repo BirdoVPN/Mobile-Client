@@ -727,10 +727,11 @@ class BirdoRepositoryTest {
      * got "Session expired" (a 401) and checkSession signed the user out,
      * leaving the tokens on disk. A 403 here is not a verdict on the token —
      * an infrastructure block answers it too — so the tokens stay, the caller
-     * gets a 403 refusal that signs nothing out, and the refresh backs off.
+     * gets a transient failure (lead, 2026-11-19: never a 403, which reads as
+     * a server refusing the relay), and the refresh backs off.
      */
     @Test
-    fun `a refresh 403 keeps the session and the tokens and surfaces the refusal`() = runTest {
+    fun `a refresh 403 keeps the session and the tokens, surfaces as transient and backs off`() = runTest {
         var now = 0L
         repository.clock = { now }
         repository.jitter = { 0.0 }
@@ -740,15 +741,104 @@ class BirdoRepositoryTest {
         coEvery { api.refreshToken(any()) } returns refreshAnswer(403)
 
         val e = repository.getProfile() as ApiResult.Error
-        assertEquals(403, e.code)
-        assertEquals(FailureReason.REFUSED, e.reason)
+        assertEquals(503, e.code)
+        assertEquals(FailureReason.SERVER_UNAVAILABLE, e.reason)
         assertEquals(1_000L, e.retryAfterMs)
         verify(exactly = 0) { tokenManager.clearAll() }
 
-        now += 1_000L
-        assertEquals(RefreshOutcome.REFUSED, repository.refreshToken())
+        now += 999L
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+        now += 1L
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
         coVerify(exactly = 2) { api.refreshToken(any()) }
         verify(exactly = 0) { tokenManager.clearAll() }
+    }
+
+    /**
+     * Lead decision 2026-11-19 (MR-1771): a token refresh that failed —
+     * refused (403), rate limited (429), unavailable (503) or unanswered — must
+     * never make Auto-Connect dial another server. The best-server fallback
+     * (VpnViewModel.fallsBackToQuickConnect) is for a relay that is gone or
+     * out of the plan's reach (a 403/404 from /vpn/connect itself), not for
+     * auth. Before, a refused refresh came back as a 401 (a sign-out); a 403
+     * would have tripped the fallback.
+     */
+    @Test
+    fun `a connect whose refresh failed never triggers the Auto-Connect best-server fallback`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { tokenManager.getAccessToken() } returns "expired_access"
+        coEvery { api.connect(any()) } returns
+            Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+        val failures: List<() -> Response<RefreshResponse>> = listOf(
+            { refreshAnswer(403) },
+            { refreshAnswer(429, retryAfter = "60") },
+            { refreshAnswer(503) },
+            { throw IOException("timeout") },
+        )
+
+        for ((i, failure) in failures.withIndex()) {
+            coEvery { api.refreshToken(any()) } coAnswers { failure() }
+            val e = repository.connectVpn("server_1") as ApiResult.Error
+            assertFalse("failure $i: code ${e.code}", app.birdo.vpn.ui.viewmodel.VpnViewModel.fallsBackToQuickConnect(e))
+            assertNotEquals("failure $i signs out", 401, e.code)
+            // ...nor while its wait runs and the refresh is held.
+            val held = repository.connectVpn("server_1") as ApiResult.Error
+            assertFalse("held $i: code ${held.code}", app.birdo.vpn.ui.viewmodel.VpnViewModel.fallsBackToQuickConnect(held))
+            now += RetryAfter.MAX_MS // past the hold, for the next kind
+        }
+        coVerify(exactly = failures.size) { api.refreshToken(any()) }
+        verify(exactly = 0) { tokenManager.clearAll() }
+    }
+
+    /**
+     * Lead decision 2026-11-19 (MR-1771 / MR-2500): no background timer. A
+     * held or backing-off refresh is retried when the app comes to the
+     * foreground (AuthViewModel.onAppForeground), through the same
+     * single-flight path, with the same token, and only once its wait is over.
+     * With no retry owed, the foreground sends nothing.
+     */
+    @Test
+    fun `the foreground retries a held refresh once its wait is over, and only then`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        repository.jitter = { 0.0 }
+        var refresh: String? = "live_refresh"
+        every { tokenManager.getAccessToken() } returns "expired_access"
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.setTokens(any(), any()) } answers { refresh = secondArg() }
+        val presented = mutableListOf<String>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            presented += firstArg<RefreshRequest>().refreshToken
+            refreshAnswer(503, retryAfter = "10")
+        }
+
+        // Nothing owed: the foreground sends nothing.
+        assertNull(repository.retryHeldRefresh())
+        coVerify(exactly = 0) { api.refreshToken(any()) }
+
+        // A 503 with Retry-After 10: owed, but held for 10 s.
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        now += 9_999L
+        assertNull("still held: the foreground must not send early", repository.retryHeldRefresh())
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+
+        // The wait is over: the foreground retries with the same token.
+        now += 1L
+        coEvery { api.refreshToken(any()) } coAnswers {
+            presented += firstArg<RefreshRequest>().refreshToken
+            Response.success(RefreshResponse(accessToken = "new_access", refreshToken = "new_refresh", expiresIn = 3600))
+        }
+        assertEquals(RefreshOutcome.SUCCESS, repository.retryHeldRefresh())
+        assertEquals(listOf("live_refresh", "live_refresh"), presented)
+        assertEquals("new_refresh", refresh)
+
+        // Rotated: nothing owed any more.
+        now += RetryAfter.MAX_MS
+        assertNull(repository.retryHeldRefresh())
+        coVerify(exactly = 2) { api.refreshToken(any()) }
     }
 
     /** MR-1771 / MR-2500: of everything /auth/refresh can answer, only a 401 ends the session. */

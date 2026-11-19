@@ -1275,6 +1275,20 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
+    /// MR-1771 / MR-2500: the app came to the foreground (ContentView's
+    /// `scenePhase == .active`). A token refresh the server held (429) or
+    /// that is backing off (403, 5xx, no answer) is retried now if its wait
+    /// is over, never sooner and never on a timer
+    /// (`APIClient.retryHeldRefresh`). Only a 401 signs out, here as anywhere.
+    func retryHeldRefresh() async {
+        guard isLoggedIn else { return }
+        do {
+            try await api.retryHeldRefresh()
+        } catch {
+            logoutIfUnauthorized(error)
+        }
+    }
+
     // MARK: - Logout / Session Expiry
 
     /// Sign out. ORDER IS LOAD-BEARING for callers: run

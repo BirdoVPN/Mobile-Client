@@ -317,6 +317,22 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+    /**
+     * MR-1771 / MR-2500: the app came to the foreground (BirdoNavGraph, the
+     * activity's ON_START). A token refresh the server held (429) or that is
+     * backing off (403, 5xx, no answer) is retried now if its wait is over,
+     * never sooner and never on a timer ([BirdoRepository.retryHeldRefresh]).
+     * Only a 401 ends the session, here as anywhere.
+     */
+    fun onAppForeground() {
+        if (!_uiState.value.isLoggedIn) return
+        viewModelScope.launch {
+            if (repository.retryHeldRefresh() == app.birdo.vpn.data.repository.RefreshOutcome.UNAUTHORIZED) {
+                onSessionExpired()
+            }
+        }
+    }
+
     fun login(email: String, password: String) {
         val trimmedEmail = email.trim()
         if (!InputValidator.isValidEmail(trimmedEmail)) {

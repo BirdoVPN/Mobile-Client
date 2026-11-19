@@ -137,6 +137,45 @@ final class RefreshAnswerTests: XCTestCase {
         XCTAssertTrue(hold.isHeld(now: start.addingTimeInterval(59)))
     }
 
+    // MARK: - The foreground retry (lead, 2026-11-19: no timer)
+
+    func testARetryIsOwedAfterAnyWaitAndDueOnlyOnceTheWaitIsOver() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var hold = RefreshHoldOff()
+        XCTAssertFalse(hold.retryIsDue(now: start), "nothing owed before a refresh failed")
+
+        hold.backOff(serverWait: 10, random: 0, now: start)
+        XCTAssertTrue(hold.retryOwed)
+        XCTAssertFalse(hold.retryIsDue(now: start.addingTimeInterval(9.9)), "never before the wait is over")
+        XCTAssertTrue(hold.retryIsDue(now: start.addingTimeInterval(10)))
+
+        hold.reset()
+        XCTAssertFalse(hold.retryIsDue(now: start.addingTimeInterval(10)), "a 2xx or a 401 owes nothing")
+
+        hold.hold(for: 60, now: start)
+        XCTAssertFalse(hold.retryIsDue(now: start.addingTimeInterval(59)))
+        XCTAssertTrue(hold.retryIsDue(now: start.addingTimeInterval(60)))
+    }
+
+    func testTheForegroundRetryIsDueOnlyWhenOwedAndNoLongerHeld() async throws {
+        let coordinator = RefreshCoordinator(heldError: { HeldRefresh(status: $0) })
+        let nothingOwed = await coordinator.retryIsDue()
+        XCTAssertFalse(nothingOwed, "nothing owed: the foreground sends nothing")
+
+        await coordinator.backOff(serverWait: 10)
+        let stillHeld = await coordinator.retryIsDue()
+        XCTAssertFalse(stillHeld, "owed, but the wait still runs")
+
+        await coordinator.hold(for: 0) // a wait that is already over
+        let due = await coordinator.retryIsDue()
+        XCTAssertTrue(due)
+
+        // The retry rotates: what refreshTokens() does on a 2xx.
+        try await coordinator.refresh { await coordinator.reset() }
+        let paid = await coordinator.retryIsDue()
+        XCTAssertFalse(paid, "rotated: nothing owed any more")
+    }
+
     // MARK: - The hold
 
     func testNoRefreshIsSentBeforeTheWaitIsOver() {

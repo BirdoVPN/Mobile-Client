@@ -63,12 +63,14 @@ sealed class ApiResult<out T> {
 /**
  * Outcome of a token refresh. Distinguishing these is load-bearing (parity with
  * the iOS APIClient): only a 401 forces the user to re-login (UNAUTHORIZED); a
- * transient failure (429, 5xx, timeout, network) must keep the session, and an
- * ABORTED refresh (a logout/delete landed while the refresh was in flight) must
- * neither resurrect the session nor trigger a second logout (TRANSIENT). A 403
- * keeps the session too (MR-1771): REFUSED, surfaced as the refusal it is.
+ * transient failure (403, 429, 5xx, timeout, network) must keep the session,
+ * and an ABORTED refresh (a logout/delete landed while the refresh was in
+ * flight) must neither resurrect the session nor trigger a second logout (both
+ * TRANSIENT). A refused refresh (403) is TRANSIENT on purpose (MR-1771): an
+ * auth failure must never read as a server refusing a relay, which is what
+ * makes Auto-Connect pick another server (VpnViewModel.fallsBackToQuickConnect).
  */
-internal enum class RefreshOutcome { SUCCESS, UNAUTHORIZED, TRANSIENT, REFUSED }
+internal enum class RefreshOutcome { SUCCESS, UNAUTHORIZED, TRANSIENT }
 
 // ── Repository ──────────────────────────────────────────────────
 
@@ -149,6 +151,27 @@ class BirdoRepository @Inject constructor(
     private fun backOffRefresh(serverWaitMs: Long?) {
         refreshFailures += 1
         refreshHold = clock() to maxOf(serverWaitMs ?: 0L, RefreshRetry.backoffMs(refreshFailures, jitter()))
+        refreshPending = true
+    }
+
+    /**
+     * Whether the last refresh got no verdict (a 403, a 429, a 5xx, no answer)
+     * and nothing has rotated or ended the session since: a retry is owed.
+     * [retryHeldRefresh] pays it when the app comes to the foreground.
+     */
+    @Volatile private var refreshPending = false
+
+    /**
+     * MR-1771 / MR-2500: the app came to the foreground. A refresh that was
+     * held (429) or is backing off (403, 5xx, no answer) is retried now, with
+     * the same token and through the same single-flight path, once its wait
+     * is over: never sooner, and never on a timer, so an idle app sends
+     * nothing. Null when no retry is owed or its wait still runs. The caller
+     * signs the UI out on UNAUTHORIZED, as for any other refresh.
+     */
+    internal suspend fun retryHeldRefresh(): RefreshOutcome? {
+        if (!refreshPending || refreshHoldMs() != null) return null
+        return refreshToken(tokenManager.getAccessToken())
     }
 
     /**
@@ -396,8 +419,10 @@ class BirdoRepository @Inject constructor(
      * 429 holds the next refresh for the server's wait ([RefreshRetry]); a
      * 5xx, a 403 or no answer holds it for a capped, jittered backoff. A held
      * refresh sends nothing and answers TRANSIENT at once; once the hold is
-     * over, the next refresh presents the SAME stored refresh token, which no
-     * answer but a 2xx or a 401 has touched.
+     * over, the next refresh (the next 401, or the app coming to the
+     * foreground: [retryHeldRefresh]) presents the SAME stored refresh token,
+     * which no answer but a 2xx or a 401 has touched. Nothing retries on a
+     * timer.
      *
      * SINGLE-FLIGHT (A2-007). [staleAccessToken] is the access token the failed
      * request carried. Every caller that got a 401 queues on [refreshMutex]; the
@@ -446,6 +471,7 @@ class BirdoRepository @Inject constructor(
                 // The server answered with a pair: whatever the fence below
                 // decides, the backoff starts over (MR-2500).
                 refreshFailures = 0
+                refreshPending = false
                 val body = response.body()!!
                 // Logout fence + CAS: if a logout/delete bumped the generation,
                 // or the stored refresh token no longer matches the one we
@@ -508,6 +534,7 @@ class BirdoRepository @Inject constructor(
                 //
                 // The ONLY answer that ends a session (MR-1771, MR-2500).
                 refreshFailures = 0
+                refreshPending = false
                 synchronized(sessionLock) {
                     if (sessionGeneration.get() == genAtStart &&
                         tokenManager.getRefreshToken() == presented
@@ -527,11 +554,13 @@ class BirdoRepository @Inject constructor(
                 // rate-limit bucket and the API answered 403 across the board.
                 // Wiping credentials on that would have irrecoverably signed out
                 // the entire userbase during an outage that had nothing to do
-                // with their tokens. The caller gets the refusal (not a 401, so
-                // nothing signs the user out), and the refresh backs off like a
-                // 5xx instead of being re-sent by every request's 401.
+                // with their tokens. The caller gets a transient failure: not a
+                // 401, so nothing signs the user out, and not a 403, so
+                // Auto-Connect does not read it as the server refusing the relay.
+                // The refresh backs off like a 5xx instead of being re-sent by
+                // every request's 401.
                 backOffRefresh(null)
-                RefreshOutcome.REFUSED
+                RefreshOutcome.TRANSIENT
             } else if (response.code() == 429) {
                 // MR-1771: every limiter on the route answers before the token
                 // is read, so the 429 is never a verdict on it: nothing is
@@ -542,6 +571,7 @@ class BirdoRepository @Inject constructor(
                     runCatching { response.headers()["Retry-After"] }.getOrNull(),
                     runCatching { response.errorBody()?.string() }.getOrNull(),
                 )
+                refreshPending = true
                 RefreshOutcome.TRANSIENT
             } else {
                 // MR-2500: a 5xx or an unexpected status. The credentials may
@@ -996,10 +1026,6 @@ class BirdoRepository @Inject constructor(
                 // server that said when to come back is waited out (MR-1771).
                 RefreshOutcome.TRANSIENT ->
                     Sent.Failed(errors.temporarilyUnavailable().copy(retryAfterMs = refreshHoldMs()))
-                // A 403 from /auth/refresh: the session is kept (MR-1771) and
-                // the refusal is reported as one, never as a 401.
-                RefreshOutcome.REFUSED ->
-                    Sent.Failed(errors.refreshRefused().copy(retryAfterMs = refreshHoldMs()))
             }
         }
     } catch (e: CancellationException) {
@@ -1543,8 +1569,7 @@ class BirdoRepository @Inject constructor(
                         }
                     }
                     RefreshOutcome.UNAUTHORIZED -> refusal(StoreLinkRefusal.NEEDS_SIGN_IN, null)
-                    // A refused refresh keeps the session (MR-1771): try again later.
-                    RefreshOutcome.TRANSIENT, RefreshOutcome.REFUSED -> refusal(StoreLinkRefusal.TRANSIENT, null)
+                    RefreshOutcome.TRANSIENT -> refusal(StoreLinkRefusal.TRANSIENT, null)
                 }
             }
 
