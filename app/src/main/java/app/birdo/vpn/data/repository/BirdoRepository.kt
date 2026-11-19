@@ -62,12 +62,13 @@ sealed class ApiResult<out T> {
 
 /**
  * Outcome of a token refresh. Distinguishing these is load-bearing (parity with
- * the iOS APIClient): only a DEFINITIVE 401/403 should force the user to
- * re-login; a transient failure (429, 5xx, timeout, network) must keep the
- * session, and an ABORTED refresh (a logout/delete landed while the refresh was
- * in flight) must neither resurrect the session nor trigger a second logout.
+ * the iOS APIClient): only a 401 forces the user to re-login (UNAUTHORIZED); a
+ * transient failure (429, 5xx, timeout, network) must keep the session, and an
+ * ABORTED refresh (a logout/delete landed while the refresh was in flight) must
+ * neither resurrect the session nor trigger a second logout (TRANSIENT). A 403
+ * keeps the session too (MR-1771): REFUSED, surfaced as the refusal it is.
  */
-internal enum class RefreshOutcome { SUCCESS, UNAUTHORIZED, TRANSIENT }
+internal enum class RefreshOutcome { SUCCESS, UNAUTHORIZED, TRANSIENT, REFUSED }
 
 // ── Repository ──────────────────────────────────────────────────
 
@@ -112,7 +113,9 @@ class BirdoRepository @Inject constructor(
      * says when to ask again. Before, the next 401 — the heartbeat's, 30 s
      * later, or any of the cold-start calls — asked again at once and earned
      * another 429. Clamped by [RetryAfter] to ten minutes at most, well inside
-     * an access token's hour, so a sign-in never needs it cleared.
+     * an access token's hour, so a sign-in never needs it cleared. MR-2500: a
+     * refresh that got no verdict holds the next one too, for its backoff
+     * ([backOffRefresh], five minutes at most).
      */
     @Volatile private var refreshHold: Pair<Long, Long>? = null
 
@@ -125,6 +128,27 @@ class BirdoRepository @Inject constructor(
         val (since, wait) = refreshHold ?: return null
         val elapsed = clock() - since
         return if (elapsed in 0L until wait) wait - elapsed else null
+    }
+
+    /**
+     * MR-2500: refreshes in a row that got no verdict (a 5xx, a 403, an
+     * unexpected status, no answer at all): the exponent of their backoff
+     * ([RefreshRetry.backoffMs]). A 2xx or a 401 starts it over. Read and
+     * written only under [refreshMutex].
+     */
+    private var refreshFailures = 0
+
+    /** The jitter for [RefreshRetry.backoffMs], in [0, 1]. Replaced by tests. */
+    internal var jitter: () -> Double = { RefreshRetry.jitter() }
+
+    /**
+     * MR-2500: after a refresh that got no verdict, hold the next one for the
+     * backoff, and never for less than a [serverWaitMs] the server named. The
+     * token stays exactly as it is: the next refresh presents it again.
+     */
+    private fun backOffRefresh(serverWaitMs: Long?) {
+        refreshFailures += 1
+        refreshHold = clock() to maxOf(serverWaitMs ?: 0L, RefreshRetry.backoffMs(refreshFailures, jitter()))
     }
 
     /**
@@ -365,7 +389,15 @@ class BirdoRepository @Inject constructor(
     /**
      * FIX C-1: Persist rotated refresh token from refresh response.
      * Fences against a concurrent logout/delete (finding #6) and separates a
-     * definitive 401/403 from a transient failure (finding #7).
+     * definitive 401 from a transient failure (finding #7).
+     *
+     * THE REFRESH RULE (MR-1771, MR-2500; birdo-web backend/contract/README.md,
+     * "Token refresh"). Only a 401 ends the session and clears the tokens. A
+     * 429 holds the next refresh for the server's wait ([RefreshRetry]); a
+     * 5xx, a 403 or no answer holds it for a capped, jittered backoff. A held
+     * refresh sends nothing and answers TRANSIENT at once; once the hold is
+     * over, the next refresh presents the SAME stored refresh token, which no
+     * answer but a 2xx or a 401 has touched.
      *
      * SINGLE-FLIGHT (A2-007). [staleAccessToken] is the access token the failed
      * request carried. Every caller that got a 401 queues on [refreshMutex]; the
@@ -392,8 +424,10 @@ class BirdoRepository @Inject constructor(
             if (current != null && current != staleAccessToken) return@withLock RefreshOutcome.SUCCESS
         }
         val presented = tokenManager.getRefreshToken() ?: return@withLock RefreshOutcome.UNAUTHORIZED
-        // MR-1771: the server said when to ask again; asking sooner only earns
-        // another 429. The session stays as it is.
+        // MR-1771 / MR-2500: the server said when to ask again, or the last
+        // refresh got no verdict and is backing off; asking sooner only earns
+        // another refusal. The session stays as it is. A queued caller lands
+        // here too, so one failed refresh is not re-sent by every 401 behind it.
         if (refreshHoldMs() != null) return@withLock RefreshOutcome.TRANSIENT
         // Captured BEFORE the network round-trip; compared after, so a sign-out
         // that lands mid-flight is detected.
@@ -409,6 +443,9 @@ class BirdoRepository @Inject constructor(
         try {
             val response = api.refreshToken(RefreshRequest(presented))
             if (response.isSuccessful && response.body() != null) {
+                // The server answered with a pair: whatever the fence below
+                // decides, the backoff starts over (MR-2500).
+                refreshFailures = 0
                 val body = response.body()!!
                 // Logout fence + CAS: if a logout/delete bumped the generation,
                 // or the stored refresh token no longer matches the one we
@@ -468,6 +505,9 @@ class BirdoRepository @Inject constructor(
                 // the one this refresh started in and the stored token is still
                 // the one presented; otherwise there is nothing of ours to clear,
                 // and TRANSIENT neither signs the new session out nor touches it.
+                //
+                // The ONLY answer that ends a session (MR-1771, MR-2500).
+                refreshFailures = 0
                 synchronized(sessionLock) {
                     if (sessionGeneration.get() == genAtStart &&
                         tokenManager.getRefreshToken() == presented
@@ -480,28 +520,41 @@ class BirdoRepository @Inject constructor(
                     }
                 }
             } else if (response.code() == 403) {
-                // Also non-retryable, but deliberately does NOT destroy the tokens.
-                // A 403 on this path is not always the token's fault: an
-                // infrastructure-level block returns it too — the Caddy client-ip
-                // regression put every user into one rate-limit bucket and the API
-                // answered 403 across the board. Wiping credentials on that would
-                // have irrecoverably signed out the entire userbase during an
-                // outage that had nothing to do with their tokens. Sign out, but
-                // leave the tokens alone so recovery is possible.
-                RefreshOutcome.UNAUTHORIZED
+                // Deliberately does NOT destroy the tokens, and (MR-1771) no
+                // longer signs out either. A 403 on this path is not always the
+                // token's fault: an infrastructure-level block returns it too —
+                // the Caddy client-ip regression put every user into one
+                // rate-limit bucket and the API answered 403 across the board.
+                // Wiping credentials on that would have irrecoverably signed out
+                // the entire userbase during an outage that had nothing to do
+                // with their tokens. The caller gets the refusal (not a 401, so
+                // nothing signs the user out), and the refresh backs off like a
+                // 5xx instead of being re-sent by every request's 401.
+                backOffRefresh(null)
+                RefreshOutcome.REFUSED
+            } else if (response.code() == 429) {
+                // MR-1771: every limiter on the route answers before the token
+                // is read, so the 429 is never a verdict on it: nothing is
+                // cleared, no refresh is sent before the wait is over (the
+                // Retry-After header, else `details.retryAfter`, else 60 s), and
+                // the next one presents the same token.
+                refreshHold = clock() to RefreshRetry.rateLimitedWaitMs(
+                    runCatching { response.headers()["Retry-After"] }.getOrNull(),
+                    runCatching { response.errorBody()?.string() }.getOrNull(),
+                )
+                RefreshOutcome.TRANSIENT
             } else {
-                // 429 / 5xx / unexpected status — the credentials may still be
-                // valid. A 429 is every limiter on the route answering before the
-                // token is read (MR-1771): never a verdict on it, so nothing is
-                // cleared, and no refresh is sent again before its Retry-After
-                // (the retryable default when it named none; see [refreshHold]).
-                val wait = RetryAfter.fromHeader(runCatching { response.headers()["Retry-After"] }.getOrNull())
-                    ?: RetryAfter.RETRYABLE_DEFAULT_MS.takeIf { response.code() == 429 }
-                if (wait != null) refreshHold = clock() to wait
+                // MR-2500: a 5xx or an unexpected status. The credentials may
+                // still be valid, and a 503 says the token is intact (a store
+                // outage, or a failed rotation that restored it): keep it, and
+                // back off, never sooner than a Retry-After the server sent.
+                backOffRefresh(RetryAfter.fromHeader(runCatching { response.headers()["Retry-After"] }.getOrNull()))
                 RefreshOutcome.TRANSIENT
             }
-        } catch (_: Exception) {
-            // Network error / timeout — transient, keep the session.
+        } catch (e: Exception) {
+            // Network error / timeout — transient, keep the session, and back
+            // off before the same token is presented again (MR-2500).
+            if (e !is CancellationException) backOffRefresh(null)
             RefreshOutcome.TRANSIENT
         }
     }
@@ -943,6 +996,10 @@ class BirdoRepository @Inject constructor(
                 // server that said when to come back is waited out (MR-1771).
                 RefreshOutcome.TRANSIENT ->
                     Sent.Failed(errors.temporarilyUnavailable().copy(retryAfterMs = refreshHoldMs()))
+                // A 403 from /auth/refresh: the session is kept (MR-1771) and
+                // the refusal is reported as one, never as a 401.
+                RefreshOutcome.REFUSED ->
+                    Sent.Failed(errors.refreshRefused().copy(retryAfterMs = refreshHoldMs()))
             }
         }
     } catch (e: CancellationException) {
@@ -1486,7 +1543,8 @@ class BirdoRepository @Inject constructor(
                         }
                     }
                     RefreshOutcome.UNAUTHORIZED -> refusal(StoreLinkRefusal.NEEDS_SIGN_IN, null)
-                    RefreshOutcome.TRANSIENT -> refusal(StoreLinkRefusal.TRANSIENT, null)
+                    // A refused refresh keeps the session (MR-1771): try again later.
+                    RefreshOutcome.TRANSIENT, RefreshOutcome.REFUSED -> refusal(StoreLinkRefusal.TRANSIENT, null)
                 }
             }
 

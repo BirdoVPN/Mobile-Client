@@ -152,6 +152,8 @@ internal suspend fun <T> sendRotationCall(
                 RefreshOutcome.SUCCESS -> map(once())
                 RefreshOutcome.UNAUTHORIZED -> RotationResult.Refused(RotationFailure.SESSION_EXPIRED)
                 RefreshOutcome.TRANSIENT -> RotationResult.Refused(RotationFailure.NETWORK)
+                // A refused refresh keeps the session (MR-1771): shown, the flow stays.
+                RefreshOutcome.REFUSED -> RotationResult.Refused(RotationFailure.REJECTED)
             }
         } else {
             firstMapped

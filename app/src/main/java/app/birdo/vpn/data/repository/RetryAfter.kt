@@ -51,6 +51,21 @@ internal object RetryAfter {
         return clamp(seconds)
     }
 
+    /**
+     * `details.retryAfter` from an error body: the key birdo-web's `refusal()`
+     * writes, and the one every `/auth/refresh` 429 carries since web #912
+     * (`details: {code: "rate_limited", retryAfter: N}`, N the Retry-After
+     * header's seconds). Connect refusals name theirs `retryAfterSeconds`
+     * ([fromBody]).
+     */
+    fun fromRefusalDetails(raw: String?): Long? {
+        if (raw.isNullOrBlank()) return null
+        val root = runCatching { json.parseToJsonElement(raw) }.getOrNull() as? JsonObject ?: return null
+        val seconds = ((root["details"] as? JsonObject)?.get("retryAfter") as? JsonPrimitive)?.longOrNull
+            ?: return null
+        return clamp(seconds)
+    }
+
     /** A delta-seconds `Retry-After` header. An HTTP date is ignored: the device clock is not the server's. */
     fun fromHeader(value: String?): Long? = value?.trim()?.toLongOrNull()?.let(::clamp)
 
