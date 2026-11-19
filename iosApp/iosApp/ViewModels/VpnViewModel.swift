@@ -114,8 +114,9 @@ final class VpnViewModel: ObservableObject {
     @Published var servers: [ServerInfo] = []
     @Published var selectedServer: ServerInfo? {
         // MR-2212: whatever sets the selection makes it the user's, unless the
-        // client's own pick marks it `.automatic` straight after.
-        didSet { selectionOrigin = .user }
+        // client's own pick marks it `.automatic` straight after. MR-2493: a
+        // new selection also retires any offer of another location.
+        didSet { selectionOrigin = .user; relayOffer = nil }
     }
     /// MR-2212: who chose `selectedServer`. `.automatic` only right after the
     /// client's own pick (the pre-select on load, the launch auto-connect);
@@ -364,6 +365,13 @@ final class VpnViewModel: ObservableObject {
     /// MR-2212: Home's "Trying another server…" / "Checking the connection…"
     /// (`RelayRecovery`). Never a reason to dial or not; only what is shown.
     @Published private(set) var relayRecovery: RelayRecovery?
+    /// MR-2493 (design §3.2 step 4): the one tap Home offers beside `error`
+    /// after a location the user picked did not answer and no relay in its
+    /// city or country could be tried (`RelayRetry.offer`, from a fresh list).
+    /// Never acted on by itself: only `acceptRelayOffer`, the user's tap,
+    /// dials it. Retired by any dial, a disconnect and a new selection, and
+    /// shown only while its own message is the one on screen.
+    @Published private(set) var relayOffer: RelayOffer?
     /// MR-2212: the relay address the last single-hop dial was given by
     /// `/vpn/connect`, for the TCP probe after a dial that never handshaked.
     /// Memory only, never logged.
@@ -646,6 +654,8 @@ final class VpnViewModel: ObservableObject {
         reapplyQueued = false
         isConnecting = true
         error = nil
+        // MR-2493: whatever this dial is, an offer made before it is history.
+        relayOffer = nil
         // A fresh single-hop dial replaces any multi-hop session state. This is
         // only reachable with the tunnel down (Home CTA, auto-connect, or a
         // single-hop rebuild — reapplySettings and selectServerLive branch to
@@ -725,6 +735,7 @@ final class VpnViewModel: ObservableObject {
         isReapplyingSettings = false
         relayRetryGeneration &+= 1
         relayRecovery = nil
+        relayOffer = nil
         // Release the server-side peer (fire-and-forget DELETE): tearing down
         // only the local tunnel leaves the peer holding the user's connection
         // slot until server eviction.
@@ -1135,7 +1146,7 @@ final class VpnViewModel: ObservableObject {
                 diagnoseUnansweredRelay(host: host)
                 return
             } else {
-                error = "Couldn't establish a secure tunnel to this server. Try another location."
+                error = RelayProbeVerdict.unprobedMessage
             }
             vpnManager.disconnect()
             releaseServerSlot()
@@ -2060,6 +2071,10 @@ final class VpnViewModel: ObservableObject {
             self.isTearingDownForRedial = false
             // The user disconnected, signed out or dialled again while we waited.
             guard generation == self.relayRetryGeneration else { return }
+            // Review L1 of #645: the wait gives up after about 5 s. Asked
+            // before the reset below forces it false: a tunnel still up then
+            // must not carry the probe, should one follow.
+            let tunnelStillUp = self.isConnected
             self.resetSessionState()
             let fresh = await self.freshServerList(within: Self.retryListCap)
             guard generation == self.relayRetryGeneration else { return }
@@ -2076,8 +2091,16 @@ final class VpnViewModel: ObservableObject {
                 self.serverCacheTimestamp = Date()
             }
             guard let next = RelayRetry.next(after: failedId, in: self.servers, origin: origin) else {
-                // Nothing qualifies any more: say what is true instead.
-                await self.finishUnansweredRelay(host: host, generation: generation)
+                // Nothing qualifies any more: say what is true instead. MR-2493:
+                // a location the user picked may be offered the best other
+                // one, chosen from the fresh list only.
+                var offer: ServerInfo?
+                if let fresh {
+                    offer = RelayRetry.offer(after: failedId, in: fresh, origin: origin)
+                }
+                await self.finishUnansweredRelay(
+                    host: RelayProbeVerdict.probeHost(host, tunnelStillUp: tunnelStillUp),
+                    offer: offer, generation: generation)
                 return
             }
             self.selectedServer = next.server
@@ -2116,8 +2139,17 @@ final class VpnViewModel: ObservableObject {
     ///
     /// The probe waits for the teardown to land: while the tunnel is up its
     /// routes would carry the probe into the very tunnel that is not answering.
+    /// Review L1 of #645: the wait gives up after about 5 s, so a tunnel still
+    /// up then gets no probe at all, and the generic message.
+    ///
+    /// MR-2493: a location the user picked that no retry could serve (no
+    /// relay in its city or country) is offered the best other location, one
+    /// tap, chosen from a fresh `/vpn/servers` only.
     private func diagnoseUnansweredRelay(host: String) {
         let generation = relayRetryGeneration
+        // Read before the reset below clears them.
+        let failedId = connectedServerId ?? selectedServer?.id
+        let origin = selectionOrigin
         relayRecovery = .checkingNetwork
         vpnManager.disconnect()
         releaseServerSlot()
@@ -2126,17 +2158,35 @@ final class VpnViewModel: ObservableObject {
             // The user disconnected or dialled again while we waited.
             guard let self, generation == self.relayRetryGeneration,
                   !self.isConnecting, self.relayRecovery == .checkingNetwork else { return }
+            // Asked before the reset forces `isConnected` false.
+            let probeHost = RelayProbeVerdict.probeHost(host, tunnelStillUp: self.isConnected)
             self.resetSessionState()
-            await self.finishUnansweredRelay(host: host, generation: generation)
+            var offer: ServerInfo?
+            if origin == .user, let failedId {
+                let fresh = await self.freshServerList(within: Self.retryListCap)
+                guard generation == self.relayRetryGeneration else { return }
+                if let fresh {
+                    self.servers = fresh
+                    self.serverCacheTimestamp = Date()
+                    offer = RelayRetry.offer(after: failedId, in: fresh, origin: origin)
+                }
+            }
+            await self.finishUnansweredRelay(host: probeHost, offer: offer, generation: generation)
         }
     }
 
-    /// The probe and its message, with the tunnel already down. Nothing is
-    /// said when the user acted while the probe was out.
-    private func finishUnansweredRelay(host: String?, generation: Int) async {
+    /// The probe and its message, with the tunnel already down; no `host`
+    /// means no probe and the generic message (review L1 of #645). Nothing is
+    /// said when the user acted while the probe was out. MR-2493: `offer`
+    /// goes beside the message as one tap, unless the probe found the relay
+    /// up (this network blocks the VPN; another location would not help).
+    private func finishUnansweredRelay(host: String?, offer: ServerInfo?, generation: Int) async {
         guard let host else {
+            guard generation == relayRetryGeneration else { return }
             relayRecovery = nil
-            error = "Couldn't establish a secure tunnel to this server. Try another location."
+            guard !isConnected, !isConnecting else { return }
+            error = RelayProbeVerdict.unprobedMessage
+            relayOffer = makeRelayOffer(offer, beside: RelayProbeVerdict.unprobedMessage, fits: RelayRetry.offerFits(nil))
             return
         }
         relayRecovery = .checkingNetwork
@@ -2147,6 +2197,28 @@ final class VpnViewModel: ObservableObject {
         relayRecovery = nil
         guard !isConnected, !isConnecting else { return }
         error = verdict.message
+        relayOffer = makeRelayOffer(offer, beside: verdict.message, fits: RelayRetry.offerFits(verdict))
+    }
+
+    /// MR-2493: the offer for `server` beside `message`, or nil.
+    private func makeRelayOffer(_ server: ServerInfo?, beside message: String, fits: Bool) -> RelayOffer? {
+        guard fits, let server else { return nil }
+        return RelayOffer(serverId: server.id, name: server.name, city: server.city,
+                          country: server.country, message: message)
+    }
+
+    /// MR-2493: the offer's one tap, a connect of the user's own. The relay
+    /// offered becomes the selection, which reads `.user` (`selectedServer`'s
+    /// didSet), so a retry after it never leaves its country; and
+    /// `connect(userInitiated: true)` refills the one retry, as any connect
+    /// the user asks for does. Looked up again in the list as it stands: a
+    /// relay listed offline or out of plan since is not dialled.
+    func acceptRelayOffer() {
+        guard let offer = relayOffer else { return }
+        relayOffer = nil
+        guard let server = RelayRetry.offered(offer.serverId, in: servers) else { return }
+        selectServer(server)
+        connect(userInitiated: true)
     }
 
     /// The pre-#159 rebuild: disconnect, WAIT for the teardown to land, redial.

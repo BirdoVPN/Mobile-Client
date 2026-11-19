@@ -211,54 +211,89 @@ enum RelayProbeVerdict: Equatable, Sendable {
     }
 }
 
-// MARK: - MR-2493 and review L1 of #645: declared ahead of the change
-//
-// TEST-FIRST SCAFFOLD. These declarations carry TODAY's behaviour (no offer is
-// ever made; the probe runs whatever the tunnel's state), so the new tests in
-// RelayOfferTests compile and fail on what the app does now. The next commit
-// of this branch gives them the new behaviour.
+// MARK: - MR-2493: the one-tap offer (design §3.2 step 4)
 
 extension RelayRetry {
-    /// MR-2493: the relay a one-tap "Try <location>" names. Today: none.
+    /// The relay a one-tap "Try <location>" names, or nil. Only for a
+    /// location the USER picked: a server the client chose moves on its own
+    /// (`next`), so it is never offered anything. Only when no relay in the
+    /// same city or country qualifies: then `next` has a target and the
+    /// retry goes there instead. What is offered is the best other relay in
+    /// any country by QuickSelect's rule (online, open to this plan, least
+    /// loaded), from the list given, which the caller fetches fresh: the
+    /// server's list is the only authority. Nothing is dialled until the
+    /// user taps it.
     static func offer<S: RelayRetryCandidate>(after failedId: String, in list: [S],
                                               origin: SelectionOrigin) -> S? {
-        nil
+        guard origin == .user, next(after: failedId, in: list, origin: .user) == nil else { return nil }
+        return QuickSelect.bestServer(in: list.filter { $0.id != failedId })
     }
 
-    /// MR-2493: the offered relay at the tap. Today: there is no tap.
+    /// The offered relay at the tap, from the list as it stands then: nil
+    /// when it is no longer listed online and open to this plan.
     static func offered<S: RelayRetryCandidate>(_ id: String, in list: [S]) -> S? {
-        nil
+        list.first { $0.id == id && $0.isOnline && $0.accessible }
     }
 
-    /// MR-2493: whether the offer stands beside the message. Today: never.
+    /// Whether the offer stands beside the message: not when the probe found
+    /// the relay up. Then this network drops the VPN's traffic, and another
+    /// location goes through the same network (design §3.3).
     static func offerFits(_ verdict: RelayProbeVerdict?) -> Bool {
-        false
+        verdict != .networkBlocksVpn
     }
 }
 
-/// MR-2493: the one tap offered beside a message. Today: never shown.
+/// MR-2493: the one tap offered beside the message after a location the user
+/// picked did not answer and no relay in its city or country could be tried.
+/// Never taken on its own: the tap is a connect of the user's own
+/// (`VpnViewModel.acceptRelayOffer`).
 struct RelayOffer: Equatable, Sendable {
+    /// The relay the tap dials, looked up again at the tap (`RelayRetry.offered`).
     let serverId: String
+    /// The message it was offered beside. It is shown only while that
+    /// message is the one on screen.
     let message: String
+    /// The button's words: plain and short.
     let title: String
+    /// The whole offer for VoiceOver, one element: the place and its country.
     let accessibilityLabel: String
 
     init(serverId: String, name: String, city: String, country: String, message: String) {
         self.serverId = serverId
         self.message = message
-        title = ""
-        accessibilityLabel = ""
+        let land = country.trimmingCharacters(in: .whitespacesAndNewlines)
+        let place = [name, city, country]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty }) ?? ""
+        if place.isEmpty {
+            title = "Try another location"
+            accessibilityLabel = "Try another location"
+        } else if land.isEmpty || land.caseInsensitiveCompare(place) == .orderedSame {
+            title = "Try \(place)"
+            accessibilityLabel = "Try \(place) instead"
+        } else {
+            title = "Try \(place)"
+            accessibilityLabel = "Try \(place), \(land) instead"
+        }
     }
 
-    func isShown(beside error: String?) -> Bool { false }
+    /// Shown only beside the message it was made for.
+    func isShown(beside error: String?) -> Bool { error == message }
 }
 
+// MARK: - Review L1 of #645: no probe into a tunnel still going down
+
 extension RelayProbeVerdict {
-    /// Review L1 of #645. Today: the probe runs whatever the tunnel's state.
+    /// The address to probe once the teardown wait is over, or nil for the
+    /// generic message. `awaitTeardown` gives up after about 5 s whether or
+    /// not the tunnel went down; a tunnel still up would carry the probe into
+    /// the very tunnel that is not answering, and a relay that may be fine
+    /// would read "isn't reachable". So no probe then, and no verdict.
     static func probeHost(_ host: String?, tunnelStillUp: Bool) -> String? {
-        host
+        guard !tunnelStillUp, let host, !host.isEmpty else { return nil }
+        return host
     }
 
-    /// The message when no probe runs (today's literal in VpnViewModel).
+    /// The message when no probe ran: it claims no verdict.
     static let unprobedMessage = "Couldn't establish a secure tunnel to this server. Try another location."
 }

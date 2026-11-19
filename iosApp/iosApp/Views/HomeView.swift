@@ -538,6 +538,13 @@ struct HomeView: View {
                 // missing sentence the generic one (ConnectRefusal.swift).
                 // ErrorBanner announces assertively.
                 ErrorBanner(message, icon: "exclamationmark.circle")
+                // MR-2493 (design §3.2 step 4): a location the user picked did
+                // not answer and no relay in its city or country could be
+                // tried. One tap to the best other location; Birdo never moves
+                // there on its own. Only beside the message it was made for.
+                if let offer = vpnVM.relayOffer, offer.isShown(beside: message) {
+                    relayOfferButton(offer)
+                }
                 // MR-139: keyed on the refusal's reason, never its wording.
                 // The plan or the Free allowance is what stands in the way, so
                 // the way out is one tap away (Android: View plans).
@@ -869,6 +876,36 @@ struct HomeView: View {
         .disabled(vpnVM.isConnecting)
         .opacity(vpnVM.isConnecting ? 0.5 : 1)
         .accessibilityHint("Select server")
+    }
+
+    /// MR-2493: the offer's one tap, "Try <location>". One accessibility
+    /// element (the button) whose label names the place and its country.
+    /// Scaled with Dynamic Type through `.birdoFont`, never a fixed size, and
+    /// the words wrap instead of truncating at the largest sizes.
+    private func relayOfferButton(_ offer: RelayOffer) -> some View {
+        Button {
+            vpnVM.acceptRelayOffer()
+        } label: {
+            Text(offer.title)
+                .birdoFont(14, weight: .semibold)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(BirdoTheme.onSurface)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(
+                    RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
+                        .fill(BirdoTheme.white05)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
+                        .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
+                )
+        }
+        .buttonStyle(PressScaleButtonStyle())
+        .accessibilityLabel(offer.accessibilityLabel)
+        .accessibilityIdentifier("home_relay_offer")
     }
 
     /// Honest about what is known: the count only after the public list has
