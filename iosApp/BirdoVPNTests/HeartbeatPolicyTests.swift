@@ -182,9 +182,56 @@ final class HeartbeatPolicyTests: XCTestCase {
         // Nothing the rule allows: no move.
         XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: [listed[0], listed[2]], cached: cached,
                                                 origin: .user))
-        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "zz-9", in: gone, cached: cached, origin: .automatic),
-                     "a node neither list knows: no move")
         XCTAssertEqual(HeartbeatEnding.serverOffline, HeartbeatEnding(message: serverGoneCopy, offersPlans: false))
+    }
+
+    /// Round 2: the OWNER's rule for a server that has gone (owner decision,
+    /// relayed by the lead at 2026-11-19 21:29Z, superseding the 21:16Z "no
+    /// move"). It is the same whether the server is drained (still listed,
+    /// offline) or DELETED (no longer in the fresh list):
+    ///   * an AUTOMATIC pick moves to the best server anywhere. That is
+    ///     QuickSelect's best of all the others, with no same-city preference
+    ///     and no need to know where the gone server was;
+    ///   * a USER pick moves within its own country, read from the list it was
+    ///     dialled from when the fresh one no longer carries it (the same
+    ///     city first). When nothing there qualifies, nothing moves and the
+    ///     session ends ("This server went offline. Choose another location.").
+    func testAGoneServerFollowsTheOwnersRule() {
+        let dialledFrom = [Node(id: "de-1"),
+                           Node(id: "de-1b", load: 60),
+                           Node(id: "de-2", city: "Berlin", load: 50),
+                           Node(id: "nl-1", countryCode: "NL", city: "Amsterdam", load: 1)]
+        let deleted = Array(dialledFrom.dropFirst())
+        var drained = dialledFrom
+        drained[0].isOnline = false
+        for (label, list) in [("deleted", deleted), ("drained", drained)] {
+            // AUTOMATIC: the best anywhere, past the busier same-city twin.
+            let automatic = HeartbeatPolicy.moveTarget(from: "de-1", in: list, cached: dialledFrom, origin: .automatic)
+            XCTAssertEqual(automatic?.server.id, "nl-1", label)
+            XCTAssertEqual(automatic?.reach, .otherCountry, label)
+            // USER: its own country, the same city first.
+            let user = HeartbeatPolicy.moveTarget(from: "de-1", in: list, cached: dialledFrom, origin: .user)
+            XCTAssertEqual(user?.server.id, "de-1b", label)
+            XCTAssertEqual(user?.reach, .sameCity, label)
+        }
+        // USER with nothing left in its country: no move. AUTOMATIC still moves.
+        let germanyGone = [dialledFrom[3]]
+        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: germanyGone, cached: dialledFrom, origin: .user))
+        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "de-1", in: germanyGone, cached: dialledFrom,
+                                                  origin: .automatic)?.server.id, "nl-1")
+        // Neither list knows where it was. A user pick cannot keep its country,
+        // so nothing moves; an automatic pick needs no location.
+        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "zz-9", in: deleted, cached: deleted, origin: .user))
+        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "zz-9", in: deleted, cached: deleted,
+                                                  origin: .automatic)?.server.id, "nl-1")
+        // Only servers listed online and open to this plan qualify, for either pick.
+        var closed = deleted
+        closed[2].isOnline = false
+        closed[1].accessible = false
+        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "de-1", in: closed, cached: dialledFrom,
+                                                  origin: .automatic)?.server.id, "de-1b")
+        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: [closed[1], closed[2]], cached: dialledFrom,
+                                                origin: .automatic))
     }
 
     // MARK: - quota_exceeded: never "not found"
