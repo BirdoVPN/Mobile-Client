@@ -58,6 +58,21 @@ struct RelayRetryBudget: Equatable, Sendable {
     }
 }
 
+// MARK: - Review of #648, point 4: declared ahead of the change
+//
+// TEST-FIRST SCAFFOLD. These declarations carry TODAY's behaviour (the budget
+// remembers no relay; the offer ignores the budget), so the new tests in
+// RelayOfferTests compile and fail on what the app does now. The next commit
+// of this branch gives them the new behaviour.
+
+extension RelayRetryBudget {
+    /// The relay the spent retry moved away from. Today: never remembered.
+    var retriedFrom: String? { nil }
+
+    /// Take the retry, leaving `failedId`. Today: the id is not kept.
+    mutating func take(leaving failedId: String) -> Bool { take() }
+}
+
 enum RelayRetry {
     /// How far a retry moves from the relay that did not answer: the only
     /// thing about the target the log may say.
@@ -224,7 +239,9 @@ extension RelayRetry {
     /// server's list is the only authority. Nothing is dialled until the
     /// user taps it.
     static func offer<S: RelayRetryCandidate>(after failedId: String, in list: [S],
-                                              origin: SelectionOrigin) -> S? {
+                                              origin: SelectionOrigin,
+                                              budget: RelayRetryBudget = RelayRetryBudget()) -> S? {
+        // Scaffold (review of #648, point 4): `budget` is not read yet.
         guard origin == .user, next(after: failedId, in: list, origin: .user) == nil else { return nil }
         return QuickSelect.bestServer(in: list.filter { $0.id != failedId })
     }
