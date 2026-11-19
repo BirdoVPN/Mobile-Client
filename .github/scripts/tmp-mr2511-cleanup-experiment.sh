@@ -56,11 +56,11 @@ beforeSettings { settings ->
     def cutoff = ${cutoff}L
     settings.caches {
         cleanup = Cleanup.ALWAYS
-        releasedWrappers.removeUnusedEntriesOlderThan.set(cutoff)
-        snapshotWrappers.removeUnusedEntriesOlderThan.set(cutoff)
-        downloadedResources.removeUnusedEntriesOlderThan.set(cutoff)
-        createdResources.removeUnusedEntriesOlderThan.set(cutoff)
-        buildCache.removeUnusedEntriesOlderThan.set(cutoff)
+        releasedWrappers.setRemoveUnusedEntriesOlderThan(cutoff)
+        snapshotWrappers.setRemoveUnusedEntriesOlderThan(cutoff)
+        downloadedResources.setRemoveUnusedEntriesOlderThan(cutoff)
+        createdResources.setRemoveUnusedEntriesOlderThan(cutoff)
+        buildCache.setRemoveUnusedEntriesOlderThan(cutoff)
     }
 }
 GRADLE
