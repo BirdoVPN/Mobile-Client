@@ -316,6 +316,41 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
+      # TEMPORARY (MOBILE-PLUGIN-MARKER-FLAKE): what a configuration on this
+      # job's restored cache fetches. Removed before the pull request is ready.
+      - name: "Diagnostics: network requests of a warm-cache configuration"
+        if: ${{ needs.changes.outputs.android != 'false' }}
+        run: |
+          set +e
+          ./gradlew --offline help > "$RUNNER_TEMP/offline.log" 2>&1
+          echo "== --offline help exit: $?"
+          grep -E "What went wrong|Plugin \[id|could not resolve|No cached version|Could not (find|resolve)|BUILD" "$RUNNER_TEMP/offline.log" | head -40
+          ./gradlew help --debug > "$RUNNER_TEMP/debug.log" 2>&1
+          echo "== help --debug exit: $?"
+          grep -E "https?://" "$RUNNER_TEMP/debug.log" | grep -E "HTTP|Resource missing|status code|Download" | sed -E 's/^[^]]*\] //' | head -200
+          echo "== HTTP requests: $(grep -cE 'Performing HTTP' "$RUNNER_TEMP/debug.log")"
+          exit 0
+
+      # MOBILE-PLUGIN-MARKER-FLAKE. Every plugin in the root plugins {} block
+      # must resolve WITHOUT its plugin marker (<id>:<id>.gradle.plugin): the
+      # marker request is what Maven Central's rate limit kept failing
+      # ("Plugin [id: 'org.jetbrains.kotlin.multiplatform' ...] was not found").
+      # This configures every project with every marker made unreachable in
+      # every plugin repository, so a plugin that still needs one fails here,
+      # with that same error, instead of flaking later.
+      - name: Gradle plugins resolve without a plugin-marker lookup
+        if: ${{ needs.changes.outputs.android != 'false' }}
+        run: |
+          init="$RUNNER_TEMP/no-plugin-markers.gradle"
+          cat > "$init" <<'GRADLE'
+          settingsEvaluated { settings ->
+              settings.pluginManagement.repositories.configureEach { repository ->
+                  repository.content { excludeModuleByRegex('.*', '.*[.]gradle[.]plugin') }
+              }
+          }
+          GRADLE
+          ./gradlew --init-script "$init" help
+
       - name: Run Lint
         if: ${{ needs.changes.outputs.android != 'false' }}
         run: ./gradlew lintDebug
