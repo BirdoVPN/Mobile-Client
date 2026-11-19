@@ -21,34 +21,42 @@ pluginManagement {
         }
         mavenCentral()
     }
-    // NO PLUGIN-MARKER LOOKUPS (MOBILE-PLUGIN-MARKER-FLAKE). A plugin
-    // requested by id and version is normally found through its marker POM,
-    // <id>:<id>.gradle.plugin:<version>, whose only content is a dependency on
-    // the module that implements it. That lookup was the request Maven
-    // Central's rate limit (429) kept failing: "Plugin [id:
-    // 'org.jetbrains.kotlin.multiplatform', version: '2.4.10'] was not found"
-    // in Lint Check, Unit Tests, Build APK and the release on 2026-11-19, on
-    // main too. Each id below goes straight to the module its marker names
-    // (read from the published markers), so no marker is ever requested and
-    // the module is one gradle/verification-metadata.xml already pins. Not a
-    // blanket org.jetbrains.kotlin.* -> kotlin-gradle-plugin rule: the compose
-    // and serialization plugins live in modules of their own.
+    // NO PLUGIN MARKER FROM MAVEN CENTRAL (MOBILE-PLUGIN-MARKER-FLAKE). A
+    // plugin requested by id and version is normally found through its marker
+    // POM, <id>:<id>.gradle.plugin:<version>, whose only content is a
+    // dependency on the module that implements it. A marker has no artifact,
+    // so a build that finds it in its cache never touches the file, and
+    // setup-gradle's cache cleanup drops it from every second main cache
+    // (the gradle-dependencies entries alternate on each green main run):
+    // every job restoring such a cache fetched the markers again. On
+    // 2026-11-19 Maven Central's rate limit (429) failed that one request:
+    // "Plugin [id: 'org.jetbrains.kotlin.multiplatform', version: '2.4.10']
+    // was not found" in Lint Check, Unit Tests, Build APK and the release, on
+    // main too. Each id below goes straight to the module its Maven Central
+    // marker names (read from the published markers): the module's jar is on
+    // the plugin classpath anyway, so it stays cached, and
+    // gradle/verification-metadata.xml already pins it. Not a blanket
+    // org.jetbrains.kotlin.* -> kotlin-gradle-plugin rule: the compose and
+    // serialization plugins live in modules of their own.
     //
-    // Lint Check configures the build with every marker unreachable, so a
-    // plugin added to the root plugins {} block without a line here fails
-    // there. Versionless requests (the subprojects') are left alone: their
-    // plugins are already on the root build's classpath.
+    // The Android Gradle Plugin and baselineprofile markers are on Google's
+    // Maven and keep their lookup: com.android.application and .library ask
+    // for AGP 9.4.1 while the classpath resolves 9.5.1 (the KMP library
+    // plugin's), so pointing them at com.android.tools.build:gradle:9.4.1
+    // would download and verify a 9.4.1 jar nothing runs.
+    //
+    // Lint Check configures the build with every marker unreachable on Maven
+    // Central, so a plugin from there added to the root plugins {} block
+    // without a line here fails in that check. Versionless requests (the
+    // subprojects') are left alone: their plugins are already on the root
+    // build's classpath.
     resolutionStrategy {
         val implementations = mapOf(
-            "com.android.application" to "com.android.tools.build:gradle",
-            "com.android.library" to "com.android.tools.build:gradle",
-            "com.android.kotlin.multiplatform.library" to "com.android.tools.build:gradle",
             "org.jetbrains.kotlin.multiplatform" to "org.jetbrains.kotlin:kotlin-gradle-plugin",
             "org.jetbrains.kotlin.plugin.compose" to "org.jetbrains.kotlin:compose-compiler-gradle-plugin",
             "org.jetbrains.kotlin.plugin.serialization" to "org.jetbrains.kotlin:kotlin-serialization",
             "com.google.dagger.hilt.android" to "com.google.dagger:hilt-android-gradle-plugin",
             "com.google.devtools.ksp" to "com.google.devtools.ksp:symbol-processing-gradle-plugin",
-            "androidx.baselineprofile" to "androidx.benchmark:benchmark-baseline-profile-gradle-plugin",
         )
         eachPlugin {
             val module = implementations[requested.id.id]
