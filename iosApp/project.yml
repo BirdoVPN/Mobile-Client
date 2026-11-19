@@ -329,6 +329,10 @@ targets:
       # as the tallest). SwiftUI + BirdoTheme only, pinned by SegmentRowTests
       # at XXL/XXXL; SegmentedTabs itself (haptics) stays out of this bundle.
       - path: iosApp/Views/Components/SegmentRow.swift
+      # MR-2430: the app's button and the Subscribe button's priced title (the
+      # price never cut at AX5). SwiftUI + BirdoTheme + StoreCatalog only,
+      # pinned by PricedTitleTests at AX3/AX5.
+      - path: iosApp/Views/Components/PrimaryButton.swift
       # A-L24 / MR-2241: the keychain write's single retry for a freshly minted
       # session. Foundation-only, pinned by SessionPersistenceTests.
       - path: iosApp/Services/SessionPersistence.swift

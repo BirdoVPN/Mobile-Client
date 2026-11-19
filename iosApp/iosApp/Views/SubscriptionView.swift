@@ -631,9 +631,10 @@ struct SubscriptionView: View {
         } else if let product {
             VStack(alignment: .leading, spacing: 6) {
                 PrimaryButton(
-                    authVM.isGuest
-                        ? "Sign in to subscribe"
-                        : "Subscribe · \(product.displayPrice)\(period.priceSuffix)",
+                    authVM.isGuest ? "Sign in to subscribe" : "Subscribe",
+                    // MR-2430: the price goes in apart from the title, so it
+                    // can take its own line instead of being cut at AX5.
+                    price: authVM.isGuest ? nil : priceParts(for: plan, product: product),
                     loadingTitle: "Contacting the App Store…",
                     variant: .brand,
                     isLoading: store.purchasingProductId == product.id,
