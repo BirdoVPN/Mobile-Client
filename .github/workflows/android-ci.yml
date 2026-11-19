@@ -627,7 +627,8 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
-    # The emulator job's wait outlasts this (its build_timeout_min): keep in step.
+    # The emulator job's wait outlasts this (its BUILD_TIMEOUT_MIN): keep in
+    # step; .github/scripts/wait-build-apks-test.sh fails when they differ.
     timeout-minutes: 40
     permissions:
       contents: read
@@ -926,93 +927,34 @@ jobs:
       # APKs at once, and the download by name then tested those. Now an APK
       # counts only if it was uploaded after the start of the "Build APK" that
       # this attempt reports, and it is downloaded by that artifact's id, never
-      # by name.
+      # by name. The start time counts only once that job runs or has ended
+      # (MR-2402): while a re-run "Build APK" is queued, waiting or pending it
+      # has uploaded nothing, and the start it reports need not be this
+      # attempt's. Of two matches, the newer upload wins (by time: artifact ids
+      # do not grow with time).
       # On "Re-run failed jobs", a "Build APK" that passed is not re-run, and
       # this attempt reports it with its original start time (seen in run
       # 44154693443, attempt 2). Its APKs, which are that job's, are then the
       # ones tested.
       #
       # The deadline is anchored to that job's start and outlasts its own
-      # timeout-minutes (build_timeout_min below: keep the two in step). A slow
-      # but healthy build is never cut off. Before, 30 minutes from this step's
-      # start could end the wait while "Build APK" still had time left.
+      # timeout-minutes (BUILD_TIMEOUT_MIN below; the self-test fails when the
+      # two differ). A slow but healthy build is never cut off. Before, 30
+      # minutes from this step's start could end the wait while "Build APK"
+      # still had time left.
+      #
+      # A re-run's race cannot be staged on demand, so the self-test replays
+      # what the API reports during one (stubbed gh, sleep and clock), before
+      # this job relies on the script.
+      - name: Self-test - the APK wait takes only this attempt's uploads
+        run: bash .github/scripts/wait-build-apks-test.sh
+
       - name: Wait for the APKs "Build APK" uploads
         id: apks
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          run="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          build_timeout_min=40   # = jobs.build.timeout-minutes
-          # Prints the id of the newest unexpired artifact named $1 that was
-          # uploaded at or after $2 (ISO 8601 UTC, so the strings compare).
-          # 0: found; 1: none (yet); 2: the API could not be read.
-          apk_id() {
-            local json id
-            json=$(gh api "$run/artifacts?name=$1&per_page=100") || return 2
-            id=$(jq -r --arg since "$2" '[.artifacts[]
-                   | select((.expired | not) and .created_at >= $since)]
-                   | max_by(.id) | .id // empty' <<< "$json") || return 2
-            [ -n "$id" ] || return 1
-            printf '%s\n' "$id"
-          }
-          errors=0
-          api_failed() {
-            errors=$((errors + 1))
-            if [ "$errors" -ge 6 ]; then
-              echo "::error::the GitHub API failed 6 times in a row: this run's jobs or artifacts cannot be read"
-              exit 1
-            fi
-          }
-          missing=0
-          while :; do
-            # "Build APK" as THIS attempt reports it.
-            if ! job=$(gh api "$run/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
-                 --jq '[.jobs[] | select(.name == "Build APK")]
-                       | if length == 1
-                         then .[0] | [.status, (.conclusion // "-"), (.started_at // "-")] | @tsv
-                         else "missing" end'); then
-              api_failed; sleep 10; continue
-            fi
-            if [ "$job" = missing ]; then
-              missing=$((missing + 1))
-              if [ "$missing" -ge 30 ]; then
-                echo "::error::attempt $GITHUB_RUN_ATTEMPT lists no single job named \"Build APK\" (renamed?), so its APKs cannot be matched"
-                exit 1
-              fi
-              sleep 10; continue
-            fi
-            read -r status conclusion started <<< "$job"
-            # The artifacts are read AFTER the job's state, so when that state
-            # was "completed", every upload the job made is already listed.
-            if [ "$started" != "-" ]; then
-              rc=0; app_id=$(apk_id debug-apk "$started") || rc=$?
-              if [ "$rc" -eq 0 ]; then
-                test_id=$(apk_id debug-android-test-apk "$started") || rc=$?
-              fi
-              if [ "$rc" -eq 0 ]; then
-                echo "Both APKs are uploaded by the \"Build APK\" that started $started (attempt $GITHUB_RUN_ATTEMPT; artifacts $app_id and $test_id; waited ${SECONDS}s)"
-                { echo "app_id=$app_id"; echo "test_id=$test_id"; } >> "$GITHUB_OUTPUT"
-                break
-              fi
-              if [ "$rc" -eq 2 ]; then
-                api_failed; sleep 10; continue
-              fi
-            fi
-            errors=0
-            if [ "$status" = completed ]; then
-              echo "::error::Build APK ended ($conclusion) without uploading both APKs after its start ($started), so there is nothing to test. (If only this job was re-run more than 7 days later, its APKs have expired: re-run all jobs.)"
-              exit 1
-            fi
-            if [ "$status" = in_progress ] && [ "$started" != "-" ]; then
-              limit=$(( $(date -u -d "$started" +%s) + (build_timeout_min + 5) * 60 ))
-              if [ "$(date -u +%s)" -ge "$limit" ]; then
-                echo "::error::Build APK started at $started, is past its ${build_timeout_min}-minute timeout plus 5 minutes and still uploaded no APKs"
-                exit 1
-              fi
-            fi
-            sleep 10
-          done
+          BUILD_TIMEOUT_MIN: 40   # = jobs.build.timeout-minutes
+        run: bash .github/scripts/wait-build-apks.sh
 
       # By id: the exact artifacts matched above, never the newest by name.
       - name: Download the debug APK
