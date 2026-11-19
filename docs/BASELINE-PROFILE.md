@@ -82,8 +82,8 @@ An emulator needs hardware virtualisation.
 
 | Host | Works? |
 | --- | --- |
-| Linux with `/dev/kvm` (GitHub `ubuntu-latest`, self-hosted) | yes — CI grants access via a udev rule; the workflow asserts `/dev/kvm` is writable and fails loudly if not |
-| Windows with WHPX or Hyper-V | yes — the committed profile was recorded this way |
+| Linux with `/dev/kvm` (GitHub `ubuntu-latest`, self-hosted) | yes — CI grants access via a udev rule; the workflow asserts `/dev/kvm` is writable and fails loudly if not. The committed profile is this workflow's recording (run 44189989519) |
+| Windows with WHPX or Hyper-V | yes — the first recording (#358, 2026-09-06) was made this way |
 | Intel macOS | yes (HVF) |
 | Apple Silicon | no usable x86_64 emulation — use `--connected` |
 | GitHub `macos-*` runners | no — use `ubuntu-latest` |

@@ -180,6 +180,36 @@ jobs:
           fi
           echo "::warning file=$props::distributionSha256Sum is not set yet, so the wrapper would run any distribution served at $url. Mobile #459 adds it; from then on removing it fails this check."
 
+      # MR-2434: gradle/verification-metadata.xml (MR-1794) protects only a
+      # build that verifies. This fails if the file is gone, or if any
+      # .properties file, workflow, script or build script turns verification
+      # lenient or off (baseline-profile.yml's recording line excepted; the
+      # script says why). On a pull request the BASE commit's copy of the guard
+      # runs as well as the pull request's (MR-2437): a pull request cannot
+      # loosen the check it is judged by. Its self-test runs first, so a guard
+      # that could never fail does not pass.
+      - name: Gradle dependency verification stays on
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          guard=scripts/check_dependency_verification_on.py
+          python3 scripts/tests/check_dependency_verification_on_test.py
+          rc=0
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --quiet --depth=1 origin "$BASE_SHA"
+            if git cat-file -e "$BASE_SHA:$guard" 2>/dev/null; then
+              git show "$BASE_SHA:$guard" > "$RUNNER_TEMP/base-guard.py"
+              echo "== the base commit's $guard"
+              python3 -I "$RUNNER_TEMP/base-guard.py" --root . || rc=1
+            else
+              echo "::notice::$BASE_SHA has no $guard yet (this change adds it); only this change's copy runs."
+            fi
+          fi
+          echo "== this change's $guard"
+          python3 -I "$guard" --root . || rc=1
+          exit "$rc"
+
       # Every action here is SHA-pinned, which is correct. But a SHA is opaque, so
       # the trailing `# vX` comment is the only readable handle on what actually
       # runs -- and a bad action ref fails as `startup_failure`: zero jobs, no
@@ -364,10 +394,17 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
+      # Reads the Gradle cache, never writes it, on main too (MR-2438 L2).
+      # Every writing job saves its OWN dependencies and transforms entries
+      # whenever a dependency changes -- 538 MB from this job on 2026-11-18 --
+      # and what this job resolves (the debug compile) is a subset of what
+      # "Build APK" saves, so with the repo at the 10 GB cache cap the copy
+      # only evicted other entries. It restores its own last entry, or the
+      # newest one another job wrote.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-read-only: true
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
@@ -460,7 +497,15 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Sum of the bounds before the proof (MR-2438 L1): the plan's apt-get
+    # update 120+15 s, the fetch 180 s (its step is cut at 4 min), the
+    # action's update 300+30 s and install 600+30 s: about 21.5 min. At 20
+    # (with the plan's update then bounded at 300 s, apt's bounds alone came
+    # to 20 min) the job timeout could fire first and hide the install's own
+    # "mirror problem" error; at 25 that error is what a dead mirror reports,
+    # and an install that just makes its ceiling still leaves time for the
+    # proof itself (~35 s on 2026-11-18).
+    timeout-minutes: 25
     permissions:
       contents: read
     # WHY A WHOLE JOB FOR THIS
@@ -507,6 +552,11 @@ jobs:
       # Every failure leaves the cache out and the install as it was. The
       # action is unchanged and stays cache-free: android.yml runs it before a
       # release.
+      #
+      # On a miss, `fetch` gets what the restore did not bring (MR-2438):
+      # main writes the cache only from a run whose install finished, so
+      # while the mirror trickled it was never written, and every run then
+      # waited out apt, which cannot leave a slow mirror. See the script.
       - name: Plan the .deb cache (apt-get update; each archive the proof installs, with its SHA-256 from the signed index)
         id: apt-plan
         run: bash .github/scripts/pq-apt-cache.sh plan
@@ -523,6 +573,15 @@ jobs:
       - name: Self-test - the .deb cache stages only what the signed index vouches for
         run: bash .github/scripts/pq-apt-cache-test.sh
 
+      # Bounded by the script (180 s) and cut here at 4 min. It only ever
+      # adds files that hash to the plan; when it fails or stops, apt
+      # downloads the rest, so its failure never fails the proof.
+      - name: Fetch the .debs the cache lacks (speed floor, mirror fallback, each checked against the signed index)
+        if: ${{ steps.apt-plan.outputs.key != '' }}
+        timeout-minutes: 4
+        continue-on-error: true
+        run: bash .github/scripts/pq-apt-cache.sh fetch ~/.cache/birdo-pq-apt-archives
+
       - name: Stage the restored .debs that hash to the signed index (apt downloads the rest)
         if: ${{ steps.apt-plan.outputs.key != '' }}
         run: bash .github/scripts/pq-apt-cache.sh stage ~/.cache/birdo-pq-apt-archives
@@ -534,14 +593,18 @@ jobs:
       # the planned archives are collected -- the versions this run installed,
       # each re-hashed against the plan -- so an entry never grows, and the
       # key changes (a new, complete entry) only when Ubuntu ships a new
-      # version of one of them.
+      # version of one of them. Also after a failed proof (MR-2438): the
+      # archives are judged by their hashes, not by the proof's result, and
+      # until this ran only on success a slow mirror kept the cache from ever
+      # being written. A failed install leaves the set incomplete, so nothing
+      # is saved then.
       - name: Collect the installed .debs for the cache (main)
         id: apt-collect
-        if: ${{ github.ref == 'refs/heads/main' && steps.apt-plan.outputs.key != '' && steps.apt-restore.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.apt-plan.outputs.key != '' && steps.apt-restore.outputs.cache-hit != 'true' }}
         run: bash .github/scripts/pq-apt-cache.sh collect ~/.cache/birdo-pq-apt-archives
 
       - name: Save the .deb cache (main)
-        if: ${{ steps.apt-collect.outputs.complete == 'true' }}
+        if: ${{ !cancelled() && steps.apt-collect.outputs.complete == 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/birdo-pq-apt-archives
@@ -1048,10 +1111,14 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
+      # Reads the Gradle cache, never writes it, on main too (MR-2438 L2): the
+      # release variant resolves the same libraries "Build APK" saves, and
+      # this job's own copy (572 MB on 2026-11-18, at every dependency change)
+      # only evicted other entries at the repo's 10 GB cap. See CodeQL's.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-read-only: true
 
       - name: Restore the Go cache for the Xray engines
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

@@ -544,11 +544,13 @@ final class LiveRebuildTests: XCTestCase {
             "selectServerLive",
             "autoConnectIfEnabled",
         ])
-        // The twin: the guard has to cover BOTH places that stop a live tunnel
-        // and then re-dial it. #350's review named only the multi-hop one.
+        // The guard has to cover EVERY place that stops a live tunnel and then
+        // re-dials it. #350's review named only the multi-hop one; the relay
+        // retry (#549, MR-2212) is the third.
         XCTAssertEqual(RedialTeardownSite.allCases.map(\.rawValue), [
             "connectMultiHopOverALiveSession",
             "legacyRebuild",
+            "relayRetry",
         ])
     }
 }

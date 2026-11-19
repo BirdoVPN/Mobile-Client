@@ -541,7 +541,7 @@ enum HandshakeArmOutcome: Equatable {
 /// the thing that clears it.
 ///
 /// `isTearingDownForRedial` is the flag that survives those transitions. It is
-/// owned by the two teardown sites in `RedialTeardownSite` and read only here.
+/// owned by the teardown sites in `RedialTeardownSite` and read only here.
 enum TunnelDialGate {
     /// Why a dial is refused. A raw-valued, `CaseIterable` enum rather than a
     /// bare Bool so BirdoVPNTests can enumerate the blocking states and a new
@@ -643,9 +643,9 @@ enum TunnelDialEntryPoint: String, CaseIterable {
     case autoConnectIfEnabled
 }
 
-/// Every place that stops a LIVE tunnel and then re-dials it: the two sides of
-/// the twin the #351 guard has to cover. Guarding one and not the other is the
-/// #336 shape exactly — and the shape #350's own review noted was left open.
+/// Every place that stops a LIVE tunnel and then re-dials it: the sites the
+/// #351 guard has to cover. Guarding one and not the other is the #336 shape
+/// exactly — and the shape #350's own review noted was left open.
 enum RedialTeardownSite: String, CaseIterable {
     /// `VpnViewModel.connectMultiHop` over a live session — the one live
     /// rebuild deliberately NOT done in place (the node-agent's
@@ -654,4 +654,8 @@ enum RedialTeardownSite: String, CaseIterable {
     /// `VpnViewModel.legacyRebuild` — the pre-#159 disconnect-first rebuild,
     /// reached only when the SERVER cannot defer this device's key.
     case legacyRebuild
+    /// `VpnViewModel.retryOnAnotherRelay` — the one automatic retry after a
+    /// fresh dial never handshaked (A-H15 #549, widened by MR-2212). It held
+    /// the flag since #549 without being listed here.
+    case relayRetry
 }
