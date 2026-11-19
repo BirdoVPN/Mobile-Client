@@ -1132,6 +1132,15 @@ class BirdoRepository @Inject constructor(
     }
 
     /**
+     * MR-2492 (owner decision 2026-11-19): server [id] as the last list this
+     * process fetched had it, whatever its age, or null. A server deleted
+     * from the fleet is gone from the next /vpn/servers; its country, which
+     * keeps a location the user picked inside that country, is only here.
+     * Memory only: read it BEFORE a refresh replaces the list.
+     */
+    fun lastKnownServer(id: String): VpnServer? = cachedServers?.firstOrNull { it.id == id }
+
+    /**
      * Fetch a single-use Play Integrity nonce from the backend. Returns null on
      * any failure (non-fatal — connect then proceeds without an attestation token
      * and the server policy decides what to do).

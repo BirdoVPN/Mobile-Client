@@ -175,10 +175,11 @@ App Signing key.
     comes out of either, and a pull request reviews it.
   - sources and javadoc jars: trusted by rule (an IDE fetches them; no build ships
     them).
-  - anything downloaded outside Gradle's dependency resolution: Robolectric's
-    `android-all-instrumented` jars, which Robolectric fetches itself when the unit
-    tests run; Android SDK and NDK packages (`sdkmanager`); and managed-device system
-    images.
+  - anything downloaded outside Gradle's dependency resolution: Android SDK and NDK
+    packages (`sdkmanager`) and managed-device system images. Robolectric's
+    `android-all-instrumented` jar is covered (MR-2490): it is the `robolectricAndroidAll`
+    dependency in `app/build.gradle.kts`, and the unit tests run with Robolectric offline
+    on the verified copy instead of letting it download one.
 
 ## iOS
 

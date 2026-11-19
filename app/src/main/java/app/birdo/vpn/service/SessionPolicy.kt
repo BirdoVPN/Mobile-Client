@@ -710,10 +710,41 @@ internal object SessionCopy {
     /** The heartbeat said "evicted" (WEB-HB's canonical sentence). */
     const val EVICTED =
         "Another device on your account connected, so this one was disconnected. Tap Connect to take it back."
-    /** The heartbeat said a Multi-Hop node went away for good ("server_offline", valid = false). */
+    /**
+     * The heartbeat said the server went away for good ("server_offline",
+     * valid = false), and the client chose it: it moves (MR-2492). Never for
+     * a location the user picked, see [serverOffline].
+     */
     const val SERVER_OFFLINE = "This server went offline. Reconnecting to another location…"
     const val MULTI_HOP_ROUTE_OFFLINE =
         "A server on your Multi-Hop route went offline. Choose another entry or exit."
+
+    /**
+     * MR-2492 round 2: what a location the user picked hears while the app
+     * finds out whether another server in its country can take over. It may
+     * not move at all, so nothing here promises a move. iOS's words for the
+     * same wait (RelayRecovery.checkingNetwork, Mobile #645).
+     */
+    const val CHECKING_CONNECTION = "Checking the connection…"
+
+    /**
+     * MR-2492 round 2: what the server-offline teardown says, by who chose
+     * the server. "Another location" only for the client's own pick, which
+     * may move anywhere; a location the user picked hears [CHECKING_CONNECTION].
+     */
+    fun serverOffline(pickedBy: SelectionOrigin): String =
+        if (pickedBy == SelectionOrigin.AUTOMATIC) SERVER_OFFLINE else CHECKING_CONNECTION
+
+    /**
+     * MR-2492: the server went offline and nothing reachable is left to move
+     * to: a location the user picked has no other server in its country (it
+     * never leaves its country without a tap), or the server is no longer
+     * listed at all. Home offers Choose server beside it (homeRemedy). The
+     * call to action is Desktop #464's. When nothing the plan can use is left
+     * anywhere, it is [NO_SERVERS] instead (lead vpn-c6, round 2).
+     * Owner wording sign-off pending; this is the one place the sentence lives.
+     */
+    const val SERVER_UNREACHABLE = "This server isn't reachable right now. Choose a server to connect."
     const val REAPED = "The server dropped this connection while the device was idle. Reconnecting…"
     const val NO_TUNNEL = "Couldn't establish a secure tunnel to this server. Try another location."
     const val QUANTUM_FAILED =
