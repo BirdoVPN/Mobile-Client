@@ -171,13 +171,11 @@ final class HeartbeatPolicyTests: XCTestCase {
                       Node(id: "nl-1", countryCode: "NL", city: "Amsterdam", load: 1)]
         var listed = cached
         listed[0].isOnline = false
-        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "de-1", in: listed, cached: cached, origin: .user)?.server.id,
+        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "de-1", in: listed, origin: .user)?.server.id,
                        "de-2")
-        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "de-1", in: listed, cached: cached,
-                                                  origin: .automatic)?.server.id, "nl-1")
+        XCTAssertEqual(HeartbeatPolicy.moveTarget(from: "de-1", in: listed, origin: .automatic)?.server.id, "nl-1")
         // Nothing the rule allows: no move.
-        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: [listed[0], listed[2]], cached: cached,
-                                                origin: .user))
+        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: [listed[0], listed[2]], origin: .user))
         XCTAssertEqual(HeartbeatEnding.serverOffline, HeartbeatEnding(message: serverGoneCopy, offersPlans: false))
     }
 
@@ -186,17 +184,19 @@ final class HeartbeatPolicyTests: XCTestCase {
     /// account. That matches iOS's own retry (`RelayRetry.next`, #645/#648),
     /// Desktop #464/#466 and Android #652. The session ends and says so
     /// (`HeartbeatEnding.serverOffline`), even though the list it was dialled
-    /// from still knows the deleted server's country.
+    /// from (`dialledFrom`) still knows the deleted server's country: that
+    /// list is not an input any more. Before round 2 it was, and the session
+    /// moved.
     func testADeletedServerIsNeverMovedFrom() {
-        let cached = [Node(id: "de-1"),
-                      Node(id: "de-2", city: "Berlin", load: 50),
-                      Node(id: "nl-1", countryCode: "NL", city: "Amsterdam", load: 1)]
-        let deleted = Array(cached.dropFirst())
+        let dialledFrom = [Node(id: "de-1"),
+                           Node(id: "de-2", city: "Berlin", load: 50),
+                           Node(id: "nl-1", countryCode: "NL", city: "Amsterdam", load: 1)]
+        let deleted = Array(dialledFrom.dropFirst())
         for origin in [SelectionOrigin.user, .automatic] {
-            XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: deleted, cached: cached, origin: origin),
+            XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: deleted, origin: origin),
                          "deleted from the list, picked \(origin): no move")
         }
-        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "zz-9", in: deleted, cached: cached, origin: .automatic),
+        XCTAssertNil(HeartbeatPolicy.moveTarget(from: "zz-9", in: deleted, origin: .automatic),
                      "a node neither list knows: no move")
     }
 

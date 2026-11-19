@@ -2388,14 +2388,18 @@ final class VpnViewModel: ObservableObject {
     /// MR-2343: the key went with its drained or deleted server. Connect to
     /// a different one, chosen by MR-2212's rule (`HeartbeatPolicy.moveTarget`):
     /// a server the client chose may move to any country, and a location the
-    /// user picked stays in its country. Android's SERVER_GONE re-dials the
-    /// best other server. When no relay qualifies, the session ends and the
-    /// banner says so. Multi-Hop never comes here: HeartbeatPolicy ends a
-    /// pair's session, because the pair is the user's to choose.
+    /// user picked stays in its country. When no relay qualifies, the session
+    /// ends and the banner says so. Multi-Hop never comes here: HeartbeatPolicy
+    /// ends a pair's session, because the pair is the user's to choose.
+    ///
+    /// Round 2, L1: a server the fresh list no longer carries was deleted, and
+    /// it ends the session without a move. That is one rule on every client
+    /// (iOS's retry, Desktop, Android). Only a drained server still listed
+    /// offline is moved from.
     ///
     /// Disconnect-first, like `retryOnAnotherRelay`, from a fresh
-    /// `/vpn/servers` (capped; else the cached list), so the drained node is
-    /// not dialled again.
+    /// `/vpn/servers` (capped; when it does not answer, the list already held,
+    /// as the retry does), so the drained node is not dialled again.
     private func moveOffDrainedServer() {
         guard let goneId = connectedServerId ?? selectedServer?.id else {
             endSessionForServer(.serverOffline)
@@ -2414,7 +2418,6 @@ final class VpnViewModel: ObservableObject {
             // The user disconnected, signed out or dialled again while we waited.
             guard generation == self.relayRetryGeneration else { return }
             self.resetSessionState()
-            let cached = self.servers
             let fresh = await self.freshServerList(within: Self.retryListCap)
             guard generation == self.relayRetryGeneration else { return }
             guard !self.isConnected, !self.isConnecting else {
@@ -2425,8 +2428,7 @@ final class VpnViewModel: ObservableObject {
                 self.servers = fresh
                 self.serverCacheTimestamp = Date()
             }
-            guard let next = HeartbeatPolicy.moveTarget(from: goneId, in: self.servers, cached: cached,
-                                                        origin: origin) else {
+            guard let next = HeartbeatPolicy.moveTarget(from: goneId, in: self.servers, origin: origin) else {
                 self.relayRecovery = nil
                 self.heartbeatEnding = .serverOffline
                 self.error = HeartbeatEnding.serverOffline.message
