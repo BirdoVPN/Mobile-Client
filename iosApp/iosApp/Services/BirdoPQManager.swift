@@ -203,8 +203,13 @@ final class BirdoPQManager: @unchecked Sendable {
             debugLog("BirdoPQ: bilateral PQ aborted (%@)", (error as? PQFailure)?.code ?? "unknown")
             throw error
         }
-        guard case let .derive(ct, nonce) = plan, let kp = handedOff else {
+        guard case let .derive(ct, nonce) = plan else {
             return nil
+        }
+        // Unreachable (the plan checked `hasKeypair`), and never the
+        // classical nil: a post-quantum session with no pair fails closed.
+        guard let kp = handedOff else {
+            throw PQFailure.keypairUnavailable
         }
 
         var psk = [UInt8](repeating: 0, count: Int(BIRDO_PQ_PSK_LEN))

@@ -71,6 +71,14 @@ struct FailureCountsReport: Codable, Equatable, Sendable {
 /// Where Android sends a scrubbed crash event to Sentry, this keeps a number
 /// per reason code. That is all it can hold.
 ///
+/// ## One app version at a time
+///
+/// Counts are held for the version that recorded them (`versionKey`). Counts
+/// from another version are never reported under this one: an update discards
+/// them at the next `record` or `takeReport`, and a report clears what it
+/// took. A report's `platform` and `appVersion` are this build's own facts
+/// (`platform`, `reportableVersion`), never a caller's text.
+///
 /// ## Not switched on in this build
 ///
 /// There is no switch for it in the app yet and no destination: whether to
@@ -80,6 +88,7 @@ struct FailureCountsReport: Codable, Equatable, Sendable {
 /// `isEnabled` is false on every device, every `record` is a no-op and
 /// `takeReport` is always nil. The failure REASON is already visible without
 /// it: it travels with the error and its code is in the message the user sees.
+/// `IosFailureDiagnosticsGuardTest` (JVM) pins all of this, this file included.
 final class FailureCounts: @unchecked Sendable {
     static let shared = FailureCounts(defaults: .standard)
 
@@ -87,17 +96,45 @@ final class FailureCounts: @unchecked Sendable {
     static let enabledKey = "failure_counts_enabled"
     /// `[code: count]`, held only while the choice is on.
     static let countsKey = "failure_counts"
+    /// The app version the held counts were recorded under.
+    static let versionKey = "failure_counts_version"
     /// Report format version.
     static let schema = 1
-    /// A count stops here. Past it the exact number tells a diagnosis nothing
-    /// more, and a bounded number keeps every report the same shape.
+    /// A count stops here, on record and again on read. Past it the exact
+    /// number tells a diagnosis nothing more, and a bounded number keeps every
+    /// report the same shape.
     static let maxCount = 999
+    /// The version a report names when the bundle's is not a plain `x.y.z`
+    /// (the same sentinel the heartbeat sends, VPNManager.heartbeatClientVersion).
+    static let unknownVersion = "0.0.0-unknown"
+
+    /// The platform a report names: decided at build time.
+    static var platform: String {
+        #if os(macOS)
+        return "macos"
+        #else
+        return "ios"
+        #endif
+    }
+
+    /// `x.y.z` exactly, or `unknownVersion`: a build string with a suffix
+    /// (a build number, an install or device tag) is never reported.
+    static func reportableVersion(_ raw: String?) -> String {
+        guard let raw, raw.range(of: #"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$"#, options: .regularExpression) != nil else {
+            return unknownVersion
+        }
+        return raw
+    }
 
     private let defaults: UserDefaults
+    private let appVersion: String
     private let lock = NSLock()
 
-    init(defaults: UserDefaults) {
+    /// `appVersion` is the bundle's own; only tests pass another.
+    init(defaults: UserDefaults,
+         appVersion: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) {
         self.defaults = defaults
+        self.appVersion = Self.reportableVersion(appVersion)
     }
 
     var isEnabled: Bool {
@@ -112,46 +149,62 @@ final class FailureCounts: @unchecked Sendable {
             defaults.set(true, forKey: Self.enabledKey)
         } else {
             defaults.removeObject(forKey: Self.enabledKey)
-            defaults.removeObject(forKey: Self.countsKey)
+            clearHeld()
         }
     }
 
-    /// Count one failure, only while the user has opted in.
+    /// Count one failure, only while the user has opted in. Counts another
+    /// version left are discarded first.
     func record(_ failure: DialFailure) {
         lock.lock(); defer { lock.unlock() }
         guard defaults.bool(forKey: Self.enabledKey) else { return }
-        var counts = storedCounts()
+        var counts = heldCounts()
         counts[failure.rawValue] = min((counts[failure.rawValue] ?? 0) + 1, Self.maxCount)
         defaults.set(counts, forKey: Self.countsKey)
+        defaults.set(appVersion, forKey: Self.versionKey)
     }
 
-    /// What is held now, by reason. Empty while off.
+    /// What this version holds now, by reason. Empty while off.
     var counts: [DialFailure: Int] {
         lock.lock(); defer { lock.unlock() }
         guard defaults.bool(forKey: Self.enabledKey) else { return [:] }
         var out: [DialFailure: Int] = [:]
-        for (code, count) in storedCounts() {
+        for (code, count) in heldCounts() {
             if let failure = DialFailure(rawValue: code) { out[failure] = count }
         }
         return out
     }
 
-    /// The report a sender would deliver, and the counts it carries are
-    /// cleared in the same step. Nil while the user has not opted in (the
-    /// gate: nothing is ever handed to a sender without consent) and when
-    /// nothing was counted. Codes this build does not know are dropped.
-    func takeReport(platform: String, appVersion: String) -> FailureCountsReport? {
+    /// The report a sender would deliver; everything held is cleared in the
+    /// same step. Nil while the user has not opted in (the gate: nothing is
+    /// ever handed to a sender without consent) and when this version counted
+    /// nothing. Codes this build does not know are dropped.
+    func takeReport() -> FailureCountsReport? {
         lock.lock(); defer { lock.unlock() }
         guard defaults.bool(forKey: Self.enabledKey) else { return nil }
-        let known = storedCounts().filter { DialFailure(rawValue: $0.key) != nil && $0.value > 0 }
-        defaults.removeObject(forKey: Self.countsKey)
-        guard !known.isEmpty else { return nil }
-        return FailureCountsReport(schema: Self.schema, platform: platform,
-                                   appVersion: appVersion, counts: known)
+        let held = heldCounts()
+        clearHeld()
+        guard !held.isEmpty else { return nil }
+        return FailureCountsReport(schema: Self.schema, platform: Self.platform,
+                                   appVersion: appVersion, counts: held)
+    }
+
+    /// This version's counts: known codes only, each in 1...maxCount. Empty
+    /// when what is stored was recorded under another version (or none).
+    /// Caller holds `lock`.
+    private func heldCounts() -> [String: Int] {
+        guard defaults.string(forKey: Self.versionKey) == appVersion else { return [:] }
+        let stored = defaults.dictionary(forKey: Self.countsKey) as? [String: Int] ?? [:]
+        var out: [String: Int] = [:]
+        for (code, count) in stored where count > 0 && DialFailure(rawValue: code) != nil {
+            out[code] = min(count, Self.maxCount)
+        }
+        return out
     }
 
     /// Caller holds `lock`.
-    private func storedCounts() -> [String: Int] {
-        defaults.dictionary(forKey: Self.countsKey) as? [String: Int] ?? [:]
+    private func clearHeld() {
+        defaults.removeObject(forKey: Self.countsKey)
+        defaults.removeObject(forKey: Self.versionKey)
     }
 }
