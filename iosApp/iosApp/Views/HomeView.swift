@@ -540,7 +540,8 @@ struct HomeView: View {
                 ErrorBanner(message, icon: "exclamationmark.circle")
                 // MR-2493 (design §3.2 step 4): a location the user picked did
                 // not answer and no relay in its city or country could be
-                // tried. One tap to the best other location; Birdo never moves
+                // tried, or the one retry there did not answer either. One
+                // tap to the best other location; Birdo never moves
                 // there on its own. Only beside the message it was made for.
                 if let offer = vpnVM.relayOffer, offer.isShown(beside: message) {
                     relayOfferButton(offer)

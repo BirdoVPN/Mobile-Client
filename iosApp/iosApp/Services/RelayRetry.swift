@@ -44,11 +44,20 @@ enum SelectionOrigin: Equatable, Sendable {
 /// retry's own dial refills nothing, so a failed retry can never loop.
 struct RelayRetryBudget: Equatable, Sendable {
     private(set) var spent = false
+    /// The relay the spent retry moved away from: the pick that did not
+    /// answer before the retry's own relay. nil while the retry is unspent.
+    /// Memory only, never logged. MR-2493 (review of #648, point 4): an offer
+    /// made after the retry did not answer either excludes it too.
+    private(set) var retriedFrom: String?
 
     init() {}
 
     /// A connect the user asked for, or a handshake proven on the session.
-    mutating func refill() { spent = false }
+    /// A new attempt starts clean, so the relay the retry left is forgotten.
+    mutating func refill() {
+        spent = false
+        retriedFrom = nil
+    }
 
     /// Take the retry. False, changing nothing, when it is already spent.
     mutating func take() -> Bool {
@@ -56,21 +65,14 @@ struct RelayRetryBudget: Equatable, Sendable {
         spent = true
         return true
     }
-}
 
-// MARK: - Review of #648, point 4: declared ahead of the change
-//
-// TEST-FIRST SCAFFOLD. These declarations carry TODAY's behaviour (the budget
-// remembers no relay; the offer ignores the budget), so the new tests in
-// RelayOfferTests compile and fail on what the app does now. The next commit
-// of this branch gives them the new behaviour.
-
-extension RelayRetryBudget {
-    /// The relay the spent retry moved away from. Today: never remembered.
-    var retriedFrom: String? { nil }
-
-    /// Take the retry, leaving `failedId`. Today: the id is not kept.
-    mutating func take(leaving failedId: String) -> Bool { take() }
+    /// Take the retry away from `failedId`, and remember it. False, changing
+    /// nothing, when the retry is already spent.
+    mutating func take(leaving failedId: String) -> Bool {
+        guard take() else { return false }
+        retriedFrom = failedId
+        return true
+    }
 }
 
 enum RelayRetry {
@@ -122,7 +124,7 @@ enum RelayRetry {
                                              origin: SelectionOrigin,
                                              budget: inout RelayRetryBudget) -> Choice<S>? {
         guard !budget.spent, let choice = next(after: failedId, in: list, origin: origin) else { return nil }
-        _ = budget.take()
+        _ = budget.take(leaving: failedId)
         return choice
     }
 
@@ -231,19 +233,37 @@ enum RelayProbeVerdict: Equatable, Sendable {
 extension RelayRetry {
     /// The relay a one-tap "Try <location>" names, or nil. Only for a
     /// location the USER picked: a server the client chose moves on its own
-    /// (`next`), so it is never offered anything. Only when no relay in the
-    /// same city or country qualifies: then `next` has a target and the
-    /// retry goes there instead. What is offered is the best other relay in
-    /// any country by QuickSelect's rule (online, open to this plan, least
-    /// loaded), from the list given, which the caller fetches fresh: the
-    /// server's list is the only authority. Nothing is dialled until the
-    /// user taps it.
+    /// (`next`), so it is never offered anything.
+    ///
+    /// The relays that did not answer are `failedId` and, when the one retry
+    /// ran, the pick it left (`budget.retriedFrom`). Neither is ever offered.
+    /// A user's retry never leaves the pick's country, so they share it:
+    ///   * the retry still to come (`budget` unspent) and an eligible relay
+    ///     left in that city or country: no offer, the retry goes there;
+    ///   * otherwise the best eligible relay OUTSIDE that country. That
+    ///     includes the same-country retry having failed too (review of #648,
+    ///     point 4): no retry is left for anything still in the country.
+    /// When no failed relay is listed with a country, nothing is known to be
+    /// in it: the best of the rest, as before.
+    ///
+    /// "Eligible" and "best" are QuickSelect's rule (online, open to this
+    /// plan, least loaded), applied to the list given, which the caller
+    /// fetches fresh: the server's list is the only authority. Nothing is
+    /// dialled until the user taps it.
     static func offer<S: RelayRetryCandidate>(after failedId: String, in list: [S],
                                               origin: SelectionOrigin,
-                                              budget: RelayRetryBudget = RelayRetryBudget()) -> S? {
-        // Scaffold (review of #648, point 4): `budget` is not read yet.
-        guard origin == .user, next(after: failedId, in: list, origin: .user) == nil else { return nil }
-        return QuickSelect.bestServer(in: list.filter { $0.id != failedId })
+                                              budget: RelayRetryBudget) -> S? {
+        guard origin == .user else { return nil }
+        var failed: Set<String> = [failedId]
+        if let left = budget.retriedFrom { failed.insert(left) }
+        let others = list.filter { !failed.contains($0.id) }
+        let country = list.first(where: { failed.contains($0.id) }).map { normalized($0.countryCode) } ?? ""
+        guard !country.isEmpty else { return QuickSelect.bestServer(in: others) }
+        if !budget.spent,
+           QuickSelect.bestServer(in: others.filter { normalized($0.countryCode) == country }) != nil {
+            return nil
+        }
+        return QuickSelect.bestServer(in: others.filter { normalized($0.countryCode) != country })
     }
 
     /// The offered relay at the tap, from the list as it stands then: nil
@@ -261,7 +281,8 @@ extension RelayRetry {
 }
 
 /// MR-2493: the one tap offered beside the message after a location the user
-/// picked did not answer and no relay in its city or country could be tried.
+/// picked did not answer and no relay in its city or country could be tried,
+/// or the one retry there did not answer either (`RelayRetry.offer`).
 /// Never taken on its own: the tap is a connect of the user's own
 /// (`VpnViewModel.acceptRelayOffer`).
 struct RelayOffer: Equatable, Sendable {

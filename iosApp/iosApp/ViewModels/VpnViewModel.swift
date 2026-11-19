@@ -367,7 +367,8 @@ final class VpnViewModel: ObservableObject {
     @Published private(set) var relayRecovery: RelayRecovery?
     /// MR-2493 (design §3.2 step 4): the one tap Home offers beside `error`
     /// after a location the user picked did not answer and no relay in its
-    /// city or country could be tried (`RelayRetry.offer`, from a fresh list).
+    /// city or country could be tried, or the one retry there did not answer
+    /// either (`RelayRetry.offer`, from a fresh list).
     /// Never acted on by itself: only `acceptRelayOffer`, the user's tap,
     /// dials it. Retired by any dial, a disconnect and a new selection, and
     /// shown only while its own message is the one on screen.
@@ -2058,6 +2059,9 @@ final class VpnViewModel: ObservableObject {
         // which relay (`RelayRetry.logLine`).
         debugLog(RelayRetry.logLine(for: planned, alreadySpent: spentBefore))
         guard planned != nil else { return false }
+        // MR-2493 (review of #648, point 4): as the retry took it, naming the
+        // relay it left, for an offer should this end without a target.
+        let budget = relayRetryBudget
         let host = lastDialRelayHost
         let selectedAtFailure = selectedServer?.id
         let generation = relayRetryGeneration
@@ -2096,7 +2100,7 @@ final class VpnViewModel: ObservableObject {
                 // one, chosen from the fresh list only.
                 var offer: ServerInfo?
                 if let fresh {
-                    offer = RelayRetry.offer(after: failedId, in: fresh, origin: origin)
+                    offer = RelayRetry.offer(after: failedId, in: fresh, origin: origin, budget: budget)
                 }
                 await self.finishUnansweredRelay(
                     host: RelayProbeVerdict.probeHost(host, tunnelStillUp: tunnelStillUp),
@@ -2144,12 +2148,17 @@ final class VpnViewModel: ObservableObject {
     ///
     /// MR-2493: a location the user picked that no retry could serve (no
     /// relay in its city or country) is offered the best other location, one
-    /// tap, chosen from a fresh `/vpn/servers` only.
+    /// tap, chosen from a fresh `/vpn/servers` only. So is one whose
+    /// same-country retry did not answer either (review of #648, point 4):
+    /// then the best relay outside the country, never either relay that failed.
     private func diagnoseUnansweredRelay(host: String) {
         let generation = relayRetryGeneration
         // Read before the reset below clears them.
         let failedId = connectedServerId ?? selectedServer?.id
         let origin = selectionOrigin
+        // As the failed dial left it: after a retry that did not answer, it
+        // names the pick the retry left, which the offer excludes too.
+        let budget = relayRetryBudget
         relayRecovery = .checkingNetwork
         vpnManager.disconnect()
         releaseServerSlot()
@@ -2168,7 +2177,7 @@ final class VpnViewModel: ObservableObject {
                 if let fresh {
                     self.servers = fresh
                     self.serverCacheTimestamp = Date()
-                    offer = RelayRetry.offer(after: failedId, in: fresh, origin: origin)
+                    offer = RelayRetry.offer(after: failedId, in: fresh, origin: origin, budget: budget)
                 }
             }
             await self.finishUnansweredRelay(host: probeHost, offer: offer, generation: generation)
