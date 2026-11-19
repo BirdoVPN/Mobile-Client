@@ -1745,8 +1745,8 @@ final class VpnViewModel: ObservableObject {
             // restore had failed — leaving the persisted profile, and so the
             // armed on-demand rule's re-dial, on a peer this client had just
             // deleted.
-            connectRefusal = nil
             noteDialFailure(after: swapError)
+            connectRefusal = nil
             self.error = swapError.localizedDescription
             flagsOwnedElsewhere = await finishRebuild(.swapFailed, ctx)
             return
