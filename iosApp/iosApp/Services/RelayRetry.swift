@@ -210,3 +210,55 @@ enum RelayProbeVerdict: Equatable, Sendable {
         }
     }
 }
+
+// MARK: - MR-2493 and review L1 of #645: declared ahead of the change
+//
+// TEST-FIRST SCAFFOLD. These declarations carry TODAY's behaviour (no offer is
+// ever made; the probe runs whatever the tunnel's state), so the new tests in
+// RelayOfferTests compile and fail on what the app does now. The next commit
+// of this branch gives them the new behaviour.
+
+extension RelayRetry {
+    /// MR-2493: the relay a one-tap "Try <location>" names. Today: none.
+    static func offer<S: RelayRetryCandidate>(after failedId: String, in list: [S],
+                                              origin: SelectionOrigin) -> S? {
+        nil
+    }
+
+    /// MR-2493: the offered relay at the tap. Today: there is no tap.
+    static func offered<S: RelayRetryCandidate>(_ id: String, in list: [S]) -> S? {
+        nil
+    }
+
+    /// MR-2493: whether the offer stands beside the message. Today: never.
+    static func offerFits(_ verdict: RelayProbeVerdict?) -> Bool {
+        false
+    }
+}
+
+/// MR-2493: the one tap offered beside a message. Today: never shown.
+struct RelayOffer: Equatable, Sendable {
+    let serverId: String
+    let message: String
+    let title: String
+    let accessibilityLabel: String
+
+    init(serverId: String, name: String, city: String, country: String, message: String) {
+        self.serverId = serverId
+        self.message = message
+        title = ""
+        accessibilityLabel = ""
+    }
+
+    func isShown(beside error: String?) -> Bool { false }
+}
+
+extension RelayProbeVerdict {
+    /// Review L1 of #645. Today: the probe runs whatever the tunnel's state.
+    static func probeHost(_ host: String?, tunnelStillUp: Bool) -> String? {
+        host
+    }
+
+    /// The message when no probe runs (today's literal in VpnViewModel).
+    static let unprobedMessage = "Couldn't establish a secure tunnel to this server. Try another location."
+}
