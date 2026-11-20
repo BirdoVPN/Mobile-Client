@@ -238,6 +238,16 @@ final class VpnViewModel: ObservableObject {
         connectRefusal = error as? ConnectRefusedError
     }
 
+    /// MR-2287: count a failed dial by its reason, when it is one the failure
+    /// counts cover (`DialFailure(dialError:)`). A no-op unless the user opted
+    /// in, which no build offers yet (`FailureCounts`). The code, not the
+    /// message: the message can carry server text.
+    private func noteDialFailure(after error: Error) {
+        guard let failure = DialFailure(dialError: error) else { return }
+        debugLog("[VpnViewModel] dial failed (%@)", failure.rawValue)
+        FailureCounts.shared.record(failure)
+    }
+
     private var dismissedFloors: Set<String> {
         Set(dismissedFloorsRaw.split(separator: ",").map(String.init).filter { !$0.isEmpty })
     }
@@ -721,6 +731,7 @@ final class VpnViewModel: ObservableObject {
                 holdAutomaticDials(after: error)
                 showUpdateRequired(after: error)
                 noteRefusal(after: error)
+                noteDialFailure(after: error)
                 self.error = error.localizedDescription
                 reportUnauthorized(error)
                 isConnecting = false
@@ -896,6 +907,7 @@ final class VpnViewModel: ObservableObject {
             holdAutomaticDials(after: error)
             showUpdateRequired(after: error)
             noteRefusal(after: error)
+            noteDialFailure(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             isConnecting = false
@@ -1139,6 +1151,9 @@ final class VpnViewModel: ObservableObject {
             failClosedNotice = notice
 
         case .tearDownFailOpen:
+            // MR-2287: counted per relay that never answered, the automatic
+            // retry's included (a no-op unless the user opted in, `FailureCounts`).
+            FailureCounts.shared.record(.tunnelNeverHandshook)
             // Never handshook. Do NOT arm on-demand — that is the trap this exists to
             // avoid. Tear down explicitly so iOS has nothing to re-dial.
             //
@@ -1735,6 +1750,7 @@ final class VpnViewModel: ObservableObject {
             holdAutomaticDials(after: error)
             showUpdateRequired(after: error)
             noteRefusal(after: error)
+            noteDialFailure(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             flagsOwnedElsewhere = await finishRebuild(.configRequestFailed, ctx)
@@ -1803,6 +1819,7 @@ final class VpnViewModel: ObservableObject {
             // restore had failed — leaving the persisted profile, and so the
             // armed on-demand rule's re-dial, on a peer this client had just
             // deleted.
+            noteDialFailure(after: swapError)
             connectRefusal = nil
             self.error = swapError.localizedDescription
             flagsOwnedElsewhere = await finishRebuild(.swapFailed, ctx)
@@ -2068,7 +2085,11 @@ final class VpnViewModel: ObservableObject {
     /// again from a FRESH `/vpn/servers` (capped; the cached list when it does
     /// not answer in time), so a relay depooled since the list was cached, a
     /// jurisdiction hold included, is not dialled. The server's connect gate
-    /// refuses a node that is not ONLINE either way.
+    /// refuses a node that is not ONLINE either way. A failed relay the fresh
+    /// list no longer carries was deleted (owner decision 2026-11-19): a
+    /// server the client chose moves to the best relay anywhere, a location
+    /// the user picked stays in its country as the list the dial was chosen
+    /// from gives it (`RelayRetry.next`, `cached`).
     private func retryOnAnotherRelay() -> Bool {
         guard activeMultiHop == nil,
               let failedId = connectedServerId ?? selectedServer?.id else { return false }
@@ -2082,6 +2103,11 @@ final class VpnViewModel: ObservableObject {
         // MR-2493 (review of #648, point 4): as the retry took it, naming the
         // relay it left, for an offer should this end without a target.
         let budget = relayRetryBudget
+        // Owner decision 2026-11-19, MR-2518: the list this dial was chosen
+        // from, read now (a refresh during the wait would replace it). A relay
+        // the fresh list no longer carries was deleted: its country is read
+        // here, the target is still chosen from the fresh list.
+        let cached = servers
         let host = lastDialRelayHost
         let selectedAtFailure = selectedServer?.id
         let generation = relayRetryGeneration
@@ -2114,13 +2140,13 @@ final class VpnViewModel: ObservableObject {
                 self.servers = fresh
                 self.serverCacheTimestamp = Date()
             }
-            guard let next = RelayRetry.next(after: failedId, in: self.servers, origin: origin) else {
+            guard let next = RelayRetry.next(after: failedId, in: self.servers, cached: cached, origin: origin) else {
                 // Nothing qualifies any more: say what is true instead. MR-2493:
                 // a location the user picked may be offered the best other
                 // one, chosen from the fresh list only.
                 var offer: ServerInfo?
                 if let fresh {
-                    offer = RelayRetry.offer(after: failedId, in: fresh, origin: origin, budget: budget)
+                    offer = RelayRetry.offer(after: failedId, in: fresh, cached: cached, origin: origin, budget: budget)
                 }
                 await self.finishUnansweredRelay(
                     host: RelayProbeVerdict.probeHost(host, tunnelStillUp: tunnelStillUp),
@@ -2179,6 +2205,9 @@ final class VpnViewModel: ObservableObject {
         // As the failed dial left it: after a retry that did not answer, it
         // names the pick the retry left, which the offer excludes too.
         let budget = relayRetryBudget
+        // MR-2518 (review N1 of #648): the list this dial was chosen from, for
+        // a failed relay's country should the fresh list no longer carry it.
+        let cached = servers
         relayRecovery = .checkingNetwork
         vpnManager.disconnect()
         releaseServerSlot()
@@ -2197,7 +2226,7 @@ final class VpnViewModel: ObservableObject {
                 if let fresh {
                     self.servers = fresh
                     self.serverCacheTimestamp = Date()
-                    offer = RelayRetry.offer(after: failedId, in: fresh, origin: origin, budget: budget)
+                    offer = RelayRetry.offer(after: failedId, in: fresh, cached: cached, origin: origin, budget: budget)
                 }
             }
             await self.finishUnansweredRelay(host: probeHost, offer: offer, generation: generation)

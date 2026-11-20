@@ -8,6 +8,7 @@ import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.service.BirdoVpnService
+import app.birdo.vpn.service.SelectionOrigin
 import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnManager
 import app.birdo.vpn.service.VpnState
@@ -202,13 +203,14 @@ class VpnViewModelTest {
     @Test
     fun `a connect failure is not copied into a second banner`() = runTest {
         coEvery { repository.getServers(any()) } returns ApiResult.Success(listOf(server("s1", "DE", 10)))
-        coEvery { vpnManager.connect(any()) } returns ApiResult.Error("Upgrade required", 426)
+        coEvery { vpnManager.connect(any(), any(), any()) } returns ApiResult.Error("Upgrade required", 426)
         val vm = viewModel()
         vm.loadServers()
 
         vm.connect()
 
-        coVerify(exactly = 1) { vpnManager.connect("s1") }
+        // Whoever chose it (MR-2492's tests below pin that).
+        coVerify(exactly = 1) { vpnManager.connect("s1", any(), any()) }
         // VpnManager publishes the failure as the session's Error; the screen
         // draws that one banner.
         assertNull(vm.uiState.value.connectError)
@@ -333,6 +335,89 @@ class VpnViewModelTest {
         val vm = viewModel()
         vm.loadServers()
         assertEquals("ca-1", vm.uiState.value.selectedServer?.id)
+    }
+
+    // ── MR-2492: who chose the server Connect dials ───────────────────────
+    //
+    // A server the client chose may move to another country once if it goes
+    // offline; a location the user picked never leaves its country. VpnManager
+    // keeps the rule; the ViewModel says which kind of pick Connect dials.
+
+    private fun twoServers() {
+        coEvery { repository.getServers(any()) } returns ApiResult.Success(
+            listOf(server("a", "Austria", load = 90), server("z", "Zambia", load = 5)),
+        )
+    }
+
+    @Test
+    fun `MR-2492 Connect dials the pre-selected best server as the client's pick`() = runTest {
+        twoServers()
+        val vm = viewModel()
+        vm.loadServers()
+
+        vm.connect()
+
+        coVerify(exactly = 1) { vpnManager.connect("z", null, SelectionOrigin.AUTOMATIC) }
+    }
+
+    @Test
+    fun `MR-2492 a location the user tapped is dialled as the user's, the pre-selected one included`() = runTest {
+        twoServers()
+        val vm = viewModel()
+        vm.loadServers()
+
+        vm.pick("a")
+        vm.connect()
+        coVerify(exactly = 1) { vpnManager.connect("a", null, SelectionOrigin.USER) }
+
+        // Tapping the server the client had pre-selected makes it the user's too.
+        vm.pick("z")
+        vm.connect()
+        coVerify(exactly = 1) { vpnManager.connect("z", null, SelectionOrigin.USER) }
+        coVerify(exactly = 0) { vpnManager.connect(any(), any(), SelectionOrigin.AUTOMATIC) }
+    }
+
+    @Test
+    fun `MR-2492 a fresh process dials the last server as the client's pick when the client chose it`() = runTest {
+        every { prefs.lastServerId } returns "br-1"
+        every { prefs.lastServerAutoPicked } returns true
+        coEvery { repository.getServers(any()) } returns ApiResult.Success(
+            listOf(server("ca-1", "Canada", load = 5), server("br-1", "Brazil", load = 60)),
+        )
+        val vm = viewModel()
+        vm.loadServers()
+
+        vm.connect()
+
+        coVerify(exactly = 1) { vpnManager.connect("br-1", null, SelectionOrigin.AUTOMATIC) }
+    }
+
+    @Test
+    fun `MR-2492 a fresh process dials the last server as the user's when the user picked it`() = runTest {
+        every { prefs.lastServerId } returns "br-1"
+        every { prefs.lastServerAutoPicked } returns false
+        coEvery { repository.getServers(any()) } returns ApiResult.Success(
+            listOf(server("ca-1", "Canada", load = 5), server("br-1", "Brazil", load = 60)),
+        )
+        val vm = viewModel()
+        vm.loadServers()
+
+        vm.connect()
+
+        coVerify(exactly = 1) { vpnManager.connect("br-1", null, SelectionOrigin.USER) }
+    }
+
+    @Test
+    fun `MR-2492 Auto-Connect dials the last server as whoever chose it`() = runTest {
+        autoConnectReady()
+        every { prefs.lastServerAutoPicked } returns true
+        coEvery { vpnManager.connect(any(), any(), any()) } returns
+            ApiResult.Success(app.birdo.vpn.data.model.ConnectResponse(success = true))
+        viewModel()
+        testScheduler.advanceTimeBy(2_000)
+        testScheduler.runCurrent()
+
+        coVerify(exactly = 1) { vpnManager.connect("srv-1", null, SelectionOrigin.AUTOMATIC) }
     }
 
     // ── Round 7, item 4: a switch the network cut short ───────────────────
@@ -463,6 +548,31 @@ class VpnViewModelTest {
         viewModel().resetForSignOut()
         io.mockk.verify { prefs.lastServerId = null }
         io.mockk.verify { prefs.lastKnownPlan = null }
+    }
+
+    /**
+     * MR-2492 round 3 (review of #652, L2): the next account starts from the
+     * safe default, the user's: no stored "the client chose it", and no
+     * pre-select of the last account marked as the client's pick.
+     */
+    @Test
+    fun `MR-2492 sign-out forgets who chose the last server`() = runTest {
+        twoServers()
+        val vm = viewModel()
+        vm.loadServers()
+        assertEquals("z", vm.uiState.value.selectedServer?.id)
+
+        vm.resetForSignOut()
+
+        io.mockk.verify { prefs.lastServerAutoPicked = false }
+        // The next account loads a list in which "z" is no longer the best:
+        // its own pre-select is the client's pick, the old one is not.
+        coEvery { repository.getServers(any()) } returns ApiResult.Success(
+            listOf(server("a", "Austria", load = 1), server("z", "Zambia", load = 5)),
+        )
+        vm.loadServers()
+        vm.connect()
+        coVerify(exactly = 1) { vpnManager.connect("a", null, SelectionOrigin.AUTOMATIC) }
     }
 
     // ── A1-045 / A2-005: sign-out ordering ────────────────────────────────

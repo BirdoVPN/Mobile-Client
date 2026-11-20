@@ -158,6 +158,49 @@ final class RelayOfferTests: XCTestCase {
         }
     }
 
+    // MARK: - Review N1 of #648 (MR-2518): a failed relay deleted from the fresh list
+
+    /// New York, the user's pick, did not answer; the one retry went to Los
+    /// Angeles, which did not answer either; and the fresh list carries
+    /// neither any more, but has a new, empty relay in Chicago. The list the
+    /// dial was chosen from (`cached`) still says where they were, so the
+    /// offer leaves the United States, as point 4 says, and never names the
+    /// US relay that is left. Without it the country is unknown, and the best
+    /// of the rest, Chicago, would be offered.
+    func testAnOfferForRelaysDeletedFromTheFreshListTakesTheirCountryFromTheCache() {
+        var budget = RelayRetryBudget()
+        XCTAssertEqual(RelayRetry.plan(after: "nyc", in: fleet, origin: .user, budget: &budget)?.server.id, "lax")
+        let fresh = fleet.filter { $0.id != "nyc" && $0.id != "lax" }
+            + [Node(id: "chi", countryCode: "US", city: "Chicago", load: 0)]
+        let offered = RelayRetry.offer(after: "lax", in: fresh, cached: fleet, origin: .user, budget: budget)
+        XCTAssertEqual(offered?.id, "fra", "the best eligible relay outside the United States")
+        XCTAssertNotEqual(offered?.countryCode, "US")
+        // Only the relay the retry left deleted: its country comes from the
+        // retry's own listing, as before.
+        let nycGone = fleet.filter { $0.id != "nyc" } + [Node(id: "chi", countryCode: "US", city: "Chicago", load: 0)]
+        XCTAssertEqual(RelayRetry.offer(after: "lax", in: nycGone, cached: fleet, origin: .user, budget: budget)?.id,
+                       "fra")
+        // A caller that passes no cached list keeps the earlier rule.
+        XCTAssertEqual(RelayRetry.offer(after: "lax", in: fresh, origin: .user, budget: budget)?.id, "chi")
+    }
+
+    /// N1's own case: Stockholm, the user's pick, did not answer, and no retry
+    /// ran (Sweden had one relay in the list the dial was chosen from). The
+    /// fresh list no longer carries Stockholm but has a new Swedish relay. The
+    /// cached list says the pick was in Sweden, so no Swedish relay is offered
+    /// where the retry rule would go (#648 decides what happens instead).
+    func testAnOfferNeverNamesARelayInTheDeletedPicksOwnCountry() {
+        let budget = RelayRetryBudget()
+        let fresh = fleet.filter { $0.id != "sto" }
+            + [Node(id: "got", countryCode: "SE", city: "Gothenburg", load: 0)]
+        let offered = RelayRetry.offer(after: "sto", in: fresh, cached: fleet, origin: .user, budget: budget)
+        XCTAssertNotEqual(offered?.id, "got")
+        XCTAssertNotEqual(offered?.countryCode, "SE")
+        // Unknown even to the cached list: the best of the rest, as before.
+        XCTAssertEqual(RelayRetry.offer(after: "sto", in: fresh, cached: fresh, origin: .user, budget: budget)?.id,
+                       "got")
+    }
+
     func testTheOfferStandsBesideEveryMessageButTheBlockedNetworksOne() {
         // The probe could not run (the generic message), or the relay is not
         // reachable: another location is the way out.
@@ -325,8 +368,8 @@ final class RelayOfferTests: XCTestCase {
         let choosing = lines.filter { $0.contains("RelayRetry.offer(") }
         XCTAssertEqual(choosing.count, 2, "the retry's end and the probe's")
         for line in choosing {
-            XCTAssertTrue(line.contains("RelayRetry.offer(after: failedId, in: fresh, origin: origin, budget: budget)"),
-                          line)
+            XCTAssertTrue(line.contains(
+                "RelayRetry.offer(after: failedId, in: fresh, cached: cached, origin: origin, budget: budget)"), line)
         }
         let finish = slice(vm, from: "private func finishUnansweredRelay(", to: "\n    }\n")
         // MR-2343 round 2: the one other place, the heartbeat's stop when a
@@ -358,5 +401,22 @@ final class RelayOfferTests: XCTestCase {
         let plan = try source("iosApp/Services/RelayRetry.swift")
         XCTAssertTrue(slice(plan, from: "static func plan<", to: "\n    }\n")
             .contains("_ = budget.take(leaving: failedId)"))
+    }
+
+    /// Review N1 of #648 (MR-2518): both ends read the list the failed dial
+    /// was chosen from before the wait (a refresh meanwhile would replace
+    /// it), and the offer looks a deleted relay's country up there.
+    func testBothEndsHandTheOfferTheListTheDialWasChosenFrom() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        for start in ["private func retryOnAnotherRelay() -> Bool {",
+                      "private func diagnoseUnansweredRelay(host: String) {"] {
+            let body = slice(vm, from: start, to: "\n    }\n")
+            let capture = try XCTUnwrap(body.range(of: "let cached = servers\n"), start)
+            let wait = try XCTUnwrap(body.range(of: "Task {"), start)
+            let offer = try XCTUnwrap(body.range(of:
+                "RelayRetry.offer(after: failedId, in: fresh, cached: cached, origin: origin, budget: budget)"), start)
+            XCTAssertLessThan(capture.lowerBound, wait.lowerBound, start)
+            XCTAssertLessThan(wait.lowerBound, offer.lowerBound, start)
+        }
     }
 }

@@ -109,7 +109,10 @@ final class BirdoPQManager: @unchecked Sendable {
     /// nothing in Release — so this is not yet attached to crash metadata; it
     /// is read at first use, and is the value a reporter would attach when one
     /// is added. Said plainly rather than described as crash attribution it is
-    /// not yet.
+    /// not yet. What iOS does keep since MR-2287 is the REASON a PQ connect
+    /// failed: `tryDecapsulate` throws a `PQFailure`, whose code is in the
+    /// message the user sees, and which the opt-in failure counts
+    /// (`FailureCounts`, off until the owner decides) would count.
     static var implementationName: String {
         guard let name = birdo_pq_impl_name() else { return "unknown" }
         return String(cString: name)
@@ -136,10 +139,16 @@ final class BirdoPQManager: @unchecked Sendable {
         }
     }
 
-    /// Try to derive a bilateral PQ PSK from the server response. Returns
-    /// `nil` when the server didn't include a ciphertext (legacy path) or
-    /// this connect made no keypair — caller should then fall back to the
-    /// server-provided classical PSK and call `recordServerProvided()`.
+    /// Derive the bilateral PQ PSK from the server response. Returns `nil`
+    /// only when the session is not post-quantum (`quantumEnabled` false):
+    /// the caller then falls back to the server-provided classical PSK and
+    /// calls `recordServerProvided()`.
+    ///
+    /// Throws `PQFailure` when the server made the session post-quantum and
+    /// no PSK can be derived (no or malformed ciphertext, a bad nonce, no
+    /// pair from this connect, a native error). The caller fails closed with
+    /// that reason. MR-2287: all four used to return the same nil as a
+    /// classical session, and the reason reached only a Debug-build log.
     ///
     /// On success, latches `currentMode == .bilateral`.
     ///
@@ -154,9 +163,10 @@ final class BirdoPQManager: @unchecked Sendable {
         rosenpassPublicKeyBase64: String?,
         rosenpassEndpointBase64: String?,
         publicKey: String?
-    ) -> String? {
+    ) throws -> String? {
         // MR-2117 / MR-2123: take the hand-off before anything can return, so
-        // every path out (the early nils included) wipes its secret key.
+        // every path out (the early returns and throws included) wipes its
+        // secret key.
         let handedOff = queue.sync { () -> Keypair? in
             guard let kp = handOff, let publicKey, kp.pk.base64EncodedString() == publicKey else { return nil }
             handOff = nil
@@ -164,34 +174,42 @@ final class BirdoPQManager: @unchecked Sendable {
         }
         defer { handedOff?.sk.wipe() }
 
-        guard quantumEnabled, let ctB64 = rosenpassPublicKeyBase64 else {
+        // The checks, in order, live in `PQDecapsulationPlan.make` (PQFailure.swift)
+        // so PQFailureTests can pin them:
+        // - the ciphertext must be present, Base64 and ML-KEM-1024's length;
+        // - PFA-M5 parity with Android BirdoPqManager: refuse to derive a PSK
+        //   against a missing/malformed per-connect nonce instead of falling
+        //   back to a constant. ML-KEM gives a fresh shared secret per
+        //   encapsulation so the old constant caused no cryptographic nonce
+        //   reuse, but it dropped per-connect domain separation and let a
+        //   misconfigured/tampered server silently weaken PQ. MR-745: and
+        //   bounded to 1...64 bytes like Android, so the server can never hand
+        //   the native HKDF an empty or unbounded `info`;
+        // - MR-703: the hand-off is the only holder. The server encapsulated to
+        //   the public key THIS connect uploaded; with no pair from that upload
+        //   (consumed, or wiped by a reset) there is nothing to decapsulate
+        //   with, and any other key would derive a PSK the server does not
+        //   have (implicit rejection): refuse here, where the cause is known.
+        let plan: PQDecapsulationPlan
+        do {
+            plan = try PQDecapsulationPlan.make(
+                quantumEnabled: quantumEnabled,
+                ciphertextBase64: rosenpassPublicKeyBase64,
+                nonce: BirdoPQNonce.decode(rosenpassEndpointBase64),
+                ciphertextLength: Int(BIRDO_PQ_CIPHERTEXT_LEN),
+                hasKeypair: handedOff != nil
+            )
+        } catch {
+            debugLog("BirdoPQ: bilateral PQ aborted (%@)", (error as? PQFailure)?.code ?? "unknown")
+            throw error
+        }
+        guard case let .derive(ct, nonce) = plan else {
             return nil
         }
-        guard let ct = Data(base64Encoded: ctB64), ct.count == BIRDO_PQ_CIPHERTEXT_LEN else {
-            debugLog("BirdoPQ: malformed/missing ciphertext")
-            return nil
-        }
-        // PFA-M5 parity with Android BirdoPqManager: refuse to derive a PSK
-        // against a missing/malformed per-connect nonce instead of falling back
-        // to a constant. ML-KEM gives a fresh shared secret per encapsulation so
-        // the old constant caused no cryptographic nonce reuse, but it dropped
-        // per-connect domain separation and let a misconfigured/tampered server
-        // silently weaken PQ. Returning nil fails closed — VPNManager.connect
-        // throws quantumHandshakeFailed when quantum protection is enabled.
-        // MR-745: and bounded to 1...64 bytes like Android, so the server can
-        // never hand the native HKDF an empty or unbounded `info`.
-        guard let nonce = BirdoPQNonce.decode(rosenpassEndpointBase64) else {
-            debugLog("BirdoPQ: server omitted/malformed/out-of-bounds per-connect nonce — bilateral PQ aborted (PFA-M5)")
-            return nil
-        }
-        // MR-703: the hand-off is the only holder. The server encapsulated to
-        // the public key THIS connect uploaded; with no pair from that upload
-        // (consumed, or wiped by a reset) there is nothing to decapsulate with,
-        // and any other key would derive a PSK the server does not have
-        // (implicit rejection): refuse here, where the cause is known.
+        // Unreachable (the plan checked `hasKeypair`), and never the
+        // classical nil: a post-quantum session with no pair fails closed.
         guard let kp = handedOff else {
-            debugLog("BirdoPQ: no keypair from this connect's upload is available — bilateral PQ aborted")
-            return nil
+            throw PQFailure.keypairUnavailable
         }
 
         var psk = [UInt8](repeating: 0, count: Int(BIRDO_PQ_PSK_LEN))
@@ -215,7 +233,7 @@ final class BirdoPQManager: @unchecked Sendable {
             debugLog("BirdoPQ: derive_psk failed rc=\(rc)")
             // Wipe partial output before bailing.
             psk.withUnsafeMutableBufferPointer { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) }
-            return nil
+            throw PQFailure.deriveFailed
         }
         let pskData = Data(psk)
         // Wipe the local copy now that we've encoded it.
