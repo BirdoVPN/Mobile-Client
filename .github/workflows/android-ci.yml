@@ -60,6 +60,9 @@ jobs:
   # (Swift sources, fdroid/, store-assets/, distribution/, contract/, the
   # workflows themselves), so only docs/, *.md and LICENSE are inert for them;
   # iosApp/ is additionally inert for the Android build, lint and CodeQL.
+  #
+  # It also names the month's Gradle cache lineage (MR-2536), which every job
+  # with a setup-gradle step sets as GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX.
   changes:
     name: Detect changes
     runs-on: ubuntu-24.04
@@ -69,13 +72,30 @@ jobs:
     outputs:
       android: ${{ steps.classify.outputs.android }}
       jvm: ${{ steps.classify.outputs.jvm }}
+      gradle_cache_prefix: ${{ steps.gradle-cache.outputs.gradle_cache_prefix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # The PR merge commit plus its first parent (the base tip) is all
-          # the diff needs.
+          # the diff and the cache lineage need.
           fetch-depth: 2
+
+      # MR-2536: the month's Gradle cache lineage. The jobs that save main's
+      # Gradle cache run no cleanup (MR-2511), so a lineage only grows; a new
+      # one starts every month: the committer month of the main commit this
+      # run builds on (for a pull request, its base tip, HEAD^1). The prefix
+      # keys only setup-gradle's Gradle User Home entry; the extracted
+      # entries (dependencies, transforms, ...) are restored only through it,
+      # so they are bounded too, and an old month's stop being read once no
+      # run builds on that month's base; GitHub then evicts them. It runs
+      # right after checkout, before classify: the fail-open (!cancelled())
+      # jobs below run even when classify fails, and must never get an empty
+      # prefix, the unprefixed lineage. Never fails; see the script.
+      - id: gradle-cache
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash .github/scripts/gradle-cache-prefix.sh "$EVENT_NAME"
 
       # .github/scripts/classify-changes.sh diffs with --no-renames: with git's
       # rename detection, `git mv app/src/Foo.kt docs/Foo.md` would list only
@@ -107,6 +127,9 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      # The month's Gradle cache lineage (MR-2536; see `changes`).
+      GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX: ${{ needs.changes.outputs.gradle_cache_prefix }}
     permissions:
       contents: read
     steps:
@@ -236,7 +259,9 @@ jobs:
       # `am instrument` output that decides the emulator job (MR-1410), and
       # the R8 job's worker check, which passes on every real build (MR-2129),
       # and the APK/AAB check that Play Billing's log uploader stays removed
-      # from the manifest, which does too (MR-2379).
+      # from the manifest, which does too (MR-2379), and the month the Gradle
+      # cache lineage turns over, with its wiring into every Gradle job
+      # (MR-2536).
       - name: CI gate self-tests
         run: |
           bash scripts/tests/check_pin_expiry_test.sh
@@ -244,6 +269,7 @@ jobs:
           bash scripts/tests/check_instrumentation_result_test.sh
           python3 scripts/tests/check_r8_keeps_test.py
           python3 scripts/tests/verify_android_release_apk_test.py
+          bash .github/scripts/gradle-cache-prefix-test.sh
 
       # macos.yml, ios.yml, android.yml and fdroid.yml run only on tags and
       # dispatches, so a gate removed from one would first be missed on release
@@ -318,6 +344,8 @@ jobs:
       # job restoring it fetched them again from Maven Central, whose rate
       # limit failed the first one ("Plugin [id:
       # 'org.jetbrains.kotlin.multiplatform' ...] was not found", 2026-11-19).
+      # So an entry only grows; the job's GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX
+      # starts a new lineage every month instead (MR-2536, see `changes`).
       - name: Set up Gradle
         if: ${{ needs.changes.outputs.android != 'false' }}
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
@@ -343,6 +371,9 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.jvm != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      # The month's Gradle cache lineage (MR-2536; see `changes`).
+      GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX: ${{ needs.changes.outputs.gradle_cache_prefix }}
     permissions:
       contents: read
     steps:
@@ -390,6 +421,9 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.android != 'false' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      # The month's Gradle cache lineage (MR-2536; see `changes`).
+      GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX: ${{ needs.changes.outputs.gradle_cache_prefix }}
     permissions:
       security-events: write
       packages: read
@@ -642,6 +676,9 @@ jobs:
     # The emulator job's wait outlasts this (its BUILD_TIMEOUT_MIN): keep in
     # step; .github/scripts/wait-build-apks-test.sh fails when they differ.
     timeout-minutes: 40
+    env:
+      # The month's Gradle cache lineage (MR-2536; see `changes`).
+      GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX: ${{ needs.changes.outputs.gradle_cache_prefix }}
     permissions:
       contents: read
     steps:
@@ -1067,6 +1104,9 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      # The month's Gradle cache lineage (MR-2536; see `changes`).
+      GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX: ${{ needs.changes.outputs.gradle_cache_prefix }}
     permissions:
       contents: read
     steps:
