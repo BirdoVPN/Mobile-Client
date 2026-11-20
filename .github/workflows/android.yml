@@ -696,6 +696,10 @@ jobs:
             `SHA256SUMS.txt`.
 
             > This is a **draft** release - not visible to the public until you click "Publish".
+            > Publish it as a **pre-release**: keep "Set as a pre-release" ticked and leave "Set as the latest
+            > release" unticked. GitHub Latest, the F-Droid repo and the in-app update banner move to it only when
+            > Google Play has it at 100%; github-latest-from-play.yml does that, and sets back any full release
+            > that gets ahead of Play.
           files: |
             release-apk/*.apk
             release-apk/*.apk.sigstore
