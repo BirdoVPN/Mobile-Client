@@ -72,6 +72,18 @@ jobs:
         with:
           persist-credentials: false
 
+      # The month's Gradle cache lineage (MR-2536, see android-ci.yml's
+      # `changes`): the committer month, in UTC, of the commit this run
+      # builds (a schedule or a dispatch, so HEAD: the depth-1 checkout is
+      # enough). Set on "Set up Gradle" below, it restores what Android CI
+      # saved in that month's lineage. Without it setup-gradle would look only
+      # for the unprefixed entries, which nothing saves since MR-2536, and
+      # the recording would run cold. Never fails; see the script.
+      - id: gradle-cache
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash .github/scripts/gradle-cache-prefix.sh "$EVENT_NAME"
+
       - name: Set up JDK
         uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
@@ -85,6 +97,8 @@ jobs:
       # restore.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        env:
+          GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX: ${{ steps.gradle-cache.outputs.gradle_cache_prefix }}
         with:
           cache-read-only: true
 
@@ -144,11 +158,12 @@ jobs:
       # The two -D properties raise Gradle's per-request retry (MR-2405). The
       # :baselineprofile test graph (benchmark-macro-junit4 and what it pulls
       # from Maven Central: wire-runtime, kotlinx-coroutines 1.8.1's POM) is in
-      # no cache this job restores. setup-gradle hands it Android CI's "build"
-      # entry, and this job writes none of its own (read-only above; a monthly
-      # entry would be evicted after 7 days anyway). So every run downloads that
-      # graph, and run 44193060502 met "429 Too Many Requests" from Maven
-      # Central doing so. Gradle's default is 3 tries, 1 s then 2 s apart, after
+      # no cache this job restores. setup-gradle hands it the newest entry
+      # Android CI saved in the month's lineage (MR-2536; as a rule Build
+      # APK's), and this job writes none of its own (read-only above; a
+      # monthly entry would be evicted after 7 days anyway). So every run
+      # downloads that graph, and run 44193060502 met "429 Too Many Requests"
+      # from Maven Central doing so. Gradle's default is 3 tries, 1 s then 2 s apart, after
       # which it DISABLES the repository for the rest of the build: three
       # seconds of rate limiting failed the month's recording. 8 tries starting
       # at 2 s wait up to 254 s in all for one file, long enough to outlast a

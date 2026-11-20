@@ -78,8 +78,24 @@ jobs:
         with:
           persist-credentials: false
           # The PR merge commit plus its first parent (the base tip) is all
-          # the diff needs.
+          # the diff and the cache lineage need.
           fetch-depth: 2
+
+      # MR-2536: the month's Gradle cache lineage. The jobs that save main's
+      # Gradle cache run no cleanup (MR-2511), so a lineage only grows; a new
+      # one starts every month: the committer month of the main commit this
+      # run builds on (for a pull request, its base tip, HEAD^1). The prefix
+      # keys only setup-gradle's Gradle User Home entry; the extracted
+      # entries (dependencies, transforms, ...) are restored only through it,
+      # so they are bounded too, and an old month's stop being read once no
+      # run builds on that month's base; GitHub then evicts them. It runs
+      # right after checkout, before classify: the fail-open (!cancelled())
+      # jobs below run even when classify fails, and must never get an empty
+      # prefix, the unprefixed lineage. Never fails; see the script.
+      - id: gradle-cache
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash .github/scripts/gradle-cache-prefix.sh "$EVENT_NAME"
 
       # .github/scripts/classify-changes.sh diffs with --no-renames: with git's
       # rename detection, `git mv app/src/Foo.kt docs/Foo.md` would list only
@@ -101,16 +117,6 @@ jobs:
             echo "$result"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
-      # MR-2536: the jobs that save main's Gradle cache run no cleanup
-      # (MR-2511), so a lineage only grows. A new one starts every month:
-      # the committer month of the main commit this run builds on (for a pull
-      # request, its base tip, HEAD^1 above). Old months' entries are never
-      # restored again and GitHub evicts them. Never fails; see the script.
-      - id: gradle-cache
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: bash .github/scripts/gradle-cache-prefix.sh "$EVENT_NAME"
 
   # The cheap repository gates run on EVERY pull request, docs-only included:
   # check_pq_docs.sh exists precisely to stop a falsified claim landing in
