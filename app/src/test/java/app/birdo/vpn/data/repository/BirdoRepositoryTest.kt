@@ -533,8 +533,15 @@ class BirdoRepositoryTest {
 
     // ── MR-1771: a refresh 429 is a rate limit, never a verdict on the token ──
 
-    /** A non-2xx /auth/refresh answer, with a Retry-After header when [retryAfter] is set. */
-    private fun refreshAnswer(status: Int, retryAfter: String? = null): Response<RefreshResponse> {
+    /**
+     * A non-2xx /auth/refresh answer, with a Retry-After header when
+     * [retryAfter] is set, and [body] (by default one with no `details`).
+     */
+    private fun refreshAnswer(
+        status: Int,
+        retryAfter: String? = null,
+        body: String = """{"statusCode":$status,"message":"Too many requests"}""",
+    ): Response<RefreshResponse> {
         val raw = okhttp3.Response.Builder()
             .code(status)
             .message("refused")
@@ -542,9 +549,13 @@ class BirdoRepositoryTest {
             .request(okhttp3.Request.Builder().url("https://api.birdo.app/auth/refresh").build())
             .apply { if (retryAfter != null) header("Retry-After", retryAfter) }
             .build()
-        val body = """{"statusCode":$status,"message":"Too many requests"}"""
         return Response.error(body.toResponseBody("application/json".toMediaType()), raw)
     }
+
+    /** web #912's refresh 429 body: refusal()'s `details` with `code` and `retryAfter` seconds. */
+    private fun rateLimitedBody(retryAfterSeconds: Int): String =
+        """{"statusCode":429,"message":"Too many refresh attempts","error":"Too Many Requests","details":""" +
+            """{"code":"rate_limited","retryAfter":$retryAfterSeconds}}"""
 
     /**
      * birdo-web #739 answers every /auth/refresh rate limit with 429 and
@@ -608,61 +619,584 @@ class BirdoRepositoryTest {
         assertEquals("new_refresh", refresh)
     }
 
+    /**
+     * One timing table with Desktop #467 (lead decision L2, 2026-11-19): a
+     * wait the server names is clamped to 1 s .. 60 s (it was 1 s .. 10 min),
+     * and a named 0 is 1 s (it was read as absent: 60 s). A wait that is no
+     * whole number of seconds (junk, a negative, an HTTP date) still falls
+     * back to 60 s.
+     */
     @Test
-    fun `a refresh 429 waits the retryable default when it names no wait, and ten minutes at most`() = runTest {
+    fun `a refresh 429 waits 60 s when it names no wait, 1 s when it names 0, and a minute at most`() = runTest {
         var now = 5_000L
         repository.clock = { now }
         coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
         coEvery { tokenManager.getAccessToken() } returns "expired_access"
         coEvery { api.getProfile() } returns Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
 
-        // No header, or an HTTP date (the device clock is not the server's): the default.
-        for (header in listOf(null, "Wed, 21 Oct 2026 07:28:00 GMT")) {
+        // No header, an HTTP date (the device clock is not the server's), a
+        // negative or junk, and no details.retryAfter: the 60 s default (MR-1771).
+        val headers = listOf(null, "Wed, 21 Oct 2026 07:28:00 GMT", "-5", "soon")
+        for (header in headers) {
             coEvery { api.refreshToken(any()) } returns refreshAnswer(429, retryAfter = header)
             val e = repository.getProfile() as ApiResult.Error
-            assertEquals("Retry-After: $header", RetryAfter.RETRYABLE_DEFAULT_MS, e.retryAfterMs)
-            now += RetryAfter.RETRYABLE_DEFAULT_MS
+            assertEquals("Retry-After: $header", RefreshRetry.RATE_LIMITED_DEFAULT_MS, e.retryAfterMs)
+            assertEquals(60_000L, e.retryAfterMs)
+            now += RefreshRetry.RATE_LIMITED_DEFAULT_MS
         }
-        // A day: clamped, so a wrong header cannot park the session's refresh for hours.
+        // A named 0 is 1 s, in the header (which wins over the body) or in the body.
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(429, retryAfter = "0", body = rateLimitedBody(42))
+        assertEquals(1_000L, (repository.getProfile() as ApiResult.Error).retryAfterMs)
+        now += 999L
+        assertEquals("held for the 1 s", RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = headers.size + 1) { api.refreshToken(any()) }
+        now += 1L
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(429, body = rateLimitedBody(0))
+        assertEquals(1_000L, (repository.getProfile() as ApiResult.Error).retryAfterMs)
+        now += 1_000L
+        // A day, in the header or the body: clamped at a minute, so a wrong
+        // value cannot park the session's refresh.
         coEvery { api.refreshToken(any()) } returns refreshAnswer(429, retryAfter = "86400")
-        assertEquals(RetryAfter.MAX_MS, (repository.getProfile() as ApiResult.Error).retryAfterMs)
+        assertEquals(RefreshRetry.SERVER_WAIT_MAX_MS, (repository.getProfile() as ApiResult.Error).retryAfterMs)
+        assertEquals(60_000L, RefreshRetry.SERVER_WAIT_MAX_MS)
+        now += 60_000L
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(429, body = rateLimitedBody(86_400))
+        assertEquals(60_000L, (repository.getProfile() as ApiResult.Error).retryAfterMs)
         // A clock set back before the hold began ends it rather than stretching it.
         now -= 1_000L
         repository.getProfile()
-        coVerify(exactly = 4) { api.refreshToken(any()) }
+        coVerify(exactly = headers.size + 5) { api.refreshToken(any()) }
         verify(exactly = 0) { tokenManager.clearAll() }
     }
 
+    /**
+     * MR-1771, web #912: a refresh 429 names its wait twice, in the
+     * Retry-After header and in `details.retryAfter`. The header comes first;
+     * a 429 that lost it on the way (a proxy) is still waited out by the body.
+     * Before, the body was never read: a header-less 429 waited 30 s.
+     */
     @Test
-    fun `a refresh 503 with Retry-After is waited out too, and one without it is not held`() = runTest {
+    fun `a refresh 429 with no Retry-After waits details retryAfter, and the header wins when both are sent`() = runTest {
         var now = 0L
         repository.clock = { now }
         coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
-        coEvery { api.refreshToken(any()) } returns refreshAnswer(503, retryAfter = "20")
-        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coEvery { tokenManager.getAccessToken() } returns "expired_access"
+        coEvery { api.getProfile() } returns Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(429, body = rateLimitedBody(42))
+        assertEquals(42_000L, (repository.getProfile() as ApiResult.Error).retryAfterMs)
+        now += 41_999L
         assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
         coVerify(exactly = 1) { api.refreshToken(any()) }
 
-        now += 20_000L
-        coEvery { api.refreshToken(any()) } returns refreshAnswer(503)
+        now += 1L
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(429, retryAfter = "30", body = rateLimitedBody(42))
+        assertEquals(30_000L, (repository.getProfile() as ApiResult.Error).retryAfterMs)
+        coVerify(exactly = 2) { api.refreshToken(any()) }
+        verify(exactly = 0) { tokenManager.clearAll() }
+    }
+
+    /**
+     * MR-2500: a 503 (a session-store outage; once the server half of MR-2500
+     * lands, also a rotation that failed and restored the token) and every
+     * other 5xx keep the token, and the next refresh waits a capped
+     * exponential backoff with jitter, never less than the server's
+     * Retry-After. Before, a 5xx without Retry-After held nothing, so every
+     * request's 401 sent the same token again at once. The steps are
+     * Desktop #467's (lead decision L2): 1 s doubled, capped at 30 s.
+     */
+    @Test
+    fun `a refresh 503 keeps the session and backs off, never sooner than its Retry-After`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        repository.jitter = { 0.0 } // the lower edge: half of each ceiling
+        coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { tokenManager.getAccessToken() } returns "expired_access"
+        coEvery { api.getProfile() } returns Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+
+        // The server's 10 s outweighs the first backoff (0.5 s at this jitter).
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(503, retryAfter = "10")
+        val first = repository.getProfile() as ApiResult.Error
+        assertNotEquals("a 401 here is what signs the user out", 401, first.code)
+        assertEquals(10_000L, first.retryAfterMs)
+        now += 9_999L
         assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+        now += 1L
+
+        // No Retry-After: the 2nd to 6th failure in a row wait 1, 2, 4, 8 and
+        // 15 s, and the 7th 15 s again: half of the 30 s cap.
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(503)
+        val steps = listOf(2 to 1_000L, 3 to 2_000L, 4 to 4_000L, 5 to 8_000L, 6 to 15_000L, 7 to 15_000L)
+        for ((sent, wait) in steps) {
+            val e = repository.getProfile() as ApiResult.Error
+            assertEquals("failure $sent", wait, e.retryAfterMs)
+            now += wait - 1
+            assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+            coVerify(exactly = sent) { api.refreshToken(any()) }
+            now += 1L
+        }
+        verify(exactly = 0) { tokenManager.clearAll() }
+        verify(exactly = 0) { tokenManager.setTokens(any(), any()) }
+        verify(exactly = 0) { tokenManager.setAccessToken(any()) }
+
+        // A rotated pair starts the backoff over: the next failure waits the first step.
+        coEvery { api.refreshToken(any()) } returns Response.success(
+            RefreshResponse(accessToken = "new_access", refreshToken = "new_refresh", expiresIn = 3600),
+        )
+        assertEquals(RefreshOutcome.SUCCESS, repository.refreshToken())
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(503)
+        assertEquals(500L, (repository.getProfile() as ApiResult.Error).retryAfterMs)
+    }
+
+    /**
+     * L2: a 5xx's Retry-After is the backoff's floor, clamped like a 429's: a
+     * 0 is 1 s (longer than the first step's 0.5 s here), and a day is a
+     * minute (it was ten).
+     */
+    @Test
+    fun `a refresh 5xx's Retry-After floor is 1 s for a 0 and a minute at most`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        repository.jitter = { 0.0 }
+        coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { tokenManager.getAccessToken() } returns "expired_access"
+        coEvery { api.getProfile() } returns Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(503, retryAfter = "0")
+        assertEquals(1_000L, (repository.getProfile() as ApiResult.Error).retryAfterMs)
+        now += 1_000L
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(503, retryAfter = "86400")
+        assertEquals(60_000L, (repository.getProfile() as ApiResult.Error).retryAfterMs)
+        now += 59_999L
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = 2) { api.refreshToken(any()) }
+        now += 1L
         assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
         coVerify(exactly = 3) { api.refreshToken(any()) }
         verify(exactly = 0) { tokenManager.clearAll() }
     }
 
     /**
-     * Unchanged by MR-1771 (lead decision 2026-10-23): a refresh 403 still
-     * ends the session — the caller gets "Session expired" — but leaves the
-     * stored tokens alone, as before.
+     * MR-1771: a refresh 403 keeps the session. It used to end it: the caller
+     * got "Session expired" (a 401) and checkSession signed the user out,
+     * leaving the tokens on disk. A 403 here is not a verdict on the token —
+     * an infrastructure block answers it too — so the tokens stay, the caller
+     * gets a transient failure (lead, 2026-11-19: never a 403, which reads as
+     * a server refusing the relay), and the refresh backs off.
      */
     @Test
-    fun `a refresh 403 still signs out and leaves the tokens`() = runTest {
+    fun `a refresh 403 keeps the session and the tokens, surfaces as transient and backs off`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        repository.jitter = { 0.0 }
         coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { tokenManager.getAccessToken() } returns "expired_access"
+        coEvery { api.getProfile() } returns Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
         coEvery { api.refreshToken(any()) } returns refreshAnswer(403)
 
-        assertEquals(RefreshOutcome.UNAUTHORIZED, repository.refreshToken())
+        val e = repository.getProfile() as ApiResult.Error
+        assertEquals(503, e.code)
+        assertEquals(FailureReason.SERVER_UNAVAILABLE, e.reason)
+        assertEquals(500L, e.retryAfterMs)
         verify(exactly = 0) { tokenManager.clearAll() }
+
+        now += 499L
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+        now += 1L
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = 2) { api.refreshToken(any()) }
+        verify(exactly = 0) { tokenManager.clearAll() }
+    }
+
+    /**
+     * Lead decision 2026-11-19 (MR-1771): a token refresh that failed —
+     * refused (403), rate limited (429), unavailable (503) or unanswered — must
+     * never make Auto-Connect dial another server. The best-server fallback
+     * (VpnViewModel.fallsBackToQuickConnect) is for a relay that is gone or
+     * out of the plan's reach (a 403/404 from /vpn/connect itself), not for
+     * auth. Before, a refused refresh came back as a 401 (a sign-out); a 403
+     * would have tripped the fallback.
+     */
+    @Test
+    fun `a connect whose refresh failed never triggers the Auto-Connect best-server fallback`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { tokenManager.getAccessToken() } returns "expired_access"
+        coEvery { api.connect(any()) } returns
+            Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+        val failures: List<() -> Response<RefreshResponse>> = listOf(
+            { refreshAnswer(403) },
+            { refreshAnswer(429, retryAfter = "60") },
+            { refreshAnswer(503) },
+            { throw IOException("timeout") },
+        )
+
+        for ((i, failure) in failures.withIndex()) {
+            coEvery { api.refreshToken(any()) } coAnswers { failure() }
+            val e = repository.connectVpn("server_1") as ApiResult.Error
+            assertFalse("failure $i: code ${e.code}", app.birdo.vpn.ui.viewmodel.VpnViewModel.fallsBackToQuickConnect(e))
+            assertNotEquals("failure $i signs out", 401, e.code)
+            // ...nor while its wait runs and the refresh is held.
+            val held = repository.connectVpn("server_1") as ApiResult.Error
+            assertFalse("held $i: code ${held.code}", app.birdo.vpn.ui.viewmodel.VpnViewModel.fallsBackToQuickConnect(held))
+            now += RefreshRetry.SERVER_WAIT_MAX_MS // past the hold, for the next kind
+        }
+        coVerify(exactly = failures.size) { api.refreshToken(any()) }
+        verify(exactly = 0) { tokenManager.clearAll() }
+    }
+
+    /**
+     * Lead decision 2026-11-19 (MR-1771 / MR-2500): no background timer. A
+     * held or backing-off refresh is retried when the app comes to the
+     * foreground (AuthViewModel.onAppForeground), through the same
+     * single-flight path, with the same token, and only once its wait is over.
+     * With no retry owed, the foreground sends nothing.
+     */
+    @Test
+    fun `the foreground retries a held refresh once its wait is over, and only then`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        repository.jitter = { 0.0 }
+        var refresh: String? = "live_refresh"
+        every { tokenManager.getAccessToken() } returns "expired_access"
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.setTokens(any(), any()) } answers { refresh = secondArg() }
+        val presented = mutableListOf<String>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            presented += firstArg<RefreshRequest>().refreshToken
+            refreshAnswer(503, retryAfter = "10")
+        }
+
+        // Nothing owed: the foreground sends nothing.
+        assertNull(repository.retryHeldRefresh())
+        coVerify(exactly = 0) { api.refreshToken(any()) }
+
+        // A 503 with Retry-After 10: owed, but held for 10 s.
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        now += 9_999L
+        assertNull("still held: the foreground must not send early", repository.retryHeldRefresh())
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+
+        // The wait is over: the foreground retries with the same token.
+        now += 1L
+        coEvery { api.refreshToken(any()) } coAnswers {
+            presented += firstArg<RefreshRequest>().refreshToken
+            Response.success(RefreshResponse(accessToken = "new_access", refreshToken = "new_refresh", expiresIn = 3600))
+        }
+        assertEquals(RefreshOutcome.SUCCESS, repository.retryHeldRefresh())
+        assertEquals(listOf("live_refresh", "live_refresh"), presented)
+        assertEquals("new_refresh", refresh)
+
+        // Rotated: nothing owed any more.
+        now += RefreshRetry.SERVER_WAIT_MAX_MS
+        assertNull(repository.retryHeldRefresh())
+        coVerify(exactly = 2) { api.refreshToken(any()) }
+    }
+
+    /** MR-1771 / MR-2500: of everything /auth/refresh can answer, only a 401 ends the session. */
+    @Test
+    fun `only a refresh 401 clears the tokens or reaches the caller as a 401`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        var refresh: String? = "live_refresh"
+        every { tokenManager.getAccessToken() } returns "expired_access"
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.clearAll() } answers { refresh = null }
+        coEvery { api.getProfile() } returns Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+
+        for (status in listOf(400, 403, 404, 408, 409, 418, 429, 500, 502, 503, 504)) {
+            coEvery { api.refreshToken(any()) } returns refreshAnswer(status)
+            val e = repository.getProfile() as ApiResult.Error
+            assertNotEquals("refresh $status reached the caller as a 401", 401, e.code)
+            assertEquals("refresh $status cleared the token", "live_refresh", refresh)
+            now += RefreshRetry.SERVER_WAIT_MAX_MS // past any hold
+        }
+        coEvery { api.refreshToken(any()) } throws IOException("timeout")
+        assertNotEquals(401, (repository.getProfile() as ApiResult.Error).code)
+        verify(exactly = 0) { tokenManager.clearAll() }
+
+        now += RefreshRetry.SERVER_WAIT_MAX_MS
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(401)
+        assertEquals(401, (repository.getProfile() as ApiResult.Error).code)
+        assertNull(refresh)
+        verify(exactly = 1) { tokenManager.clearAll() }
+    }
+
+    /**
+     * Single-flight holds for a refresh that FAILED too (MR-1771, MR-2500).
+     * The cold start's four requests all get a 401; the first refresh is on
+     * the wire while the others queue behind it. Whatever it got (a 429, a
+     * 503, no answer), the queued callers share its outcome: one refresh on
+     * the wire, and the session kept for all of them. Before, a 503 without
+     * Retry-After or a timeout held nothing, so each queued caller sent the
+     * same token again.
+     */
+    @Test
+    fun `callers queued behind a refresh that failed share its outcome and send nothing`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        repository.jitter = { 0.0 }
+        every { tokenManager.getAccessToken() } returns "expired_access"
+        every { tokenManager.getRefreshToken() } returns "live_refresh"
+        fun <T> unauthorized(): Response<T> =
+            Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+        coEvery { api.getProfile() } coAnswers { unauthorized() }
+        coEvery { api.getSubscription() } coAnswers { unauthorized() }
+        coEvery { api.getServers() } coAnswers { unauthorized() }
+        coEvery { api.checkAppUpdate(any()) } coAnswers { unauthorized() }
+        val failures: List<() -> Response<RefreshResponse>> = listOf(
+            { refreshAnswer(429, retryAfter = "60") },
+            { refreshAnswer(503) },
+            { throw IOException("timeout") },
+        )
+
+        for ((i, failure) in failures.withIndex()) {
+            coEvery { api.refreshToken(any()) } coAnswers {
+                delay(100) // the others pile up on the lock meanwhile
+                failure()
+            }
+            val results = listOf(
+                async { repository.getProfile() },
+                async { repository.getSubscription(forceRefresh = true) },
+                async { repository.getServers(forceRefresh = true) },
+                async { repository.checkAppUpdate() },
+            ).awaitAll()
+
+            coVerify(exactly = i + 1) { api.refreshToken(any()) }
+            assertTrue("failure $i: $results", results.all { it is ApiResult.Error && it.code != 401 })
+            now += RefreshRetry.SERVER_WAIT_MAX_MS // past the hold, for the next kind
+        }
+        verify(exactly = 0) { tokenManager.clearAll() }
+    }
+
+    /**
+     * MR-2500 / MR-1771: whatever kept the session, the retry presents the
+     * SAME refresh token. A 503, then a 429, then no answer, then the server
+     * rotates: four refreshes, each presenting the stored token, nothing
+     * cleared or rewritten until the pair arrives, and then the pair stored.
+     */
+    @Test
+    fun `refreshes retried after a 503, a 429 and a timeout present the same token and store the pair`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        var access: String? = "expired_access"
+        var refresh: String? = "live_refresh"
+        every { tokenManager.getAccessToken() } answers { access }
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.clearAll() } answers { access = null; refresh = null }
+        every { tokenManager.setTokens(any(), any()) } answers { access = firstArg(); refresh = secondArg() }
+        every { tokenManager.setAccessToken(any()) } answers { access = firstArg() }
+        val presented = mutableListOf<String>()
+        val script = ArrayDeque<() -> Response<RefreshResponse>>(
+            listOf(
+                { refreshAnswer(503) },
+                { refreshAnswer(429, body = rateLimitedBody(30)) },
+                { throw IOException("timeout") },
+                { Response.success(RefreshResponse(accessToken = "new_access", refreshToken = "new_refresh", expiresIn = 3600)) },
+            ),
+        )
+        coEvery { api.refreshToken(any()) } coAnswers {
+            presented += firstArg<RefreshRequest>().refreshToken
+            script.removeFirst().invoke()
+        }
+
+        repeat(3) {
+            assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+            assertEquals("live_refresh", refresh)
+            assertEquals("expired_access", access)
+            now += RefreshRetry.SERVER_WAIT_MAX_MS // past the hold
+        }
+        assertEquals(RefreshOutcome.SUCCESS, repository.refreshToken())
+
+        assertEquals(List(4) { "live_refresh" }, presented)
+        assertEquals("new_access", access)
+        assertEquals("new_refresh", refresh)
+        verify(exactly = 0) { tokenManager.clearAll() }
+        verify(exactly = 1) { tokenManager.setTokens("new_access", "new_refresh") }
+    }
+
+    /**
+     * Lead decision L2 (2026-11-19): a 426 (below the version floor), a
+     * TLS-pin failure and a 2xx that cannot be read keep the session and HOLD.
+     * The caller is told (a transient failure with its wait, never a 401), the
+     * tokens stay, and nothing sends the token again until the hold is over:
+     * not the requests behind it, not the foreground. No retry loop, and no
+     * timer.
+     */
+    @Test
+    fun `a refresh 426, a pin failure and an unreadable 2xx keep the session and hold, with no retry loop`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        repository.jitter = { 0.0 }
+        var refresh: String? = "live_refresh"
+        every { tokenManager.getAccessToken() } returns "expired_access"
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.clearAll() } answers { refresh = null }
+        coEvery { api.getProfile() } returns Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+        val answers: List<Pair<String, () -> Response<RefreshResponse>>> = listOf(
+            "426" to { refreshAnswer(426, body = """{"statusCode":426,"message":"Update required"}""") },
+            "pin failure" to { throw javax.net.ssl.SSLPeerUnverifiedException("Certificate pinning failure") },
+            "2xx with no body" to { Response.success<RefreshResponse>(null) },
+            "2xx that would not parse" to { throw kotlinx.serialization.SerializationException("Unexpected JSON token") },
+        )
+
+        for ((i, kindAndAnswer) in answers.withIndex()) {
+            val (kind, answer) = kindAndAnswer
+            coEvery { api.refreshToken(any()) } coAnswers { answer() }
+            val e = repository.getProfile() as ApiResult.Error
+            assertNotEquals("$kind reached the caller as a 401", 401, e.code)
+            assertNotNull("$kind: the caller is not told the hold", e.retryAfterMs)
+            // Held: the requests behind it and the foreground send nothing.
+            repeat(3) { assertEquals("$kind", RefreshOutcome.TRANSIENT, repository.refreshToken()) }
+            assertNull("$kind: the foreground retried inside the hold", repository.retryHeldRefresh())
+            coVerify(exactly = i + 1) { api.refreshToken(any()) }
+            assertEquals("$kind cleared the token", "live_refresh", refresh)
+            now += RefreshRetry.SERVER_WAIT_MAX_MS // past the hold, for the next kind
+        }
+        verify(exactly = 0) { tokenManager.clearAll() }
+        verify(exactly = 0) { tokenManager.setTokens(any(), any()) }
+        verify(exactly = 0) { tokenManager.setAccessToken(any()) }
+    }
+
+    /**
+     * Builds a held refresh on the session in [refresh]: three 503s in a row
+     * (the backoff three steps deep), then a 429 that holds it for a minute
+     * and leaves a retry owed. The clock ([advance]) stays inside that minute.
+     */
+    private suspend fun holdTheRefresh(advance: (Long) -> Unit) {
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(503)
+        repeat(3) {
+            assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+            advance(RefreshRetry.BACKOFF_CAP_MS)
+        }
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(429, retryAfter = "60")
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        advance(1_000L)
+        assertEquals("the old session's refresh is held", RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = 4) { api.refreshToken(any()) }
+    }
+
+    /**
+     * The new session after [holdTheRefresh], still inside the old hold: its
+     * foreground owes nothing (nothing sent), its first refresh is sent with
+     * its own token, and that refresh's failure waits the first backoff step
+     * (0.5 s at this jitter), not the old session's fourth (4 s).
+     */
+    private suspend fun assertTheNewSessionIsNotHeld() {
+        assertNull("the old session's retry is still owed", repository.retryHeldRefresh())
+        coVerify(exactly = 4) { api.refreshToken(any()) }
+        val presented = mutableListOf<String>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            presented += firstArg<RefreshRequest>().refreshToken
+            refreshAnswer(503)
+        }
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = 5) { api.refreshToken(any()) }
+        assertEquals(listOf("new_refresh"), presented)
+        assertEquals(500L, (repository.getProfile() as ApiResult.Error).retryAfterMs)
+        coVerify(exactly = 5) { api.refreshToken(any()) }
+    }
+
+    /**
+     * L1 (review of #653): the hold, the backoff count and the retry owed are
+     * the session's, and a sign-out forgets them, as Desktop's
+     * `forget_session` does. Before, a sign-out inside a hold left the next
+     * sign-in's refreshes held, its foreground spent a rotation of the new
+     * pair, and its first failure waited the old session's next step.
+     */
+    @Test
+    fun `a held refresh does not survive a sign-out and the next sign-in`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        repository.jitter = { 0.0 }
+        var access: String? = "old_access"
+        var refresh: String? = "old_refresh"
+        every { tokenManager.getAccessToken() } answers { access }
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.clearAll() } answers { access = null; refresh = null }
+        every { tokenManager.setTokens(any(), any()) } answers { access = firstArg(); refresh = secondArg() }
+        coEvery { api.getProfile() } returns Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+        coEvery { api.logout() } returns Response.success(Unit)
+        coEvery { api.login(any()) } returns Response.success(
+            LoginResponse(ok = true, tokens = TokenPair("new_access", "new_refresh")),
+        )
+        holdTheRefresh { now += it }
+
+        repository.logout()
+        assertNull("signed out", refresh)
+        repository.login("next@test.com", "pass123")
+
+        assertTheNewSessionIsNotHeld()
+        verify(exactly = 1) { tokenManager.clearAll() } // logout's own
+    }
+
+    /** L1: the same for a sign-in with no sign-out before it (another account, or the same one again). */
+    @Test
+    fun `a held refresh does not survive a sign-in without a sign-out`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        repository.jitter = { 0.0 }
+        var access: String? = "old_access"
+        var refresh: String? = "old_refresh"
+        every { tokenManager.getAccessToken() } answers { access }
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.setTokens(any(), any()) } answers { access = firstArg(); refresh = secondArg() }
+        coEvery { api.getProfile() } returns Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+        coEvery { api.login(any()) } returns Response.success(
+            LoginResponse(ok = true, tokens = TokenPair("new_access", "new_refresh")),
+        )
+        holdTheRefresh { now += it }
+
+        repository.login("next@test.com", "pass123")
+
+        assertTheNewSessionIsNotHeld()
+        verify(exactly = 0) { tokenManager.clearAll() }
+    }
+
+    /**
+     * L1: a refresh outlives its caller, so a sign-out and a sign-in can land
+     * while it is on the wire. Its 503 then answers for the OLD session and
+     * must not hold the new one, nor leave a retry owed for it.
+     */
+    @Test
+    fun `a refresh that outlived a sign-out and sign-in leaves no hold on the new session`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        var access: String? = "old_access"
+        var refresh: String? = "old_refresh"
+        every { tokenManager.getAccessToken() } answers { access }
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.clearAll() } answers { access = null; refresh = null }
+        every { tokenManager.setTokens(any(), any()) } answers { access = firstArg(); refresh = secondArg() }
+        coEvery { api.logout() } returns Response.success(Unit)
+        coEvery { api.login(any()) } returns Response.success(
+            LoginResponse(ok = true, tokens = TokenPair("new_access", "new_refresh")),
+        )
+        val answer = CompletableDeferred<Unit>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            answer.await()
+            refreshAnswer(503, retryAfter = "30")
+        }
+
+        val caller = launch { repository.refreshToken() }
+        runCurrent()
+        caller.cancel()
+        repository.logout()
+        repository.login("next@test.com", "pass123")
+        answer.complete(Unit)
+        runCurrent()
+
+        now += 1_000L
+        assertNull("the old session's 503 left a retry owed", repository.retryHeldRefresh())
+        coEvery { api.refreshToken(any()) } returns Response.success(
+            RefreshResponse(accessToken = "rotated_access", refreshToken = "rotated_refresh", expiresIn = 3600),
+        )
+        assertEquals("the old session's 503 held the new one", RefreshOutcome.SUCCESS, repository.refreshToken())
+        coVerify(exactly = 2) { api.refreshToken(any()) }
+        assertEquals("rotated_refresh", refresh)
     }
 
     // ── Logout ──────────────────────────────────────────────────

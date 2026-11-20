@@ -196,6 +196,18 @@ fun BirdoNavGraph(
         if (authState.isLoggedIn && hasConsented) billingViewModel.onSignedIn()
     }
 
+    // MR-1771 / MR-2500: coming back to the foreground retries a token refresh
+    // the server held or that is backing off, once its wait is over. No timer:
+    // an app in the background sends nothing.
+    val foregroundOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(foregroundOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_START) authViewModel.onAppForeground()
+        }
+        foregroundOwner.lifecycle.addObserver(observer)
+        onDispose { foregroundOwner.lifecycle.removeObserver(observer) }
+    }
+
     // Signed out, for any reason (the button, a deletion, a dead session):
     // drop the previous account's servers, plan and selection so the next
     // account on this device never sees them (A2-003), and the billing rail's
