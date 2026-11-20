@@ -127,8 +127,6 @@ fun HomeScreen(
     pendingDeletionCancellable: Boolean = pendingDeletion != null,
     /** MR-2378: what the confirmation's "Cancel deletion" did. */
     holdCancelNote: app.birdo.vpn.ui.viewmodel.HoldCancelNote? = null,
-    /** MR-2378: a sign-out stopped after its cancel-first; the confirmation stays. */
-    signOutReconsidered: Int = 0,
     /** MR-2378: a sign-out has started; the confirmation cannot be dismissed meanwhile. */
     isSigningOut: Boolean = false,
 ) {
@@ -634,7 +632,6 @@ fun HomeScreen(
             isChecking = isCheckingBeforeSignOut,
             pendingDeletionCancellable = pendingDeletionCancellable,
             holdCancelNote = holdCancelNote,
-            signOutReconsidered = signOutReconsidered,
             isSigningOut = isSigningOut,
         )
     }

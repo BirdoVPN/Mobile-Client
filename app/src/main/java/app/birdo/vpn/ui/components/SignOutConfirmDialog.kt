@@ -11,11 +11,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -108,29 +103,27 @@ fun SignOutConfirmDialog(
     signOutBlockedReason: String? = null,
     onSignOutAnyway: (() -> Unit)? = null,
     /**
-     * MR-2378: changes when a sign-out stopped after its cancel-first (the
-     * list still names a hold, or could not be read): the buttons come back.
-     */
-    signOutReconsidered: Int = 0,
-    /**
      * MR-2378: a sign-out has started (its cancel-first, the read after it,
      * or the sign-out itself). The dialog cannot be dismissed meanwhile, as
      * on iOS #624: a cancel that landed after "Stay signed in" would leave the
      * user believing the deletion still scheduled. It is bounded (10 s cancel,
      * 3 s read), then the dialog says what happened.
+     *
+     * MR-2398: the ONLY source of "signing out" here, from the view model
+     * ([app.birdo.vpn.ui.viewmodel.AuthUiState.isSigningOut], which
+     * [app.birdo.vpn.ui.viewmodel.AuthViewModel.signOut] and `signOutAnyway`
+     * raise in the same step as the tap). The dialog kept its own saved copy:
+     * after process death the copy came back "signing out" under a fresh view
+     * model with nothing running, so the restored dialog could not be
+     * dismissed and its spinner never ended.
      */
     isSigningOut: Boolean = false,
 ) {
     val palette = BirdoColors.current
-    var signingOut by rememberSaveable { mutableStateOf(false) }
-    // The sign-out stopped (its cancel-first failed, or the list read after it
-    // did not say that nothing waits): the buttons come back.
-    LaunchedEffect(signOutBlockedReason, signOutReconsidered) {
-        if (signOutBlockedReason != null || signOutReconsidered > 0) signingOut = false
-    }
+    val signingOut = isSigningOut
     val blocked = signOutBlockedReason != null && !signingOut
     val checking = isChecking && !signingOut
-    val dismissible = !signingOut && !isSigningOut
+    val dismissible = !signingOut
     BirdoAlertDialog(
         onDismissRequest = { if (dismissible) onDismiss() },
         containerColor = palette.surfaceElevated,
@@ -222,10 +215,7 @@ fun SignOutConfirmDialog(
             TextButton(
                 // Not while a "Cancel deletion" is out: one cancel at a time.
                 enabled = !signingOut && !checking && !isCancellingPendingDeletion,
-                onClick = {
-                    signingOut = true
-                    onConfirm()
-                },
+                onClick = onConfirm,
             ) {
                 if (signingOut) {
                     Row(
@@ -262,12 +252,7 @@ fun SignOutConfirmDialog(
                     Text(stringResource(R.string.sign_out_stay_signed_in), color = palette.onSurfaceMuted)
                 }
                 if (blocked && onSignOutAnyway != null) {
-                    TextButton(
-                        onClick = {
-                            signingOut = true
-                            onSignOutAnyway()
-                        },
-                    ) {
+                    TextButton(onClick = onSignOutAnyway) {
                         Text(stringResource(R.string.sign_out_anyway), color = BirdoRed)
                     }
                 }
