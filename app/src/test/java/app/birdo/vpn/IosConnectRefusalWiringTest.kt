@@ -141,10 +141,12 @@ class IosConnectRefusalWiringTest {
         val chunks = functionChunks(viewModel)
         assertTrue("$viewModelPath: found only ${chunks.size} functions — the splitter is broken", chunks.size > 20)
         val dialChunks = chunks.filter { dialCall.containsMatchIn(it) }
+        // connect, connectMultiHop, rebuildLive, and (MR-2525) the heartbeat's
+        // in-place redial, attemptRedialInPlace.
         assertEquals(
             "$viewModelPath: functions that call api.getConnectConfig( / api.getMultiHopConfig( " +
-                "(expected 3) — a new one must record the hold too",
-            3,
+                "(expected 4) — a new one must record the hold too",
+            4,
             dialChunks.size,
         )
         val recording = dialChunks.count { chunk ->
@@ -263,7 +265,7 @@ class IosConnectRefusalWiringTest {
     @Test
     fun `every function that dials a connect route records the typed refusal beside the hold`() {
         val dialChunks = functionChunks(viewModel).filter { dialCall.containsMatchIn(it) }
-        assertEquals("$viewModelPath: dial functions", 3, dialChunks.size)
+        assertEquals("$viewModelPath: dial functions", 4, dialChunks.size)
         val recording = dialChunks.count { chunk ->
             val hold = chunk.indexOf(holdCall)
             val note = chunk.indexOf(noteCall, maxOf(hold, 0))

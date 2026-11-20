@@ -336,9 +336,14 @@ enum HeartbeatRedialStep: Equatable, CaseIterable, Sendable {
     /// The session was not up and settled when the outcome arrived (a
     /// reassert, a re-dial): nothing to swap onto. Nothing minted.
     case sessionNotUp
-    /// `/vpn/connect` (or the Multi-Hop one) failed, or did not answer within
-    /// `HeartbeatRedial.mintCap`: the old path is gone too. Nothing minted.
+    /// `/vpn/connect` (or the Multi-Hop one) got no answer (a transport
+    /// failure, or nothing within `HeartbeatRedial.mintCap`): the old path is
+    /// gone too. Nothing minted.
     case mintFailed
+    /// The server ANSWERED the request with a refusal or an error. That answer
+    /// is the outcome, as it would be for the disconnect-first path's own
+    /// dial; the caller has recorded and shown it. Nothing minted.
+    case mintRefused
     /// The user disconnected, signed out or dialled while the attempt was out.
     /// A key may have been minted.
     case userActed
@@ -364,6 +369,9 @@ enum HeartbeatRedialDirective: Equatable, Sendable {
     case commit
     /// The user acted meanwhile and owns the state: change nothing else.
     case standDown(releaseNewKey: Bool)
+    /// The server refused the new key: the session, whose own key is gone,
+    /// ends with the server's words. Nothing is asked again.
+    case stopAfterRefusal
     /// The pre-MR-2525 path: stop, wait for the teardown, dial again.
     case disconnectFirst(releaseNewKey: Bool)
 }
@@ -377,12 +385,22 @@ enum HeartbeatRedial {
     /// The one table. Only a proven new peer is kept; a key minted for an
     /// attempt that is not kept is always released (DELETE), so it cannot
     /// hold the account's slot.
+    /// Whether a failed request was ANSWERED (a refusal, an HTTP error, an
+    /// unreadable body) rather than lost on the way (a transport failure, a
+    /// cancelled TLS pin check, the cap). Only an unanswered request is
+    /// worth the disconnect-first path's second dial.
+    static func serverAnswered(_ error: Error) -> Bool {
+        !(error is CancellationError || error is URLError)
+    }
+
     static func directive(after step: HeartbeatRedialStep) -> HeartbeatRedialDirective {
         switch step {
         case .newPeerHandshaked:
             return .commit
         case .userActed:
             return .standDown(releaseNewKey: true)
+        case .mintRefused:
+            return .stopAfterRefusal
         case .sessionNotUp, .mintFailed:
             return .disconnectFirst(releaseNewKey: false)
         case .routeNotConfirmed, .sessionGoneBeforeSwap, .swapFailed, .newPeerSilent:

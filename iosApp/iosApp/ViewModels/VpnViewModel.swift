@@ -2626,13 +2626,13 @@ final class VpnViewModel: ObservableObject {
     /// 4. The new peer's own bytes prove it (`awaitNewPeerHandshake`).
     ///
     /// Not kept, the new key is released and the caller runs its
-    /// disconnect-first path. The user acting meanwhile wins: the key is
+    /// disconnect-first path. A server that ANSWERED the request with a
+    /// refusal or an error has given the outcome, as it would to that path's
+    /// own dial: the session ends with its words (`stopAfterRefusedRedial`),
+    /// and nothing is asked again. The user acting meanwhile wins: the key is
     /// released and nothing else changes.
     private func redialInPlace(_ target: RebuildTarget, generation: Int) async -> HeartbeatRedialDirective {
         let attempt = await attemptRedialInPlace(target, generation: generation)
-        // MR-2374: the attempt's PQ pair ends with the attempt (a no-op once
-        // the swap has decapsulated it).
-        if let minted = attempt.minted { BirdoPQManager.shared.discardHandOff(publicKey: minted.pqUploadedKey) }
         isRebuildingLive = false
         let directive = HeartbeatRedial.directive(after: attempt.step)
         // The step and the directive only: no key ids, no hosts.
@@ -2641,6 +2641,8 @@ final class VpnViewModel: ObservableObject {
         switch directive {
         case .commit:
             if let minted = attempt.minted { commitRedial(target, config: minted, route: attempt.route) }
+        case .stopAfterRefusal:
+            stopAfterRefusedRedial()
         case .standDown(let releaseNewKey), .disconnectFirst(let releaseNewKey):
             if releaseNewKey, let newId = attempt.minted?.keyId {
                 release(keyId: newId)
@@ -2665,13 +2667,57 @@ final class VpnViewModel: ObservableObject {
     /// or a sign-out bumps `relayRetryGeneration`) ends it as `.userActed`.
     private func attemptRedialInPlace(_ target: RebuildTarget, generation: Int) async -> RedialAttempt {
         guard isConnected, !isConnecting else { return RedialAttempt(step: .sessionNotUp) }
-        guard let config = await mintForRedial(target) else {
-            return RedialAttempt(step: generation == relayRetryGeneration ? .mintFailed : .userActed)
+        // 1. The request runs in a task of its own so the cap can cancel it,
+        //    which also ends its PQ pair (`getConnectConfig`'s own defer).
+        let api = self.api
+        let ids: (first: String, exit: String?)
+        switch target {
+        case .single(let server): ids = (server.id, nil)
+        case .multiHop(let entry, let exit): ids = (entry.id, exit.id)
         }
+        let mint = RedialMint()
+        let work = Task { @MainActor in
+            do {
+                if let exitId = ids.exit {
+                    mint.config = try await api.getMultiHopConfig(entryId: ids.first, exitId: exitId)
+                } else {
+                    mint.config = try await api.getConnectConfig(serverId: ids.first)
+                }
+            } catch {
+                mint.error = error
+            }
+        }
+        let cap = Task {
+            try? await Task.sleep(for: HeartbeatRedial.mintCap)
+            work.cancel()
+        }
+        await work.value
+        cap.cancel()
+        guard let config = mint.config else {
+            guard generation == relayRetryGeneration else { return RedialAttempt(step: .userActed) }
+            // No answer (the old path is gone too, or the cap): the
+            // disconnect-first path dials again, outside it.
+            guard let error = mint.error, HeartbeatRedial.serverAnswered(error) else {
+                return RedialAttempt(step: .mintFailed)
+            }
+            // The server answered: recorded as every dial records it (MR-1948,
+            // MR-1661, MR-139, MR-2287), and that answer is the outcome.
+            holdAutomaticDials(after: error)
+            showUpdateRequired(after: error)
+            noteRefusal(after: error)
+            noteDialFailure(after: error)
+            self.error = error.localizedDescription
+            reportUnauthorized(error)
+            return RedialAttempt(step: .mintRefused)
+        }
+        // MR-2374: the attempt's PQ pair ends with the attempt (a no-op once
+        // the swap has decapsulated it).
+        defer { BirdoPQManager.shared.discardHandOff(publicKey: config.pqUploadedKey) }
         func ended(_ step: HeartbeatRedialStep, route: String? = nil) -> RedialAttempt {
             RedialAttempt(step: generation == relayRetryGeneration ? step : .userActed, minted: config, route: route)
         }
         guard generation == relayRetryGeneration else { return ended(.userActed) }
+        // 2. Multi-Hop: refuse a route the server did not confirm.
         var route: String?
         if case .multiHop(let entry, let exit) = target {
             do {
@@ -2682,47 +2728,33 @@ final class VpnViewModel: ObservableObject {
                 return ended(.routeNotConfirmed)
             }
         }
+        // 3. The new peer on the RUNNING session.
         setActiveKeyId(config.keyId)
         do {
             try await vpnManager.swapConfig(config: config)
         } catch VPNManagerError.noLiveSession {
             return ended(.sessionGoneBeforeSwap, route: route)
-        } catch {
-            debugLog("[VpnViewModel] heartbeat redial: in-place swap refused: %@", error.localizedDescription)
+        } catch let swapError {
+            debugLog("[VpnViewModel] heartbeat redial: in-place swap refused: %@", swapError.localizedDescription)
+            noteDialFailure(after: swapError)
             return ended(.swapFailed, route: route)
         }
         // MR-974: the new peer is not "Protected" until IT answers.
         resetHandshakeProof()
+        // 4. Only the new peer's bytes prove it.
         let probed = await awaitNewPeerHandshake()
         return ended(probed == .newPeerHandshaked ? .newPeerHandshaked : .newPeerSilent, route: route)
     }
 
-    /// The minted config, or nil when the request failed or did not answer
-    /// within `HeartbeatRedial.mintCap`. Past the cap the request is
-    /// cancelled, which ends its PQ pair (`getConnectConfig`'s own defer).
-    private func mintForRedial(_ target: RebuildTarget) async -> VPNConnectionConfig? {
-        let box = RedialMint()
-        let api = self.api
-        // Ids only into the request task.
-        let ids: (first: String, exit: String?)
-        switch target {
-        case .single(let server): ids = (server.id, nil)
-        case .multiHop(let entry, let exit): ids = (entry.id, exit.id)
-        }
-        let work = Task { @MainActor in
-            if let exitId = ids.exit {
-                box.config = try? await api.getMultiHopConfig(entryId: ids.first, exitId: exitId)
-            } else {
-                box.config = try? await api.getConnectConfig(serverId: ids.first)
-            }
-        }
-        let cap = Task {
-            try? await Task.sleep(for: HeartbeatRedial.mintCap)
-            work.cancel()
-        }
-        await work.value
-        cap.cancel()
-        return box.config
+    /// The server answered the in-place request with a refusal or an error,
+    /// which the banner already says. The key the session rode is gone, so
+    /// the session ends here, as the disconnect-first path would have ended
+    /// after its own dial got the same answer; nothing is asked again.
+    private func stopAfterRefusedRedial() {
+        relayRecovery = nil
+        setActiveKeyId(nil)
+        vpnManager.disconnect()
+        resetSessionState()
     }
 
     /// The new peer answered: it is the session now, on the route the attempt
@@ -2833,9 +2865,10 @@ final class VpnViewModel: ObservableObject {
     }
 }
 
-/// MR-2525: where `VpnViewModel.mintForRedial`'s request task leaves its
-/// answer (main-actor isolated, so the task and the caller share it safely).
+/// MR-2525: where the in-place request task of `attemptRedialInPlace` leaves
+/// its answer (main-actor isolated, so the task and the caller share it).
 @MainActor
 private final class RedialMint {
     var config: VPNConnectionConfig?
+    var error: Error?
 }

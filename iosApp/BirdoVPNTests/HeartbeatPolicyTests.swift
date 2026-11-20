@@ -500,10 +500,9 @@ final class HeartbeatPolicyTests: XCTestCase {
     func testTheInPlaceAttemptNeverStopsTheSession() throws {
         let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
         let attempt = slice(vm, from: "private func attemptRedialInPlace(", to: "\n    }\n")
-        let mint = slice(vm, from: "private func mintForRedial(", to: "\n    }\n")
         let redial = slice(vm, from: "private func redialInPlace(", to: "\n    }\n")
         let commit = slice(vm, from: "private func commitRedial(", to: "\n    }\n")
-        for (name, body) in [("attempt", attempt), ("mint", mint), ("redial", redial), ("commit", commit)] {
+        for (name, body) in [("attempt", attempt), ("redial", redial), ("commit", commit)] {
             for forbidden in ["vpnManager.disconnect()", "applyKillSwitchFlag", "failOpenAndStop", "rebuildOf",
                               "releaseServerSlot()", "disconnect()"] {
                 XCTAssertFalse(body.contains(forbidden), "\(name) contains \(forbidden)")
@@ -513,14 +512,29 @@ final class HeartbeatPolicyTests: XCTestCase {
         XCTAssertTrue(attempt.contains("try await vpnManager.swapConfig(config: config)"))
         XCTAssertTrue(attempt.contains("MultiHopRouteCheck.validate("))
         XCTAssertTrue(attempt.contains("await awaitNewPeerHandshake()"))
-        XCTAssertTrue(mint.contains("api.getConnectConfig(serverId: ids.first)"))
-        XCTAssertTrue(mint.contains("api.getMultiHopConfig(entryId: ids.first, exitId: exitId)"))
-        XCTAssertTrue(mint.contains("try? await Task.sleep(for: HeartbeatRedial.mintCap)"))
-        XCTAssertTrue(mint.contains("work.cancel()"))
+        XCTAssertTrue(attempt.contains("api.getConnectConfig(serverId: ids.first)"))
+        XCTAssertTrue(attempt.contains("api.getMultiHopConfig(entryId: ids.first, exitId: exitId)"))
+        XCTAssertTrue(attempt.contains("try? await Task.sleep(for: HeartbeatRedial.mintCap)"))
+        XCTAssertTrue(attempt.contains("work.cancel()"))
+        XCTAssertTrue(attempt.contains("defer { BirdoPQManager.shared.discardHandOff(publicKey: config.pqUploadedKey) }"))
+        // An answered request is recorded as every dial records it, and only then
+        // is it the outcome; an unanswered one goes to the disconnect-first path.
+        let answered = try XCTUnwrap(attempt.range(of: "HeartbeatRedial.serverAnswered(error)"))
+        let hold = try XCTUnwrap(attempt.range(of: "holdAutomaticDials(after: error)"))
+        let refused = try XCTUnwrap(attempt.range(of: "return RedialAttempt(step: .mintRefused)"))
+        XCTAssertLessThan(answered.lowerBound, hold.lowerBound)
+        XCTAssertLessThan(hold.lowerBound, refused.lowerBound)
+        XCTAssertTrue(attempt.contains("return RedialAttempt(step: .mintFailed)"))
         XCTAssertTrue(redial.contains("let directive = HeartbeatRedial.directive(after: attempt.step)"))
         XCTAssertTrue(redial.contains("isRebuildingLive = false"))
         XCTAssertTrue(redial.contains("release(keyId: newId)"))
-        XCTAssertTrue(redial.contains("BirdoPQManager.shared.discardHandOff(publicKey: minted.pqUploadedKey)"))
+        // The one stop: a refused request, through its own helper, nowhere else.
+        XCTAssertTrue(redial.contains("case .stopAfterRefusal:\n            stopAfterRefusedRedial()"))
+        XCTAssertEqual(vm.components(separatedBy: "stopAfterRefusedRedial()").count - 1, 2,
+                       "its declaration and its one call")
+        let stop = slice(vm, from: "private func stopAfterRefusedRedial() {", to: "\n    }\n")
+        XCTAssertTrue(stop.contains("setActiveKeyId(nil)"), "the gone key's handle is dropped, never DELETEd")
+        XCTAssertFalse(stop.contains("releaseServerSlot()"))
         XCTAssertTrue(commit.contains("clearCircuitBreaker()"))
         XCTAssertTrue(commit.contains("lastHeartbeatOkAt = Date()"))
     }
@@ -547,8 +561,28 @@ final class HeartbeatPolicyTests: XCTestCase {
             XCTAssertEqual(HeartbeatRedial.directive(after: step), .disconnectFirst(releaseNewKey: false), "\(step)")
         }
         XCTAssertEqual(Set(HeartbeatRedialStep.allCases.map { "\($0)" }),
-                       Set((afterTheMint + [.sessionNotUp, .mintFailed, .userActed, .newPeerHandshaked]).map { "\($0)" }),
+                       Set((afterTheMint + [.sessionNotUp, .mintFailed, .mintRefused, .userActed, .newPeerHandshaked])
+                           .map { "\($0)" }),
                        "a new step must be placed in this table on purpose")
+    }
+
+    /// A server that ANSWERED the in-place request with a refusal or an error
+    /// has given the outcome, as it would to the disconnect-first path's own
+    /// dial: the session ends with its words and nothing is asked again. Only
+    /// an unanswered request (a transport failure, the cap) earns that second
+    /// dial, outside the old path.
+    func testAnAnsweredRefusalEndsTheSessionAndOnlyNoAnswerDialsAgain() {
+        XCTAssertEqual(HeartbeatRedial.directive(after: .mintRefused), .stopAfterRefusal)
+        for step in HeartbeatRedialStep.allCases where step != .mintRefused {
+            XCTAssertNotEqual(HeartbeatRedial.directive(after: step), .stopAfterRefusal, "\(step)")
+        }
+        struct Refused: Error {}
+        XCTAssertTrue(HeartbeatRedial.serverAnswered(Refused()))
+        XCTAssertTrue(HeartbeatRedial.serverAnswered(NSError(domain: "HTTP", code: 503)))
+        XCTAssertFalse(HeartbeatRedial.serverAnswered(URLError(.timedOut)))
+        XCTAssertFalse(HeartbeatRedial.serverAnswered(URLError(.networkConnectionLost)))
+        XCTAssertFalse(HeartbeatRedial.serverAnswered(URLError(.cancelled)), "a failed TLS pin check is no answer")
+        XCTAssertFalse(HeartbeatRedial.serverAnswered(CancellationError()), "the cap is no answer")
     }
 
     /// The user acting meanwhile (a disconnect, a sign-out) wins: the attempt
