@@ -233,6 +233,25 @@ class TokenManagerTest {
         assertFalse(tokenManager.isLoggedIn())
     }
 
+    // ── MR-2532: whether a sign-out may present the access token ──
+
+    @Test
+    fun `an access token is usable only while its exp is more than the skew away`() {
+        tokenManager.setTokens(jwt(now + 600), jwt(now + 3600))
+        assertTrue(tokenManager.hasUsableAccessToken())
+        tokenManager.setTokens(jwt(now + TokenManager.ACCESS_TOKEN_SKEW_SECONDS - 5), jwt(now + 3600))
+        assertFalse("inside the skew it may expire on the way", tokenManager.hasUsableAccessToken())
+        tokenManager.setTokens(jwt(now - 10), jwt(now + 3600))
+        assertFalse(tokenManager.hasUsableAccessToken())
+    }
+
+    @Test
+    fun `no access token, or an unreadable one, is never usable`() {
+        assertFalse(tokenManager.hasUsableAccessToken())
+        tokenManager.setTokens("not.a", jwt(now + 3600))
+        assertFalse(tokenManager.hasUsableAccessToken())
+    }
+
     // ── Pre-1.4.28 store (MR-958) ────────────────────────────────
 
     @Test

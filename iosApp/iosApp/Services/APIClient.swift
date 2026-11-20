@@ -370,18 +370,49 @@ final class APIClient: @unchecked Sendable {
     }
 
     /// Best-effort server-side session revocation — `POST /auth/logout`.
-    /// Never throws: local sign-out proceeds regardless. Takes the bearer
-    /// token explicitly because the caller clears the keychain synchronously
-    /// right after firing this (the stored token would already be gone).
-    func logout(bearerToken: String?) async {
-        guard let token = bearerToken, !token.isEmpty else { return }
+    /// Never throws: local sign-out proceeds regardless. Takes the tokens
+    /// explicitly because the caller clears the keychain synchronously right
+    /// after firing this (the stored ones would already be gone).
+    ///
+    /// MR-2532: it NEVER refreshes (`SignOutRevocation`). The bearer goes only
+    /// while the access token is usable; otherwise, or when the bearer is
+    /// answered 401, the refresh token goes in the body, as /auth/refresh takes
+    /// it, and the server revokes exactly that session and issues nothing. It
+    /// used to send the bearer alone: an expired access token (an hour after
+    /// the last request) got a 401 and the session lived on the server until it
+    /// expired.
+    func signOut(_ tokens: SignOutTokens) async {
+        switch SignOutRevocation.plan(for: tokens, now: Date()) {
+        case .nothing:
+            return
+        case .refreshToken:
+            break
+        case .bearerThenRefreshTokenOn401:
+            let status = await postLogout(bearer: tokens.accessToken, refreshToken: nil)
+            guard SignOutRevocation.refreshTokenAfterBearer(status: status,
+                                                            hasRefreshToken: !(tokens.refreshToken ?? "").isEmpty) else {
+                return
+            }
+        }
+        _ = await postLogout(bearer: nil, refreshToken: tokens.refreshToken)
+    }
+
+    /// One `POST /auth/logout`: the HTTP status, or nil with no answer. The
+    /// client header comes from the session configuration, as for every call.
+    private func postLogout(bearer: String?, refreshToken: String?) async -> Int? {
         guard let url = URL(string: "/auth/logout", relativeTo: baseURL),
-              url.scheme?.lowercased() == "https" else { return }
+              url.scheme?.lowercased() == "https" else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        _ = try? await session.data(for: request)
+        if let bearer, !bearer.isEmpty {
+            request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        }
+        if let refreshToken, !refreshToken.isEmpty {
+            request.httpBody = try? encoder.encode(RefreshBody(refresh_token: refreshToken))
+        }
+        guard let answer = try? await session.data(for: request) else { return nil }
+        return (answer.1 as? HTTPURLResponse)?.statusCode
     }
 
     /// Shared response handling for `/auth/login/desktop`,
@@ -1068,6 +1099,15 @@ final class APIClient: @unchecked Sendable {
         let generationNow = await sessionGeneration.current
         guard generationNow == generationAtStart,
               keychain.refreshToken == refresh else {
+            // MR-2532: a sign-out landed while this refresh was on the wire.
+            // The session it just renewed is not stored, so it is revoked with
+            // the token it was handed; the sign-out could only present the
+            // consumed one, which the server refuses without a reuse response.
+            if SignOutRevocation.revokesLateRotation(generationAtStart: generationAtStart,
+                                                     generationNow: generationNow) {
+                let late = SignOutTokens(accessToken: nil, refreshToken: tokens.refreshToken ?? refresh)
+                Task.detached { [weak self] in await self?.signOut(late) }
+            }
             return
         }
         // The rotated refresh token replaces the old one; if the server omits
