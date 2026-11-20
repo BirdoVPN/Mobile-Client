@@ -5,6 +5,9 @@ import Foundation
 // (`$defs.HeartbeatResponse` in contract/vpn-protocol.schema.json), and the
 // only way to check the REAL model against it is to compile it into the test
 // bundle, which cannot host APIClient.swift. See ConnectContractTests.
+// MR-2343 puts the host's decision here as well (HeartbeatPolicy, below).
+// That decision also uses RelayRetry.swift, which is Foundation-only and is
+// compiled into the same bundle.
 
 /// `HeartbeatResult.reason`: why the key is in the state the reply reports.
 ///
@@ -36,14 +39,12 @@ enum HeartbeatReason: String, CaseIterable, Sendable {
     case notFound = "not_found"
 }
 
-/// Response of `POST /vpn/heartbeat/{keyId}`. `valid: false` means the
-/// connection was revoked server-side (silent free-tier eviction) — the
-/// client must disconnect and surface `message`. Fail-open on decode
-/// surprises: an absent `valid` must never kill a live tunnel.
+/// Response of `POST /vpn/heartbeat/{keyId}`. `valid: false` means the key
+/// is no longer this device's live session; `reason` says why. Fail-open on
+/// decode surprises: an absent `valid` must never kill a live tunnel.
 ///
-/// The host acts on `valid`, `serverOnline` and `message` (VpnViewModel's
-/// heartbeat); `reason` and the quota fields are decoded so the model holds
-/// the whole contract, and nothing reads them yet.
+/// The host acts on the whole reply through `HeartbeatPolicy` below
+/// (MR-2343). It never shows `message`: the outcome carries the sentence.
 struct HeartbeatResult: Sendable {
     let valid: Bool
     let serverOnline: Bool?
@@ -79,5 +80,253 @@ extension HeartbeatResult: Decodable {
         quotaExceeded = (try? c.decodeIfPresent(Bool.self, forKey: .quotaExceeded)) ?? false
         quotaGraceEndsAt = try? c.decodeIfPresent(String.self, forKey: .quotaGraceEndsAt)
         quotaGraceSecondsRemaining = try? c.decodeIfPresent(TimeInterval.self, forKey: .quotaGraceSecondsRemaining)
+    }
+}
+
+// MARK: - What the host does with a reply (MR-2343)
+//
+// The decision lives here, not in VpnViewModel, so that ConnectContractTests
+// runs it over every body the contract's server writes and checks the APP's
+// code, not a copy of it. VpnViewModel.sendHeartbeat only carries it out.
+// Android twin: `HeartbeatPolicy`, `QuotaPolicy` and the sentences of
+// `SessionCopy` (SessionPolicy.kt), carried out by
+// `VpnManager.onHeartbeatVerdict`.
+
+/// What `VpnViewModel.sendHeartbeat` does with one reply.
+enum HeartbeatOutcome: Equatable, Sendable {
+    /// The session stays as it is. `nodeOffline`: its node reports it is not
+    /// ONLINE, which is logged only (a node may flap during maintenance).
+    /// `grace`: the Free plan's grace notice to show, nil for none.
+    case keep(nodeOffline: Bool, grace: QuotaGrace?)
+    /// Server housekeeping released the key and nobody ended anything: one
+    /// quiet rebuild of the same route, within `HeartbeatRebuildBudget`.
+    case rebuild
+    /// The key went with its drained or deleted server: connect to a
+    /// different one (`HeartbeatPolicy.moveTarget`). Single-hop only.
+    case moveServer
+    /// The server ended the session: stop, say `HeartbeatEnding.message`,
+    /// and never reconnect on our own.
+    case end(HeartbeatEnding)
+}
+
+/// How the client tells the user about a session the server ended. The
+/// sentence is the client's own and depends on the reason, never on the
+/// reply's `message`. A removal record says "Connection not found" whatever
+/// removed the key (an eviction, the allowance's end), and the 60 s check-in
+/// cache overwrites a revoke's sentence with the offline one when the node is
+/// not ONLINE. Showing those sentences named all of these cases wrongly.
+/// Android: `SessionCopy`.
+struct HeartbeatEnding: Equatable, Sendable {
+    let message: String
+    /// Home offers the plans under the banner: the Free allowance ended it.
+    let offersPlans: Bool
+
+    /// `revoked`; a reply with no record of why while beats were flowing; and
+    /// a second reap inside `HeartbeatRebuildBudget.window`.
+    static let revoked = HeartbeatEnding(
+        message: "Connection has been revoked. Please reconnect.", offersPlans: false)
+    /// `evicted`: another device of the account took the slot.
+    static let evicted = HeartbeatEnding(
+        message: "Another device on your account connected, so this one was disconnected. "
+            + "Tap Connect to take it back.",
+        offersPlans: false)
+    /// `quota_exceeded`, or `quotaExceeded: true` on a reply that is not valid.
+    static let quotaExceeded = HeartbeatEnding(
+        message: "You've used this month's free data allowance. Upgrade to keep using BirdoVPN.",
+        offersPlans: true)
+    /// A drained node under a Multi-Hop session: the pair is the user's to choose again.
+    static let multiHopRouteOffline = HeartbeatEnding(
+        message: "A server on your Multi-Hop route went offline. Choose another entry or exit.",
+        offersPlans: false)
+    /// A drained node and no other relay the retry rule allows (`moveTarget` is nil).
+    static let serverOffline = HeartbeatEnding(
+        message: "This server went offline. Choose another location.", offersPlans: false)
+}
+
+/// The Free plan's grace window (birdo-web #590): the allowance is used up
+/// and the server ends the session in `minutesLeft` minutes, or "soon" when
+/// the reply does not say when. Home shows it as a notice; the session is not
+/// touched until the server ends it. Android: `QuotaGrace`, `QuotaPolicy.grace`.
+struct QuotaGrace: Equatable, Sendable {
+    /// Whole minutes, rounded up so "ends in 0 min" is never said; nil when unknown.
+    let minutesLeft: Int?
+
+    /// No grace window is a day long. Bounding the seconds first keeps a
+    /// nonsense number (1e300 decodes fine) from trapping `Int(_:)`.
+    private static let maxSeconds: TimeInterval = 24 * 60 * 60
+
+    /// Android `home_quota_grace` / `home_quota_grace_soon`.
+    var message: String {
+        if let minutesLeft {
+            return "Free data allowance used — your connection ends in \(minutesLeft) min."
+        }
+        return "Free data allowance used — your connection ends soon."
+    }
+
+    /// The notice `reply` asks for, or nil: only a live reply over the
+    /// allowance has one. The server's seconds win (its clock, not ours); the
+    /// end instant is the fallback.
+    static func from(_ reply: HeartbeatResult, now: Date) -> QuotaGrace? {
+        guard reply.valid, reply.quotaExceeded else { return nil }
+        let reported = reply.quotaGraceSecondsRemaining.flatMap { $0.isFinite ? $0 : nil }
+        guard let seconds = reported ?? endInstant(reply.quotaGraceEndsAt)?.timeIntervalSince(now) else {
+            return QuotaGrace(minutesLeft: nil)
+        }
+        let bounded = min(max(seconds, 1), maxSeconds)
+        return QuotaGrace(minutesLeft: Int((bounded / 60).rounded(.up)))
+    }
+
+    /// `quotaGraceEndsAt` as birdo-web writes it (`toISOString()`, with
+    /// milliseconds), or without them.
+    private static func endInstant(_ iso: String?) -> Date? {
+        guard let iso else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: iso) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: iso)
+    }
+}
+
+/// The table, as on Android (HeartbeatPolicy.verdict):
+///
+/// | reply | outcome |
+/// |---|---|
+/// | not valid, and `quota_exceeded` or `quotaExceeded` | end: the allowance, plans offered |
+/// | `ok` | keep (with the grace notice when over the allowance) |
+/// | `server_offline`, valid | keep, node logged offline (and the grace notice) |
+/// | `server_offline`, not valid | move to another server; Multi-Hop: end, choose another pair |
+/// | `revoked` | end: revoked, whatever the reply's sentence |
+/// | `evicted` | end: another device took over, never reconnect |
+/// | `reaped` | one quiet rebuild (`HeartbeatRebuildBudget`) |
+/// | `not_found`, or no / an unknown reason and not valid | last good beat a reap window ago or more: rebuild; else end: revoked |
+/// | no / an unknown reason, valid | keep |
+enum HeartbeatPolicy {
+    /// birdo-web's stale-key reap (cleanup.service.ts). Android `REAP_WINDOW_MS`.
+    static let reapWindow: TimeInterval = 5 * 60
+
+    /// - Parameters:
+    ///   - sinceLastOk: time since the last `valid: true` beat this session heard.
+    ///   - multiHop: the session is a Multi-Hop pair.
+    ///   - now: for the grace notice's end-instant fallback.
+    static func outcome(of reply: HeartbeatResult, sinceLastOk: TimeInterval,
+                        multiHop: Bool, now: Date) -> HeartbeatOutcome {
+        // birdo-web #590: past the grace window the peer is removed. Read from
+        // either field, so a reply that carries only one of them still ends as
+        // the allowance's end and not as a revoke.
+        if !reply.valid && (reply.reason == .quotaExceeded || reply.quotaExceeded) {
+            return .end(.quotaExceeded)
+        }
+        switch reply.reason {
+        case .ok?:
+            return keep(reply, now: now)
+        case .serverOffline?:
+            if reply.valid { return keep(reply, now: now) }
+            return multiHop ? .end(.multiHopRouteOffline) : .moveServer
+        case .revoked?:
+            return .end(.revoked)
+        case .evicted?:
+            return .end(.evicted)
+        case .reaped?:
+            return .rebuild
+        case .notFound?:
+            return inferred(sinceLastOk)
+        case .quotaExceeded?, nil:
+            // nil: absent (a backend before birdo-web #599) or a reason this
+            // build does not know, which the contract says to treat alike.
+            return reply.valid ? keep(reply, now: now) : inferred(sinceLastOk)
+        }
+    }
+
+    private static func keep(_ reply: HeartbeatResult, now: Date) -> HeartbeatOutcome {
+        .keep(nodeOffline: reply.serverOnline == false, grace: QuotaGrace.from(reply, now: now))
+    }
+
+    /// Android's inference, and WEB-HB's not_found rule. If the key is gone
+    /// after the device went longer than the reap window without a good beat,
+    /// it was reaped while the device slept. If it went while beats were
+    /// flowing, someone ended it on purpose.
+    private static func inferred(_ sinceLastOk: TimeInterval) -> HeartbeatOutcome {
+        sinceLastOk >= reapWindow ? .rebuild : .end(.revoked)
+    }
+
+    /// Where `.moveServer` goes: the owner's rule for a server that has gone
+    /// (2026-11-19, MR-2343 round 2). It applies alike to a drained server
+    /// (listed offline in `list`) and a deleted one (missing from `list`).
+    ///
+    /// - AUTOMATIC pick (`SelectionOrigin.automatic`): the best server
+    ///   anywhere, i.e. QuickSelect's best of all the others. Nobody chose a
+    ///   location, so there is no same-city preference and no need to know
+    ///   where the gone server was.
+    /// - USER pick: stay within its own country (MR-2212), the same city
+    ///   first (`RelayRetry.next`). A deleted server's location is read from
+    ///   `cached`, the list it was dialled from. When it is in neither list,
+    ///   or nothing in its country qualifies, the result is nil.
+    ///
+    /// Only servers listed online and open to this plan qualify. nil means no
+    /// move, and the session ends (`HeartbeatEnding.serverOffline`).
+    static func moveTarget<S: RelayRetryCandidate>(from goneId: String, in list: [S], cached: [S],
+                                                   origin: SelectionOrigin) -> RelayRetry.Choice<S>? {
+        let gone = list.first(where: { $0.id == goneId }) ?? cached.first(where: { $0.id == goneId })
+        switch origin {
+        case .automatic:
+            guard let best = QuickSelect.bestServer(in: list.filter { $0.id != goneId }) else { return nil }
+            return RelayRetry.Choice(server: best, reach: reach(from: gone, to: best))
+        case .user:
+            guard let gone else { return nil }
+            var known = list
+            if !known.contains(where: { $0.id == goneId }) { known.append(gone) }
+            return RelayRetry.next(after: goneId, in: known, origin: .user)
+        }
+    }
+
+    /// The one tap (#648's `RelayOffer`, MR-2493) beside the stop, for a USER
+    /// pick that could not move because nothing qualified in its country.
+    /// The tap offers the best server in `fresh` other than the gone one,
+    /// which by then can only be outside that country. The caller passes a
+    /// FRESH list only, as #648 does. An automatic pick stops only when
+    /// nothing anywhere qualifies, so it is never offered anything. Nothing
+    /// is dialled until the user taps (`VpnViewModel.acceptRelayOffer`).
+    static func offer<S: RelayRetryCandidate>(from goneId: String, in fresh: [S],
+                                              origin: SelectionOrigin) -> S? {
+        guard origin == .user else { return nil }
+        return QuickSelect.bestServer(in: fresh.filter { $0.id != goneId })
+    }
+
+    /// How far an automatic move reaches, for the log line (counts only). A
+    /// gone server neither list knows logs as other-country.
+    private static func reach<S: RelayRetryCandidate>(from gone: S?, to target: S) -> RelayRetry.Reach {
+        func normalized(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        guard let gone else { return .otherCountry }
+        let country = normalized(gone.countryCode)
+        guard !country.isEmpty, country == normalized(target.countryCode) else { return .otherCountry }
+        let city = normalized(gone.city)
+        return !city.isEmpty && city == normalized(target.city) ? .sameCity : .sameCountry
+    }
+}
+
+/// MR-2343: ONE quiet rebuild per `window` after a reap. Android
+/// (ReconnectPolicy) gives REAPED one fresh connect in its 10-minute failure
+/// window; Desktop gives one per episode (QUIET_REBUILDS_PER_EPISODE). A
+/// second reap inside the window ends the session like a revoke, so a key
+/// that keeps vanishing can never become a rebuild loop.
+struct HeartbeatRebuildBudget: Equatable, Sendable {
+    static let window: TimeInterval = 10 * 60
+
+    private(set) var lastRebuildAt: Date?
+
+    init() {}
+
+    /// `outcome`, except that a `.rebuild` inside the window of the last one
+    /// becomes `.end(.revoked)`. Only an admitted rebuild starts a window. A
+    /// clock that went backwards counts as the window having passed.
+    mutating func admit(_ outcome: HeartbeatOutcome, now: Date) -> HeartbeatOutcome {
+        guard outcome == .rebuild else { return outcome }
+        if let last = lastRebuildAt {
+            let elapsed = now.timeIntervalSince(last)
+            if elapsed >= 0, elapsed < Self.window { return .end(.revoked) }
+        }
+        lastRebuildAt = now
+        return .rebuild
     }
 }

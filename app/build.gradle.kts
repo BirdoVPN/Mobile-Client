@@ -568,6 +568,43 @@ composeCompiler {
     includeComposeMappingFile.set(false)
 }
 
+// ── Robolectric's Android SDK jar comes from Gradle (MR-2490) ───────────────
+//
+// Robolectric runs a test class on the android-all-instrumented jar of the SDK
+// level it pins (@Config(sdk = [34]) throughout app/src/test). Left to itself
+// it downloads that jar on first use, from Maven Central, inside the test JVM
+// (MavenArtifactFetcher: a plain HttpURLConnection, no retry) into ~/.m2, which
+// no CI job caches. Every Unit Tests run fetched 151 MB at test time, and run
+// 44430249006 (PR #642) lost all seven Robolectric classes to one
+// FileNotFoundException from that fetch, on code an earlier run had passed.
+//
+// Declared as a dependency, the jar is pinned like every other one:
+// app/gradle.lockfile holds its version and gradle/verification-metadata.xml
+// its SHA-256 (the fetch above only compared it with a .sha512 from the same
+// server). Gradle downloads it before any test starts, and setup-gradle's
+// dependency cache carries it between CI runs. It is synced into one directory
+// and handed over with robolectric.offline + robolectric.dependency.dir, so
+// Robolectric's LegacyDependencyResolver uses a LocalDependencyResolver and
+// never builds the Maven one: a jar missing here fails the test ("Path is not
+// a file: .../android-all-instrumented-<version>.jar"), nothing is fetched.
+//
+// The coordinate is Robolectric's, not ours: DefaultSdkProvider derives it
+// from its SDK table and PREINSTRUMENTED_VERSION (4.17, SDK 34:
+// 14-robolectric-10818077-i7). A Robolectric bump can change it, and a test
+// pinned to another SDK level needs that level's jar; RobolectricSdkJarsTest
+// names the coordinate it wants either way. Declare it next to the robolectric
+// dependency, add its line to app/gradle.lockfile and its entries to
+// gradle/verification-metadata.xml (gradle-verification-metadata.yml writes them).
+val robolectricAndroidAll: Configuration by configurations.creating {
+    isCanBeConsumed = false
+    isTransitive = false
+}
+val robolectricAndroidAllDir = layout.buildDirectory.dir("robolectric-android-all")
+val syncRobolectricAndroidAll = tasks.register<Sync>("syncRobolectricAndroidAll") {
+    from(robolectricAndroidAll)
+    into(robolectricAndroidAllDir)
+}
+
 tasks.withType<Test>().configureEach {
     ignoreFailures = false
     // MockK's inline agent appends to the test JVM's bootstrap classpath, and
@@ -576,6 +613,22 @@ tasks.withType<Test>().configureEach {
     // buys nothing for a short-lived test worker; turn it off so the test
     // output is the test output.
     jvmArgs("-Xshare:off")
+    // MR-2490: the SDK jars, from the directory above, never from the network.
+    inputs.files(syncRobolectricAndroidAll)
+        .withPropertyName("robolectricAndroidAll")
+        .withPathSensitivity(PathSensitivity.NAME_ONLY)
+    systemProperty("robolectric.offline", "true")
+    systemProperty("robolectric.dependency.dir", robolectricAndroidAllDir.get().asFile.absolutePath)
+    // MR-2490 tripwire: every HTTPS connection from a test JVM goes through a
+    // "proxy" on a closed loopback port, so it fails at once with "Connection
+    // refused". If Robolectric ever falls back to its Maven resolver, its
+    // download (an HttpURLConnection to https://repo1.maven.org) fails loudly
+    // instead of quietly succeeding. HTTPS only: TunnelClientFallbackTest makes
+    // a real plain-HTTP call to a local server under a made-up hostname, which
+    // an http.proxyHost would break. Loopback stays direct (the JDK's default
+    // http.nonProxyHosts). RobolectricSdkJarsTest checks the tripwire.
+    systemProperty("https.proxyHost", "127.0.0.1")
+    systemProperty("https.proxyPort", "9")
 }
 
 val validateReleaseSecurityConfig = tasks.register("validateReleaseSecurityConfig") {
@@ -1151,6 +1204,10 @@ dependencies {
     // dialog opened under the cover must not exist while it is up. Test-only.
     // Its tests pin @Config(sdk = 34): newer SDK jars need Java 21, and CI runs 17.
     testImplementation("org.robolectric:robolectric:4.17")
+    // MR-2490: the SDK 34 jar Robolectric 4.17 runs those tests on, resolved
+    // and verified by Gradle instead of downloaded by Robolectric (see
+    // robolectricAndroidAll). It moves with a Robolectric bump.
+    robolectricAndroidAll("org.robolectric:android-all-instrumented:14-robolectric-10818077-i7")
     // MR-2129: runs the clipboard-clear work under Robolectric (TestDriver).
     // Test-only, at the runtime's version.
     testImplementation("androidx.work:work-testing:2.12.0")

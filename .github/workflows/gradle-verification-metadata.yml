@@ -42,18 +42,23 @@ name: Gradle verification metadata
 #     workflow cannot run; that job runs --dependency-verification lenient
 #     (it reports, it does not fail) with a read-only Gradle cache.
 #   - sources and javadoc jars: trusted, never shipped.
-#   - what is downloaded outside Gradle dependency resolution: Robolectric's
-#     android-all-instrumented jars (fetched by Robolectric at test time), SDK
-#     and NDK packages (sdkmanager) and managed-device system images.
+#   - what is downloaded outside Gradle dependency resolution: SDK and NDK
+#     packages (sdkmanager) and managed-device system images. Robolectric's
+#     android-all-instrumented jar is NOT in this list since MR-2490: it is
+#     app/build.gradle.kts's robolectricAndroidAll dependency, which the unit
+#     tests below resolve, so it has entries like any other artifact.
 #
 # Every plugin and dependency resolves from exactly one repository: Google's
 # Maven (content-filtered) or Maven Central. settings.gradle.kts explains why
 # the Gradle Plugin Portal is not listed.
 #
 # WHEN. On a pull request that changes what Gradle resolves (build scripts,
-# lockfiles, properties, the wrapper, the native-libs action, this file or the
-# metadata), so a Dependabot bump fails HERE with the regenerated file
-# attached; and by hand on any branch:
+# lockfiles, properties, the wrapper, the native-libs action, this file, the
+# guard or the metadata), so a Dependabot bump fails HERE with the regenerated
+# file attached; and by hand on any branch. It STARTS on every pull request
+# (MR-2437), so "The committed file is what the build resolves" can be a
+# required check: `changes` decides, and on any other pull request the jobs
+# are skipped, which a required check counts as passing. Run by hand:
 #
 #   gh workflow run gradle-verification-metadata.yml --ref <branch>
 #
@@ -66,18 +71,10 @@ name: Gradle verification metadata
 # fingerprint) are safe here for the reason they are safe in android-ci.yml's
 # r8 job: nothing this workflow builds is uploaded, only the XML.
 
+# No `paths:` filter (MR-2437): a required check that never starts blocks the
+# merge. The list it held is in the `changes` job.
 on:
   pull_request:
-    paths:
-      - '**/*.gradle.kts'
-      - '**/gradle.lockfile'
-      - 'gradle.properties'
-      - 'gradle/wrapper/gradle-wrapper.properties'
-      - 'gradle/verification-metadata.xml'
-      - '.github/actions/android-native-libs/**'
-      - '.github/workflows/gradle-verification-metadata.yml'
-      - 'scripts/check_verification_metadata.py'
-      - 'scripts/tests/check_verification_metadata_test.py'
   workflow_dispatch:
 
 permissions: {}
@@ -98,8 +95,48 @@ env:
     -PbirdoSigningCertFingerprint=00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00
 
 jobs:
+  # Does this pull request change what Gradle resolves? The same paths the
+  # workflow-level filter used to list. Fails OPEN: anything but a positive
+  # 'false' (this job failing included) runs everything. Dispatches always
+  # run. --no-renames for the reason android-ci.yml's classifier gives: a
+  # rename would otherwise list only its new path.
+  changes:
+    name: Does this change what Gradle resolves
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      gradle: ${{ steps.classify.outputs.gradle }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          gradle=true
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            files=$(git diff --no-renames --name-only HEAD^1 HEAD)
+            printf '%s\n' "$files"
+            pattern='(^|/)[^/]*\.gradle\.kts$|(^|/)gradle\.lockfile$|^gradle\.properties$'
+            pattern+='|^gradle/wrapper/gradle-wrapper\.properties$|^gradle/verification-metadata\.xml$'
+            pattern+='|^\.github/actions/android-native-libs/|^\.github/workflows/gradle-verification-metadata\.yml$'
+            pattern+='|^scripts/check_verification_metadata\.py$|^scripts/tests/check_verification_metadata_test\.py$'
+            if ! grep -Eq "$pattern" <<< "$files"; then
+              gradle=false
+            fi
+          fi
+          echo "gradle=$gradle" >> "$GITHUB_OUTPUT"
+          echo "### Changes what Gradle resolves: $gradle" >> "$GITHUB_STEP_SUMMARY"
+
   linux:
     name: Write (Linux, every CI and release task)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.gradle != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     permissions:
@@ -169,9 +206,8 @@ jobs:
       #
       # The tests run so their runtime classpath (and anything a test task
       # resolves) is recorded; whether they PASS is Android CI's Unit Tests job.
-      # The init script keeps a failing test, such as a Robolectric android-all
-      # download that flakes, from costing the write: the build still fails on
-      # anything that is not a test result.
+      # The init script keeps a failing test from costing the write: the build
+      # still fails on anything that is not a test result.
       #
       # The writes get a Gradle user home of their own: a new daemon and an
       # empty cache. The native-libs action ran Gradle before the file existed,
@@ -297,27 +333,48 @@ jobs:
   #    for the committed file.
   # 2. The committed file must be byte for byte what a fresh write produces:
   #    nothing missing (a build would fail on it), nothing stale.
+  #
+  # REQUIRED-SAFE (MR-2437). This is the job to make a required check. It is
+  # skipped (= passing) only when `changes` positively says the pull request
+  # touches nothing Gradle resolves. Otherwise it runs even when a write job
+  # failed or the run was cancelled (always(), not !cancelled(): a SKIPPED
+  # required check would count as passing) and then fails on the first step.
   compare:
     name: The committed file is what the build resolves
-    needs: windows
+    needs: [changes, linux, windows]
+    if: ${{ always() && needs.changes.outputs.gradle != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
+      - name: Both writes finished
+        id: writes
+        env:
+          LINUX: ${{ needs.linux.result }}
+          WINDOWS: ${{ needs.windows.result }}
+        run: |
+          if [ "$LINUX" != success ] || [ "$WINDOWS" != success ]; then
+            echo "::error::the metadata was not written (Linux: $LINUX, Windows: $WINDOWS), so nothing was checked. See those jobs."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # Only the one file, from the commit the pull request merges into (main
-      # when run by hand). Absent on the change that introduces it.
-      - name: Take the base branch's file
+      # From the commit the pull request merges into (main when run by hand):
+      # its metadata file, absent on the change that introduces it, and its
+      # copy of the checksum guard (MR-2437, see the guard step).
+      - name: Take the base branch's file and guard
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha || 'main' }}
           path: base
           persist-credentials: false
-          sparse-checkout: gradle/verification-metadata.xml
+          sparse-checkout: |
+            gradle/verification-metadata.xml
+            scripts/check_verification_metadata.py
           sparse-checkout-cone-mode: false
 
       - name: Take the finished file
@@ -329,20 +386,37 @@ jobs:
       - name: The checksum guard fails on what it exists to catch
         run: python3 scripts/tests/check_verification_metadata_test.py
 
+      # MR-2437: CODEOWNERS cannot block a pull request its owner opens, so a
+      # pull request that edits scripts/check_verification_metadata.py could
+      # loosen the guard and pass it. The BASE commit's copy, checked out
+      # above, is the one that decides; the pull request's own copy runs too,
+      # so a stricter guard bites at once and a looser one changes nothing
+      # until it is merged. -I: nothing on the import path comes from the
+      # pull request.
       - name: No checksum and no trust rule changed against the base branch
         run: |
           base=base/gradle/verification-metadata.xml
-          rc=0
-          python3 scripts/check_verification_metadata.py --base "$base" \
-            --file "$RUNNER_TEMP/fresh/verification-metadata.xml" --label "this run's fresh write" || rc=1
-          if [ -f gradle/verification-metadata.xml ]; then
-            python3 scripts/check_verification_metadata.py --base "$base" \
-              --file gradle/verification-metadata.xml --label "the committed file" || rc=1
+          guards=()
+          if [ -f base/scripts/check_verification_metadata.py ]; then
+            guards+=(base/scripts/check_verification_metadata.py)
+          else
+            echo "::notice::the base commit has no scripts/check_verification_metadata.py; only this change's copy runs."
           fi
+          guards+=(scripts/check_verification_metadata.py)
+          rc=0
+          for guard in "${guards[@]}"; do
+            echo "== $guard"
+            python3 -I "$guard" --base "$base" \
+              --file "$RUNNER_TEMP/fresh/verification-metadata.xml" --label "this run's fresh write" || rc=1
+            if [ -f gradle/verification-metadata.xml ]; then
+              python3 -I "$guard" --base "$base" \
+                --file gradle/verification-metadata.xml --label "the committed file" || rc=1
+            fi
+          done
           exit "$rc"
 
       - name: Compare
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.writes.outcome == 'success' }}
         run: |
           fresh="$RUNNER_TEMP/fresh/verification-metadata.xml"
           if [ ! -f gradle/verification-metadata.xml ]; then

@@ -399,6 +399,31 @@ class AppPreferences @Inject constructor(
         set(value) = prefs.edit { putString(KEY_LAST_SERVER, value) }
 
     /**
+     * MR-2492: whether the CLIENT chose [lastServerId] (a quick connect's best
+     * server, the pre-select) rather than the user. Written with it by every
+     * dial that lands. The tile, the widget and a system start re-dial that
+     * server long after the choice, and a move off it when it goes offline
+     * may leave its country only for the client's own pick. false, the
+     * default, is the user's: a move never leaves the country. Not
+     * HMAC-protected: like [lastServerId], it names no setting the backend
+     * relies on.
+     */
+    var lastServerAutoPicked: Boolean
+        get() = prefs.getBoolean(KEY_LAST_SERVER_AUTO_PICKED, false)
+        set(value) = prefs.edit { putBoolean(KEY_LAST_SERVER_AUTO_PICKED, value) }
+
+    /**
+     * MR-2492: the server a dial landed on, and who chose it, in ONE edit
+     * (review of #652, L1). Two writes could be split by a process death into
+     * a new server the user picked beside the previous "the client chose it",
+     * which a move off that server would read as free to leave the country.
+     */
+    fun rememberLastServer(id: String, autoPicked: Boolean) = prefs.edit {
+        putString(KEY_LAST_SERVER, id)
+        putBoolean(KEY_LAST_SERVER_AUTO_PICKED, autoPicked)
+    }
+
+    /**
      * The plan this account last had, as the server reported it (the
      * subscription fetch writes it, sign-out clears it). What a dial with no
      * UI in front of it — Always-on, a restart, the tile, the widget — reads
@@ -474,6 +499,7 @@ class AppPreferences @Inject constructor(
         private const val KEY_SPLIT_TUNNEL_APPS = "split_tunnel_apps"
         private const val KEY_FAVORITES = "favorite_servers"
         private const val KEY_LAST_SERVER = "last_server_id"
+        private const val KEY_LAST_SERVER_AUTO_PICKED = "last_server_auto_picked"
         private const val KEY_SESSION_SHOULD_BE_UP = "session_should_be_up"
         private const val KEY_LAST_KNOWN_PLAN = "last_known_plan"
         private const val KEY_PRIVACY_ACCEPTED = "privacy_policy_accepted"

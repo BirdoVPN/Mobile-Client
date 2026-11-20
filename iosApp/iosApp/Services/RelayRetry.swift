@@ -44,16 +44,33 @@ enum SelectionOrigin: Equatable, Sendable {
 /// retry's own dial refills nothing, so a failed retry can never loop.
 struct RelayRetryBudget: Equatable, Sendable {
     private(set) var spent = false
+    /// The relay the spent retry moved away from: the pick that did not
+    /// answer before the retry's own relay. nil while the retry is unspent.
+    /// Memory only, never logged. MR-2493 (review of #648, point 4): an offer
+    /// made after the retry did not answer either excludes it too.
+    private(set) var retriedFrom: String?
 
     init() {}
 
     /// A connect the user asked for, or a handshake proven on the session.
-    mutating func refill() { spent = false }
+    /// A new attempt starts clean, so the relay the retry left is forgotten.
+    mutating func refill() {
+        spent = false
+        retriedFrom = nil
+    }
 
     /// Take the retry. False, changing nothing, when it is already spent.
     mutating func take() -> Bool {
         guard !spent else { return false }
         spent = true
+        return true
+    }
+
+    /// Take the retry away from `failedId`, and remember it. False, changing
+    /// nothing, when the retry is already spent.
+    mutating func take(leaving failedId: String) -> Bool {
+        guard take() else { return false }
+        retriedFrom = failedId
         return true
     }
 }
@@ -79,11 +96,25 @@ enum RelayRetry {
     ///   3. `.user`: the best other relay in the SAME country;
     ///   4. nothing; the caller then says what is true instead.
     /// "Best" is QuickSelect's rule: online, accessible to this plan, least
-    /// loaded. nil when `failedId` is not in `list`: without the failed
-    /// relay's country the user's choice cannot be kept, so nothing moves.
+    /// loaded.
+    ///
+    /// A `failedId` that `list` no longer carries was DELETED. Owner decision
+    /// (2026-11-19), for a caller that passes `cached`, the list the failed
+    /// dial was chosen from (`afterDeleted`):
+    ///   * `.automatic`: the best relay in `list`, in any country, with no
+    ///     same-city preference; it needs no location;
+    ///   * `.user`: its city and country as `cached` gives them, then rules 1
+    ///     and 3; nil when `cached` does not know its country either.
+    /// The target always comes from `list`; `cached` only says where the
+    /// deleted relay was. Without `cached`, a deleted relay moves nothing:
+    /// without its country the user's choice cannot be kept (#645).
     static func next<S: RelayRetryCandidate>(after failedId: String, in list: [S],
+                                             cached: [S]? = nil,
                                              origin: SelectionOrigin) -> Choice<S>? {
-        guard let failed = list.first(where: { $0.id == failedId }) else { return nil }
+        guard let failed = list.first(where: { $0.id == failedId }) else {
+            guard let cached else { return nil }
+            return afterDeleted(failedId, in: list, cached: cached, origin: origin)
+        }
         if let sibling = sibling(of: failedId, in: list) {
             return Choice(server: sibling, reach: .sameCity)
         }
@@ -101,13 +132,32 @@ enum RelayRetry {
         }
     }
 
+    /// `next` for a relay `list` no longer carries (deleted), with the list
+    /// it was chosen from: the owner's rule, 2026-11-19.
+    private static func afterDeleted<S: RelayRetryCandidate>(_ failedId: String, in list: [S], cached: [S],
+                                                             origin: SelectionOrigin) -> Choice<S>? {
+        let gone = cached.first(where: { $0.id == failedId })
+        switch origin {
+        case .automatic:
+            guard let best = QuickSelect.bestServer(in: list) else { return nil }
+            // Not even cached: nothing to measure from, so the widest reach.
+            guard let gone else { return Choice(server: best, reach: .otherCountry) }
+            return Choice(server: best, reach: reach(from: gone, to: best))
+        case .user:
+            // The cached listing stands in for the one the relay lost, for its
+            // location only: `next` never returns `failedId` itself.
+            guard let gone else { return nil }
+            return next(after: failedId, in: list + [gone], origin: .user)
+        }
+    }
+
     /// `next`, behind the budget: the choice with the retry taken, or nil
     /// with the budget untouched (already spent, or no relay qualifies).
     static func plan<S: RelayRetryCandidate>(after failedId: String, in list: [S],
                                              origin: SelectionOrigin,
                                              budget: inout RelayRetryBudget) -> Choice<S>? {
         guard !budget.spent, let choice = next(after: failedId, in: list, origin: origin) else { return nil }
-        _ = budget.take()
+        _ = budget.take(leaving: failedId)
         return choice
     }
 
@@ -162,11 +212,15 @@ enum RelayRecovery: Equatable, Sendable {
     case tryingAnotherServer
     /// The tunnel is down and the TCP probe is out (`RelayProbe`).
     case checkingNetwork
+    /// MR-2343: the heartbeat's one quiet rebuild of the same route after a
+    /// reap is under way (`HeartbeatOutcome.rebuild`).
+    case reconnecting
 
     var label: String {
         switch self {
         case .tryingAnotherServer: return "Trying another server…"
         case .checkingNetwork: return "Checking the connection…"
+        case .reconnecting: return ConnectionPhase.reconnectingLabel
         }
     }
 }
@@ -209,4 +263,118 @@ enum RelayProbeVerdict: Equatable, Sendable {
         case .serverUnreachable: return "[RelayProbe] no handshake; relay TCP reachable=0"
         }
     }
+}
+
+// MARK: - MR-2493: the one-tap offer (design §3.2 step 4)
+
+extension RelayRetry {
+    /// The relay a one-tap "Try <location>" names, or nil. Only for a
+    /// location the USER picked: a server the client chose moves on its own
+    /// (`next`), so it is never offered anything.
+    ///
+    /// The relays that did not answer are `failedId` and, when the one retry
+    /// ran, the pick it left (`budget.retriedFrom`). Neither is ever offered.
+    /// A user's retry never leaves the pick's country, so they share it:
+    ///   * the retry still to come (`budget` unspent) and an eligible relay
+    ///     left in that city or country: no offer, the retry goes there;
+    ///   * otherwise the best eligible relay OUTSIDE that country. That
+    ///     includes the same-country retry having failed too (review of #648,
+    ///     point 4): no retry is left for anything still in the country.
+    /// MR-2518 (review N1 of #648): a failed relay the fresh list no longer
+    /// carries (deleted) is looked up in `cached`, the list the failed dial
+    /// was chosen from, for its country only. When neither list knows a
+    /// failed relay's country, nothing is known to be in it: the best of the
+    /// rest, as before.
+    ///
+    /// "Eligible" and "best" are QuickSelect's rule (online, open to this
+    /// plan, least loaded), applied to the list given, which the caller
+    /// fetches fresh: the server's list is the only authority. Nothing is
+    /// dialled until the user taps it.
+    static func offer<S: RelayRetryCandidate>(after failedId: String, in list: [S],
+                                              cached: [S]? = nil,
+                                              origin: SelectionOrigin,
+                                              budget: RelayRetryBudget) -> S? {
+        guard origin == .user else { return nil }
+        var failed: Set<String> = [failedId]
+        if let left = budget.retriedFrom { failed.insert(left) }
+        let others = list.filter { !failed.contains($0.id) }
+        let failedListing = list.first(where: { failed.contains($0.id) })
+            ?? cached?.first(where: { failed.contains($0.id) })
+        let country = failedListing.map { normalized($0.countryCode) } ?? ""
+        guard !country.isEmpty else { return QuickSelect.bestServer(in: others) }
+        if !budget.spent,
+           QuickSelect.bestServer(in: others.filter { normalized($0.countryCode) == country }) != nil {
+            return nil
+        }
+        return QuickSelect.bestServer(in: others.filter { normalized($0.countryCode) != country })
+    }
+
+    /// The offered relay at the tap, from the list as it stands then: nil
+    /// when it is no longer listed online and open to this plan.
+    static func offered<S: RelayRetryCandidate>(_ id: String, in list: [S]) -> S? {
+        list.first { $0.id == id && $0.isOnline && $0.accessible }
+    }
+
+    /// Whether the offer stands beside the message: not when the probe found
+    /// the relay up. Then this network drops the VPN's traffic, and another
+    /// location goes through the same network (design §3.3).
+    static func offerFits(_ verdict: RelayProbeVerdict?) -> Bool {
+        verdict != .networkBlocksVpn
+    }
+}
+
+/// MR-2493: the one tap offered beside the message after a location the user
+/// picked did not answer and no relay in its city or country could be tried,
+/// or the one retry there did not answer either (`RelayRetry.offer`).
+/// Never taken on its own: the tap is a connect of the user's own
+/// (`VpnViewModel.acceptRelayOffer`).
+struct RelayOffer: Equatable, Sendable {
+    /// The relay the tap dials, looked up again at the tap (`RelayRetry.offered`).
+    let serverId: String
+    /// The message it was offered beside. It is shown only while that
+    /// message is the one on screen.
+    let message: String
+    /// The button's words: plain and short.
+    let title: String
+    /// The whole offer for VoiceOver, one element: the place and its country.
+    let accessibilityLabel: String
+
+    init(serverId: String, name: String, city: String, country: String, message: String) {
+        self.serverId = serverId
+        self.message = message
+        let land = country.trimmingCharacters(in: .whitespacesAndNewlines)
+        let place = [name, city, country]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty }) ?? ""
+        if place.isEmpty {
+            title = "Try another location"
+            accessibilityLabel = "Try another location"
+        } else if land.isEmpty || land.caseInsensitiveCompare(place) == .orderedSame {
+            title = "Try \(place)"
+            accessibilityLabel = "Try \(place) instead"
+        } else {
+            title = "Try \(place)"
+            accessibilityLabel = "Try \(place), \(land) instead"
+        }
+    }
+
+    /// Shown only beside the message it was made for.
+    func isShown(beside error: String?) -> Bool { error == message }
+}
+
+// MARK: - Review L1 of #645: no probe into a tunnel still going down
+
+extension RelayProbeVerdict {
+    /// The address to probe once the teardown wait is over, or nil for the
+    /// generic message. `awaitTeardown` gives up after about 5 s whether or
+    /// not the tunnel went down; a tunnel still up would carry the probe into
+    /// the very tunnel that is not answering, and a relay that may be fine
+    /// would read "isn't reachable". So no probe then, and no verdict.
+    static func probeHost(_ host: String?, tunnelStillUp: Bool) -> String? {
+        guard !tunnelStillUp, let host, !host.isEmpty else { return nil }
+        return host
+    }
+
+    /// The message when no probe ran: it claims no verdict.
+    static let unprobedMessage = "Couldn't establish a secure tunnel to this server. Try another location."
 }

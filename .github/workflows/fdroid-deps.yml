@@ -10,6 +10,11 @@ name: F-Droid deps
 #
 # This job runs the SAME script as fdroid.yml's "Install fdroidserver" step. It
 # holds no secrets, no keystore and no write permission, and it publishes nothing.
+#
+# Weekly too (MR-2402): the hashed install can stop working with nothing in this
+# repo changing. The runner image moves its python3 and apt packages, and the
+# pinned sdists are built with that python3. The schedule finds that out before
+# a release does.
 
 on:
   pull_request:
@@ -17,6 +22,8 @@ on:
       - ".github/fdroid/**"
       - ".github/workflows/fdroid.yml"
       - ".github/workflows/fdroid-deps.yml"
+  schedule:
+    - cron: '23 5 * * 1'   # weekly, Monday 05:23 UTC, off the hour and the other crons
   workflow_dispatch:
 
 permissions: {}

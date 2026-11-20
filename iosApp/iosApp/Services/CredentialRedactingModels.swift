@@ -293,3 +293,18 @@ extension RotationFlow: CredentialRedacting {
         ]
     }
 }
+
+// MARK: - Post-quantum (MR-2287)
+
+extension PQDecapsulationPlan: CredentialRedacting {
+    /// The server's per-connect nonce is the HKDF info of this session's PSK:
+    /// printed as present, never as bytes. The ciphertext prints as its length.
+    var redactedFields: [(label: String, value: String)] {
+        switch self {
+        case .classical:
+            return [("plan", "classical")]
+        case .derive(let ciphertext, _):
+            return [("plan", "derive"), ("ciphertext", "\(ciphertext.count) bytes"), ("nonce", Redaction.marker)]
+        }
+    }
+}

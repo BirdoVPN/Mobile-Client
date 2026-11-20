@@ -154,6 +154,16 @@ App Signing key.
   `./gradlew --write-verification-metadata sha256 help <the tasks you run>` adds
   what is missing. Never `--dependency-verification off`.
 
+  Android CI's Lint Check (required) fails if the file is missing or if anything
+  committed turns verification lenient or off: `org.gradle.dependency.verification`
+  in a `.properties` file or a `-D`, `--dependency-verification`/`-F`,
+  `disableDependencyVerification()`, or `--write-verification-metadata`/`-M` outside
+  the writer workflow (`scripts/check_dependency_verification_on.py`, MR-2434; the one
+  exception is `baseline-profile.yml`'s recording line, below). On a pull request both
+  guards run as the BASE commit has them (MR-2437), so a change to a guard takes
+  effect from the next pull request; the metadata workflow starts on every pull
+  request and skips its jobs when nothing Gradle resolves changed.
+
   **Not covered** by the file:
   - `baseline-profile.yml`, which records on a Gradle Managed Device with
     `--dependency-verification lenient` (it reports a checksum it cannot find instead
@@ -165,10 +175,11 @@ App Signing key.
     comes out of either, and a pull request reviews it.
   - sources and javadoc jars: trusted by rule (an IDE fetches them; no build ships
     them).
-  - anything downloaded outside Gradle's dependency resolution: Robolectric's
-    `android-all-instrumented` jars, which Robolectric fetches itself when the unit
-    tests run; Android SDK and NDK packages (`sdkmanager`); and managed-device system
-    images.
+  - anything downloaded outside Gradle's dependency resolution: Android SDK and NDK
+    packages (`sdkmanager`) and managed-device system images. Robolectric's
+    `android-all-instrumented` jar is covered (MR-2490): it is the `robolectricAndroidAll`
+    dependency in `app/build.gradle.kts`, and the unit tests run with Robolectric offline
+    on the verified copy instead of letting it download one.
 
 ## iOS
 

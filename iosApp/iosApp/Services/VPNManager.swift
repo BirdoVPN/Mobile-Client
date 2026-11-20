@@ -178,14 +178,14 @@ final class VPNManager: @unchecked Sendable {
         // a backend regression, partial fleet rollout, or a response stripped by
         // a MitM), refuse the connection rather than silently establishing a
         // classical tunnel while the UI still shows PQ enabled. The
-        // `config.quantumEnabled == true` branch below only covers the
+        // decapsulation in `resolveEffectivePsk` only covers the
         // server-SAID-PQ-but-decapsulation-failed case; this covers the
         // server-SAID-NOT-PQ case that iOS previously let fall through to the
         // classical PSK.
         let userRequestedPQ = UserDefaults.standard.object(forKey: "quantum_protection") as? Bool ?? true
         if userRequestedPQ && config.quantumEnabled != true {
             BirdoPQManager.shared.recordDisabled()
-            throw VPNManagerError.quantumHandshakeFailed
+            throw VPNManagerError.quantumHandshakeFailed(.serverNotPostQuantum)
         }
 
         let mgr = try await ensureManager()
@@ -381,7 +381,7 @@ final class VPNManager: @unchecked Sendable {
         let userRequestedPQ = UserDefaults.standard.object(forKey: "quantum_protection") as? Bool ?? true
         if userRequestedPQ && config.quantumEnabled != true {
             BirdoPQManager.shared.recordDisabled()
-            throw VPNManagerError.quantumHandshakeFailed
+            throw VPNManagerError.quantumHandshakeFailed(.serverNotPostQuantum)
         }
         let effectivePsk = try resolveEffectivePsk(config)
         var providerConfiguration: [String: String] = [
@@ -498,29 +498,40 @@ final class VPNManager: @unchecked Sendable {
     /// classical PSK; else none.
     private func resolveEffectivePsk(_ config: VPNConnectionConfig) throws -> String? {
         // AUDIT-C1: prefer a true bilateral PQ PSK over the server-provided
-        // classical one. `tryDecapsulate` returns nil when the server didn't
-        // ship a ciphertext, in which case we fall back to `presharedKey`.
-        let pqPsk = BirdoPQManager.shared.tryDecapsulate(
-            quantumEnabled: config.quantumEnabled ?? false,
-            rosenpassPublicKeyBase64: config.rosenpassPublicKey,
-            rosenpassEndpointBase64: config.rosenpassEndpoint,
-            publicKey: config.pqUploadedKey
-        )
-        if let pqPsk { return pqPsk }
-        if config.quantumEnabled == true {
+        // classical one. `tryDecapsulate` returns nil only for a session that
+        // is not post-quantum, in which case we fall back to `presharedKey`.
+        let pqPsk: String?
+        do {
+            pqPsk = try BirdoPQManager.shared.tryDecapsulate(
+                quantumEnabled: config.quantumEnabled ?? false,
+                rosenpassPublicKeyBase64: config.rosenpassPublicKey,
+                rosenpassEndpointBase64: config.rosenpassEndpoint,
+                publicKey: config.pqUploadedKey
+            )
+        } catch {
             // FAIL CLOSED. The server said this session IS post-quantum, and we
             // could not complete the decapsulation — so the bilateral PQ PSK does
             // not exist. Falling through to `config.presharedKey` here would
             // silently substitute the TLS-delivered CLASSICAL key while the app
             // still reports quantum protection, which is exactly the
             // harvest-now-decrypt-later property the feature exists to defeat.
+            // Desktop (commands/vpn.rs) and Android (BirdoVpnService.kt) both
+            // abort; iOS was the only platform that downgraded in silence.
             //
-            // `tryDecapsulate` collapses three distinct failures to nil (malformed
-            // ciphertext, missing keypair, rc != BIRDO_PQ_OK) and all three landed
-            // here. Desktop (commands/vpn.rs) and Android (BirdoVpnService.kt)
-            // both abort; iOS was the only platform that downgraded in silence.
+            // MR-2287: and WITH the reason. `tryDecapsulate` used to collapse
+            // every cause (no or malformed ciphertext, a bad nonce, no keypair,
+            // rc != BIRDO_PQ_OK) into the nil a classical session returns, so
+            // the user, support and any report saw one undifferentiated failure.
             BirdoPQManager.shared.recordDisabled()
-            throw VPNManagerError.quantumHandshakeFailed
+            throw VPNManagerError.quantumHandshakeFailed(error as? PQFailure ?? .deriveFailed)
+        }
+        if let pqPsk { return pqPsk }
+        if config.quantumEnabled == true {
+            // Unreachable while `tryDecapsulate` keeps its contract (nil only
+            // for a classical session). Kept so a future nil can never become
+            // a silent downgrade.
+            BirdoPQManager.shared.recordDisabled()
+            throw VPNManagerError.quantumHandshakeFailed(.deriveFailed)
         }
         if let serverPsk = config.presharedKey, !serverPsk.isEmpty {
             BirdoPQManager.shared.recordServerProvided()
@@ -1042,9 +1053,11 @@ final class VPNManager: @unchecked Sendable {
 enum VPNManagerError: Error, LocalizedError {
     case keychainUnavailable
     case managerUnavailable
-    /// The server negotiated a post-quantum session but ML-KEM decapsulation did
-    /// not yield a key. Surfaced rather than downgraded — see `connect`.
-    case quantumHandshakeFailed
+    /// Quantum Protection is on and no post-quantum key exists for this
+    /// session: the server's answer was not post-quantum, or ML-KEM
+    /// decapsulation did not yield a key. Surfaced rather than downgraded —
+    /// see `connect`. Carries WHICH (MR-2287), and the message shows its code.
+    case quantumHandshakeFailed(PQFailure)
     /// A live-rebuild swap/restore was asked for with no `.connected` session
     /// (or an incomplete persisted profile) to swap under. (Mobile-Client #159)
     case noLiveSession
@@ -1063,10 +1076,13 @@ enum VPNManagerError: Error, LocalizedError {
             return "Secure storage unavailable. Restart the app and try again."
         case .managerUnavailable:
             return "VPN configuration unavailable. Restart the app and try again."
-        case .quantumHandshakeFailed:
-            return "Quantum-protected handshake failed. Not connecting, because continuing "
-                + "would fall back to weaker encryption. Try again, or turn off Quantum "
-                + "Protection in Settings to connect without it."
+        case .quantumHandshakeFailed(let reason):
+            // The code is a fixed literal (PQFailure), never a key or an
+            // address, so it is safe on screen and in a screenshot sent to
+            // support, the one place iOS can show the cause today.
+            return "Quantum-protected handshake failed (\(reason.code)). Not connecting, because "
+                + "continuing would fall back to weaker encryption. Try again, or turn off "
+                + "Quantum Protection in Settings to connect without it."
         case .noLiveSession:
             return "No active VPN session to update."
         case .reconfigureRefused(let why):
@@ -1074,6 +1090,29 @@ enum VPNManagerError: Error, LocalizedError {
         case .setupRefused:
             return "BirdoVPN couldn't set up its VPN on this device. If you were asked to allow "
                 + "a VPN configuration, choose Allow, then try again."
+        }
+    }
+}
+
+extension DialFailure {
+    /// MR-2287: the reason a failed dial is counted under, or nil when the
+    /// failure is not one the counts cover (a refusal the server explained, a
+    /// lapsed session, the network being offline: each has its own message
+    /// and none says anything about the tunnel). Here and not in
+    /// FailureCounts.swift because VPNManagerError and APIError live in files
+    /// the unit-test bundle cannot compile.
+    init?(dialError error: Error) {
+        if let error = error as? VPNManagerError {
+            switch error {
+            case .quantumHandshakeFailed(let reason): self.init(reason)
+            case .setupRefused: self = .setupRefused
+            case .keychainUnavailable: self = .keychainUnavailable
+            case .managerUnavailable, .noLiveSession, .reconfigureRefused: return nil
+            }
+        } else if let error = error as? APIError, case .quantumKeyUnavailable = error {
+            self = .pqKeygenFailed
+        } else {
+            return nil
         }
     }
 }
