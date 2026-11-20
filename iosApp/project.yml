@@ -421,6 +421,11 @@ targets:
       # KillSwitchProfileTests; VPNManager (NetworkExtension) cannot be compiled
       # into this bundle.
       - path: iosApp/Services/KillSwitchProfile.swift
+      # MR-2568: the one-time rewrite of a profile an older build saved
+      # (never creates one; marker only after a successful save).
+      # Foundation-only by design, driven by ProfileFlagsMigrationTests with a
+      # fake store; the live store (NetworkExtension) is in VPNManager.swift.
+      - path: iosApp/Services/ProfileFlagsMigration.swift
       # MR-953: the route contract — the AllowedIPs floors (full tunnel when
       # empty, ::/0 and 0.0.0.0/0 always) and host bits cleared before
       # WireGuardKit turns them into includedRoutes. Foundation-only, pinned by
