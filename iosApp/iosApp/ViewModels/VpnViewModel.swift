@@ -2450,20 +2450,45 @@ final class VpnViewModel: ObservableObject {
     /// `HeartbeatRebuildBudget` has already admitted it; a second reap inside
     /// its window ends the session instead.
     ///
-    /// Disconnect-first, like `retryOnAnotherRelay`. The key is gone, so the
-    /// in-place rebuild (#159) would be refused for it and would fall back to
-    /// this path anyway. Like every disconnect-first path, it leaves a gap
-    /// unprotected. The teardown is waited out behind `isTearingDownForRedial`
-    /// so that no second peer is minted while the first tunnel goes down.
+    /// MR-2525: in place first (`redialInPlace`): the new key is minted over
+    /// the session that is still up and swapped onto it, so the kill switch
+    /// keeps blocking throughout. Only when that does not end with a proven
+    /// new peer does the disconnect-first path run (`rebuildDisconnectFirst`).
     private func rebuildAfterReap() {
         let pair = activeMultiHop
         let server = servers.first { $0.id == connectedServerId } ?? selectedServer
-        guard pair != nil || server != nil else {
+        let target: RebuildTarget
+        if let pair {
+            target = .multiHop(entry: pair.entry, exit: pair.exit)
+        } else if let server {
+            target = .single(server)
+        } else {
             endSessionForServer(.revoked)
             return
         }
         let origin = selectionOrigin
         let generation = relayRetryGeneration
+        relayRecovery = .reconnecting
+        // Raised here, in the same main-actor step as the outcome: no beat,
+        // dial, switch or settings rebuild starts while the attempt is out.
+        isRebuildingLive = true
+        Task { [weak self] in
+            guard let self else { return }
+            let directive = await self.redialInPlace(target, generation: generation)
+            guard case .disconnectFirst = directive else { return }
+            self.rebuildDisconnectFirst(pair: pair, server: server, origin: origin, generation: generation)
+        }
+    }
+
+    /// The pre-MR-2525 rebuild: disconnect-first, like `retryOnAnotherRelay`.
+    /// The key is gone, so the deferred in-place rebuild (#159) would be
+    /// refused for it. Like every disconnect-first path, it leaves a gap
+    /// unprotected; it runs only after the in-place attempt did not keep a
+    /// new peer. The teardown is waited out behind `isTearingDownForRedial`
+    /// so that no second peer is minted while the first tunnel goes down.
+    private func rebuildDisconnectFirst(pair: MultiHopSession?, server: ServerInfo?,
+                                        origin: SelectionOrigin, generation: Int) {
+        guard generation == relayRetryGeneration else { return }
         relayRecovery = .reconnecting
         setActiveKeyId(nil)
         isTearingDownForRedial = true
@@ -2496,18 +2521,19 @@ final class VpnViewModel: ObservableObject {
     }
 
     /// MR-2343: the key went with its drained or deleted server. Connect to
-    /// a different one, chosen by the owner's rule (2026-11-19,
-    /// `HeartbeatPolicy.moveTarget`). A server the client chose moves to the
-    /// best server anywhere. A location the user picked stays in its country,
-    /// read from the cached list when the server was deleted, and the session
-    /// stops when nothing qualifies there. When no relay qualifies, the
-    /// session ends and the banner says so. Multi-Hop never comes here:
-    /// HeartbeatPolicy ends a pair's session, because the pair is the user's
-    /// to choose.
+    /// a different one, chosen by `HeartbeatPolicy.moveTarget` (the retry
+    /// rule, `RelayRetry.next`, MR-2535): the same city first; then a server
+    /// the client chose moves to the best server anywhere, and a location the
+    /// user picked stays in its country, read from the cached list when the
+    /// server was deleted. When no relay qualifies, the session ends and the
+    /// banner says so. Multi-Hop never comes here: HeartbeatPolicy ends a
+    /// pair's session, because the pair is the user's to choose.
     ///
-    /// Disconnect-first, like `retryOnAnotherRelay`, from a fresh
-    /// `/vpn/servers` (capped; else the cached list), so the drained node is
-    /// not dialled again.
+    /// MR-2525: the session stays up (and the kill switch blocking) while the
+    /// target is chosen from a fresh `/vpn/servers` (capped; else the cached
+    /// list) and dialled in place (`redialInPlace`). Only when that does not
+    /// end with a proven new peer does the disconnect-first path run
+    /// (`moveDisconnectFirst`), to the same target.
     private func moveOffDrainedServer() {
         guard let goneId = connectedServerId ?? selectedServer?.id else {
             endSessionForServer(.serverOffline)
@@ -2516,21 +2542,18 @@ final class VpnViewModel: ObservableObject {
         let origin = selectionOrigin
         let generation = relayRetryGeneration
         relayRecovery = .tryingAnotherServer
-        setActiveKeyId(nil)
-        isTearingDownForRedial = true
-        vpnManager.disconnect()
+        // Raised here, in the same main-actor step as the outcome: no beat,
+        // dial, switch or settings rebuild starts while the move is out.
+        isRebuildingLive = true
         Task { [weak self] in
-            await self?.awaitTeardown()
             guard let self else { return }
-            self.isTearingDownForRedial = false
-            // The user disconnected, signed out or dialled again while we waited.
-            guard generation == self.relayRetryGeneration else { return }
-            self.resetSessionState()
+            // The list the session was dialled from, read before the fresh one
+            // replaces it: a deleted server's country comes from it.
             let cached = self.servers
             let fresh = await self.freshServerList(within: Self.retryListCap)
-            guard generation == self.relayRetryGeneration else { return }
-            guard !self.isConnected, !self.isConnecting else {
-                self.relayRecovery = nil
+            // The user disconnected, signed out or dialled again while we waited.
+            guard generation == self.relayRetryGeneration else {
+                self.isRebuildingLive = false
                 return
             }
             if let fresh {
@@ -2539,9 +2562,10 @@ final class VpnViewModel: ObservableObject {
             }
             guard let next = HeartbeatPolicy.moveTarget(from: goneId, in: self.servers, cached: cached,
                                                         origin: origin) else {
-                self.relayRecovery = nil
-                self.heartbeatEnding = .serverOffline
-                self.error = HeartbeatEnding.serverOffline.message
+                self.isRebuildingLive = false
+                // Nothing the rule allows: the session ends, as for any stop the
+                // server asked for, and the banner says why.
+                self.endSessionForServer(.serverOffline)
                 // Round 2 (owner rule): a user pick stops with #648's one tap
                 // beside the notice (MR-2493). It is chosen from a fresh list
                 // only, and never dialled until tapped.
@@ -2554,8 +2578,178 @@ final class VpnViewModel: ObservableObject {
             self.selectedServer = next.server
             // Chosen under the rule of the pick it replaces, as the retry does.
             self.selectionOrigin = origin
+            let directive = await self.redialInPlace(.single(next.server), generation: generation)
+            guard case .disconnectFirst = directive else { return }
+            self.moveDisconnectFirst(to: next.server, origin: origin, generation: generation)
+        }
+    }
+
+    /// The pre-MR-2525 move: disconnect-first, like `retryOnAnotherRelay`, to
+    /// the target the move already chose. It runs only after the in-place
+    /// attempt did not keep a new peer.
+    private func moveDisconnectFirst(to server: ServerInfo, origin: SelectionOrigin, generation: Int) {
+        guard generation == relayRetryGeneration else { return }
+        relayRecovery = .tryingAnotherServer
+        setActiveKeyId(nil)
+        isTearingDownForRedial = true
+        vpnManager.disconnect()
+        Task { [weak self] in
+            await self?.awaitTeardown()
+            guard let self else { return }
+            self.isTearingDownForRedial = false
+            // The user disconnected, signed out or dialled again while we waited.
+            guard generation == self.relayRetryGeneration else { return }
+            self.resetSessionState()
+            guard !self.isConnected, !self.isConnecting else {
+                self.relayRecovery = nil
+                return
+            }
+            self.selectedServer = server
+            self.selectionOrigin = origin
             self.connect(userInitiated: false)
         }
+    }
+
+    // MARK: - MR-2525: the heartbeat's rebuild and move, in place
+
+    /// One in-place attempt for a heartbeat rebuild or move, carried out by
+    /// `HeartbeatRedial.directive`, which this returns. The caller raised
+    /// `isRebuildingLive` in the same main-actor step as the outcome; it is
+    /// lowered here on every exit.
+    ///
+    /// 1. `/vpn/connect` (or the Multi-Hop one) over the session that is still
+    ///    up, capped at `HeartbeatRedial.mintCap`. No `rebuild` flag: the
+    ///    server has already removed the key the session rides.
+    /// 2. Multi-Hop: the route the server confirmed must be the one asked for.
+    /// 3. `VPNManager.swapConfig`: the new peer on the RUNNING session.
+    ///    On-demand and `includeAllNetworks` are not touched.
+    /// 4. The new peer's own bytes prove it (`awaitNewPeerHandshake`).
+    ///
+    /// Not kept, the new key is released and the caller runs its
+    /// disconnect-first path. The user acting meanwhile wins: the key is
+    /// released and nothing else changes.
+    private func redialInPlace(_ target: RebuildTarget, generation: Int) async -> HeartbeatRedialDirective {
+        let attempt = await attemptRedialInPlace(target, generation: generation)
+        // MR-2374: the attempt's PQ pair ends with the attempt (a no-op once
+        // the swap has decapsulated it).
+        if let minted = attempt.minted { BirdoPQManager.shared.discardHandOff(publicKey: minted.pqUploadedKey) }
+        isRebuildingLive = false
+        let directive = HeartbeatRedial.directive(after: attempt.step)
+        // The step and the directive only: no key ids, no hosts.
+        debugLog("[VpnViewModel] heartbeat redial in place: %@ -> %@",
+                 String(describing: attempt.step), String(describing: directive))
+        switch directive {
+        case .commit:
+            if let minted = attempt.minted { commitRedial(target, config: minted, route: attempt.route) }
+        case .standDown(let releaseNewKey), .disconnectFirst(let releaseNewKey):
+            if releaseNewKey, let newId = attempt.minted?.keyId {
+                release(keyId: newId)
+                // A user disconnect has already cleared the handle; anything
+                // else still names the key just released.
+                if activeKeyId == newId { setActiveKeyId(nil) }
+            }
+        }
+        // Review of #634: a settings change kept while the attempt ran.
+        applyQueuedReapply()
+        return directive
+    }
+
+    /// Where one in-place attempt ended, with what it minted on the way.
+    private struct RedialAttempt {
+        let step: HeartbeatRedialStep
+        var minted: VPNConnectionConfig?
+        var route: String?
+    }
+
+    /// Steps 1-4 of `redialInPlace`. The user acting meanwhile (a disconnect
+    /// or a sign-out bumps `relayRetryGeneration`) ends it as `.userActed`.
+    private func attemptRedialInPlace(_ target: RebuildTarget, generation: Int) async -> RedialAttempt {
+        guard isConnected, !isConnecting else { return RedialAttempt(step: .sessionNotUp) }
+        guard let config = await mintForRedial(target) else {
+            return RedialAttempt(step: generation == relayRetryGeneration ? .mintFailed : .userActed)
+        }
+        func ended(_ step: HeartbeatRedialStep, route: String? = nil) -> RedialAttempt {
+            RedialAttempt(step: generation == relayRetryGeneration ? step : .userActed, minted: config, route: route)
+        }
+        guard generation == relayRetryGeneration else { return ended(.userActed) }
+        var route: String?
+        if case .multiHop(let entry, let exit) = target {
+            do {
+                route = try MultiHopRouteCheck.validate(
+                    config.multiHop, requestedEntryId: entry.id, requestedExitId: exit.id
+                ).route
+            } catch {
+                return ended(.routeNotConfirmed)
+            }
+        }
+        setActiveKeyId(config.keyId)
+        do {
+            try await vpnManager.swapConfig(config: config)
+        } catch VPNManagerError.noLiveSession {
+            return ended(.sessionGoneBeforeSwap, route: route)
+        } catch {
+            debugLog("[VpnViewModel] heartbeat redial: in-place swap refused: %@", error.localizedDescription)
+            return ended(.swapFailed, route: route)
+        }
+        // MR-974: the new peer is not "Protected" until IT answers.
+        resetHandshakeProof()
+        let probed = await awaitNewPeerHandshake()
+        return ended(probed == .newPeerHandshaked ? .newPeerHandshaked : .newPeerSilent, route: route)
+    }
+
+    /// The minted config, or nil when the request failed or did not answer
+    /// within `HeartbeatRedial.mintCap`. Past the cap the request is
+    /// cancelled, which ends its PQ pair (`getConnectConfig`'s own defer).
+    private func mintForRedial(_ target: RebuildTarget) async -> VPNConnectionConfig? {
+        let box = RedialMint()
+        let api = self.api
+        // Ids only into the request task.
+        let ids: (first: String, exit: String?)
+        switch target {
+        case .single(let server): ids = (server.id, nil)
+        case .multiHop(let entry, let exit): ids = (entry.id, exit.id)
+        }
+        let work = Task { @MainActor in
+            if let exitId = ids.exit {
+                box.config = try? await api.getMultiHopConfig(entryId: ids.first, exitId: exitId)
+            } else {
+                box.config = try? await api.getConnectConfig(serverId: ids.first)
+            }
+        }
+        let cap = Task {
+            try? await Task.sleep(for: HeartbeatRedial.mintCap)
+            work.cancel()
+        }
+        await work.value
+        cap.cancel()
+        return box.config
+    }
+
+    /// The new peer answered: it is the session now, on the route the attempt
+    /// was for. The old key needs no release: the server removed it, which is
+    /// why the attempt ran.
+    private func commitRedial(_ target: RebuildTarget, config: VPNConnectionConfig, route: String?) {
+        switch target {
+        case .single(let server):
+            activeMultiHop = nil
+            connectedServerId = server.id
+            lastDialRelayHost = config.serverAddress
+        case .multiHop(let entry, let exit):
+            activeMultiHop = MultiHopSession(entry: entry, exit: exit, route: route ?? "")
+            connectedServerId = entry.id
+        }
+        applyUpdateAdvisory(config.clientUpdate)
+        deviceNotice = config.deviceNotice?.text == nil ? nil : config.deviceNotice
+        quantumActive = BirdoPQManager.shared.currentMode == .bilateral
+        // Real inbound bytes on the new peer: the breaker's streak is spent
+        // history (same rule as armKillSwitchAfterHandshake).
+        clearCircuitBreaker()
+        killSwitchSystem = vpnManager.killSwitchState
+        // A new key, so a new reap clock; its grace notice is its own.
+        lastHeartbeatOkAt = Date()
+        quotaGrace = nil
+        relayRecovery = nil
+        error = nil
     }
 
     // MARK: - Stats Timer
@@ -2637,4 +2831,11 @@ final class VpnViewModel: ObservableObject {
         statsTimer?.invalidate()
         heartbeatTimer?.invalidate()
     }
+}
+
+/// MR-2525: where `VpnViewModel.mintForRedial`'s request task leaves its
+/// answer (main-actor isolated, so the task and the caller share it safely).
+@MainActor
+private final class RedialMint {
+    var config: VPNConnectionConfig?
 }

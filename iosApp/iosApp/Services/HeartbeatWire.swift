@@ -310,3 +310,83 @@ struct HeartbeatRebuildBudget: Equatable, Sendable {
         return .rebuild
     }
 }
+
+// MARK: - MR-2525: the rebuild and the move, in place first
+//
+// The heartbeat's rebuild (`reaped`) and move (`server_offline`) used to stop
+// the session first (`VPNManager.disconnect()`: on-demand saved OFF, the
+// tunnel stopped) and dial again. With the kill switch on, traffic left on the
+// physical interface for that gap. Android keeps its TUN up across the same
+// move.
+//
+// The reply that asks for the rebuild or the move came THROUGH the tunnel
+// (#621 F1: the host heartbeat rides it), so the old path answered a moment
+// ago. The new key is minted over it, and swapped onto the RUNNING session
+// (`VPNManager.swapConfig`, #159): the session never drops, so
+// `includeAllNetworks` and the armed on-demand rule keep blocking throughout.
+// No `rebuild` flag: the server has already removed the old key, so there is
+// nothing for it to defer (a rebuild would be refused `unknown-current-key`).
+//
+// Anything short of a proven new peer falls back to the disconnect-first path
+// this replaced, so the result is never worse than before. The attempt is
+// bounded: `mintCap` for the request, `LiveRebuildProbe` for the handshake.
+
+/// Where one in-place attempt ended. Each case is terminal for the attempt.
+enum HeartbeatRedialStep: Equatable, CaseIterable, Sendable {
+    /// The session was not up and settled when the outcome arrived (a
+    /// reassert, a re-dial): nothing to swap onto. Nothing minted.
+    case sessionNotUp
+    /// `/vpn/connect` (or the Multi-Hop one) failed, or did not answer within
+    /// `HeartbeatRedial.mintCap`: the old path is gone too. Nothing minted.
+    case mintFailed
+    /// The user disconnected, signed out or dialled while the attempt was out.
+    /// A key may have been minted.
+    case userActed
+    /// Multi-Hop: the server confirmed a different route than asked for. A
+    /// key was minted; nothing was swapped.
+    case routeNotConfirmed
+    /// The session went away before the swap (`noLiveSession`, thrown before
+    /// any write). A key was minted; nothing was swapped.
+    case sessionGoneBeforeSwap
+    /// The swap was refused (keychain, preferences, the extension). The new
+    /// key was minted and may be half installed.
+    case swapFailed
+    /// The new peer delivered bytes inside the probe window: it is the session.
+    case newPeerHandshaked
+    /// The new peer stayed silent through the window, or the session dropped
+    /// while it was probed.
+    case newPeerSilent
+}
+
+/// What follows an in-place attempt.
+enum HeartbeatRedialDirective: Equatable, Sendable {
+    /// The new peer is the session. Nothing is stopped.
+    case commit
+    /// The user acted meanwhile and owns the state: change nothing else.
+    case standDown(releaseNewKey: Bool)
+    /// The pre-MR-2525 path: stop, wait for the teardown, dial again.
+    case disconnectFirst(releaseNewKey: Bool)
+}
+
+enum HeartbeatRedial {
+    /// The cap on the in-place `/vpn/connect`. A request into a path that no
+    /// longer answers would otherwise wait out URLSession's timeout while
+    /// traffic is blocked; past the cap the disconnect-first path runs.
+    static let mintCap: Duration = .seconds(8)
+
+    /// The one table. Only a proven new peer is kept; a key minted for an
+    /// attempt that is not kept is always released (DELETE), so it cannot
+    /// hold the account's slot.
+    static func directive(after step: HeartbeatRedialStep) -> HeartbeatRedialDirective {
+        switch step {
+        case .newPeerHandshaked:
+            return .commit
+        case .userActed:
+            return .standDown(releaseNewKey: true)
+        case .sessionNotUp, .mintFailed:
+            return .disconnectFirst(releaseNewKey: false)
+        case .routeNotConfirmed, .sessionGoneBeforeSwap, .swapFailed, .newPeerSilent:
+            return .disconnectFirst(releaseNewKey: true)
+        }
+    }
+}
