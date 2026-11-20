@@ -113,8 +113,18 @@ class PacketTunnelSettingsGenerator {
             networkSettings.mtu = NSNumber(value: mtu)
         }
 
-        let (ipv4Addresses, ipv6Addresses) = addresses()
+        let (ipv4Addresses, interfaceIPv6Addresses) = addresses()
+        var ipv6Addresses = interfaceIPv6Addresses
         let (ipv4IncludedRoutes, ipv6IncludedRoutes) = includedRoutes()
+
+        // BIRDO LOCAL PATCH 6 (MR-953 F3): IPv6 routed into a tunnel with no IPv6 address
+        // gets a placeholder ULA, so `::/0` has an addressed interface to go into and is
+        // dropped there instead of being left to the OS. See TunnelIPv6Blackhole.swift.
+        for placeholder in TunnelIPv6Blackhole.addressesToAdd(tunnelHasIPv6Address: !ipv6Addresses.isEmpty,
+                                                              ipv6RoutedIntoTunnel: !ipv6IncludedRoutes.isEmpty) {
+            ipv6Addresses.append(NEIPv6Route(destinationAddress: placeholder.address,
+                                             networkPrefixLength: NSNumber(value: placeholder.prefixLength)))
+        }
 
         let ipv4Settings = NEIPv4Settings(addresses: ipv4Addresses.map { $0.destinationAddress }, subnetMasks: ipv4Addresses.map { $0.destinationSubnetMask })
         ipv4Settings.includedRoutes = ipv4IncludedRoutes

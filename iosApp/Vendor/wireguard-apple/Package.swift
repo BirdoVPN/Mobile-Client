@@ -35,6 +35,14 @@ let package = Package(
             ],
             publicHeadersPath: ".",
             linkerSettings: [.linkedLibrary("wg-go")]
+        ),
+        // BIRDO LOCAL: the route contract's generator-level tests (MR-953 F3),
+        // run with `swift test` against the real WireGuardKit by Apple CI's
+        // macOS job (it builds libwg-go.a first). Dependents of this package
+        // never build test targets.
+        .testTarget(
+            name: "WireGuardKitTests",
+            dependencies: ["WireGuardKit"]
         )
     ]
 )

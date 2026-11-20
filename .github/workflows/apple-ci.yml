@@ -287,6 +287,19 @@ jobs:
           echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
           lipo -info "$WG_LIB_DIR/libwg-go.a"
 
+      # MR-953 F3 (review of Mobile #621): local patch 6 through the REAL
+      # PacketTunnelSettingsGenerator. BirdoVPNTests cannot link WireGuardKit,
+      # so the vendored package carries its own test target, linked here
+      # against the libwg-go.a built above. The build goes to RUNNER_TEMP, not
+      # into the package. The grep fails a run that executed no test.
+      - name: WireGuardKit generator tests (swift test)
+        run: |
+          set -euo pipefail
+          swift test --package-path iosApp/Vendor/wireguard-apple \
+            --scratch-path "$RUNNER_TEMP/wgkit-build" \
+            -Xlinker -L"$WG_LIB_DIR" 2>&1 | tee "$RUNNER_TEMP/wgkit-test.log"
+          grep -E "Executed [1-9][0-9]* tests?, with 0 failures" "$RUNNER_TEMP/wgkit-test.log"
+
       - name: Derive version from version.properties
         run: |
           set -euo pipefail
