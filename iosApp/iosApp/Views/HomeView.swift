@@ -122,21 +122,32 @@ struct HomeView: View {
         .sensoryFeedback(.success, trigger: vpnVM.isProtected) { _, nowProtected in
             nowProtected
         }
-        .birdoConfirmDialog(
-            isPresented: $showLogoutConfirm,
-            title: "Sign out?",
-            message: signOutMessage,
-            confirmLabel: "Sign out",
-            onConfirm: {
-                Task { @MainActor in
-                    // Order is load-bearing: disconnectForSignOut() tears the
-                    // tunnel down and AWAITS the server-side slot release
-                    // BEFORE logout() wipes the keychain the extension reads.
-                    await vpnVM.disconnectForSignOut()
-                    authVM.logout()
+        // MR-179 (hold origin): the confirmation also says what signing out
+        // does to a deletion on hold, by where it came from, and waits for
+        // the list read when no hold is known yet (SignOutConfirmation).
+        .overlay {
+            ZStack {
+                if showLogoutConfirm {
+                    SignOutConfirmation(
+                        title: "Sign out?",
+                        message: signOutMessage,
+                        confirmLabel: "Sign out",
+                        listAnswered: authVM.pendingDeletion != nil ? true : nil,
+                        signOut: {
+                            // Order is load-bearing: disconnectForSignOut() tears the
+                            // tunnel down and AWAITS the server-side slot release
+                            // BEFORE logout() wipes the keychain the extension reads.
+                            await vpnVM.disconnectForSignOut()
+                            authVM.logout()
+                        },
+                        onClose: { showLogoutConfirm = false }
+                    )
+                    .transition(.opacity)
                 }
             }
-        )
+            .animation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick),
+                       value: showLogoutConfirm)
+        }
     }
 
     /// Top bar, status, then the bottom action panel pinned to the bottom.
@@ -176,16 +187,16 @@ struct HomeView: View {
 
     /// Signing out removes an anonymous account's number from this device
     /// (`LocalSignOut`), so the confirmation says to keep it, as Android's
-    /// dialog does (`sign_out_anonymous_reminder`).
+    /// dialog does (`sign_out_anonymous_reminder`). A deletion on hold gets
+    /// its own line from `SignOutConfirmation` (MR-179 hold origin): only a
+    /// hold this session filed is cancelled by signing out.
     private var signOutMessage: String {
         let base = vpnVM.isConnected
             ? "You are still connected. Signing out will disconnect."
             : "Are you sure you want to sign out?"
-        // MR-179 (review of #616): signing out cancels a deletion on hold.
-        let hold = authVM.pendingDeletion.map { " " + DeletionHold.signOutWarning(applyAfter: $0.applyAfter) } ?? ""
-        guard authVM.isAnonymousAccount else { return base + hold }
+        guard authVM.isAnonymousAccount else { return base }
         return base + " Make sure you have saved your account number. "
-            + "It is the only way to sign in to this account again." + hold
+            + "It is the only way to sign in to this account again."
     }
 
     /// Reduce Motion: return nil so state changes land instantly.

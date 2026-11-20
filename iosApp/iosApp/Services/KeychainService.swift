@@ -73,6 +73,12 @@ final class KeychainService: @unchecked Sendable {
     /// so this is what decides whether account deletion re-authenticates with
     /// Apple first. Session-scoped: `clear()` drops it with the tokens.
     var signedInWithApple: Bool { read(.signInMethod) == "apple" }
+    /// MR-179 (hold origin): the id of the account deletion THIS session put
+    /// on its 24-hour hold (its own 202). The server voids such a hold when
+    /// this session signs out, and only such a hold, so a cold start must
+    /// still know which one it was (`HeldDeletionRecord`). Not a secret.
+    /// Session-scoped: `clear()` drops it with the tokens.
+    var heldDeletionFiledHereId: String? { read(.heldDeletionFiledHere) }
 
     // MARK: - Save / Clear (host app only)
 
@@ -133,6 +139,16 @@ final class KeychainService: @unchecked Sendable {
         }
     }
 
+    /// Record (or, with nil, forget) the hold this session filed (MR-179,
+    /// `HeldDeletionIdStore`).
+    func setHeldDeletionFiledHere(_ id: String?) {
+        if let id, !id.isEmpty {
+            write(.heldDeletionFiledHere, value: id)
+        } else {
+            delete(.heldDeletionFiledHere)
+        }
+    }
+
     /// Wipe the session. `device_id` survives a sign-out — see its accessor
     /// doc; a sign-out drops `anonymous_id` separately (`LocalSignOut.wipe`)
     /// and a reinstall is handled by `InstallIdentity`.
@@ -141,6 +157,7 @@ final class KeychainService: @unchecked Sendable {
         delete(.refreshToken)
         delete(.userEmail)
         delete(.signInMethod)
+        delete(.heldDeletionFiledHere)
         // Also wipe any tunnel secrets that may have been left behind.
         clearAllSharedSecrets()
     }
@@ -384,6 +401,10 @@ extension KeychainService: InstallIdentityStore {
     /// tunnel's shared secrets.
     func clearSession() { clear() }
 }
+
+/// MR-179 (hold origin): where `HeldDeletionController` keeps the id of the
+/// hold this session filed, with the session (`clear()` drops it).
+extension KeychainService: HeldDeletionIdStore {}
 
 /// MR-1729: the live keychain behind `HostOnlyKeychain`. `group == nil` sends no
 /// `kSecAttrAccessGroup`, exactly as every host-only query here did before; the

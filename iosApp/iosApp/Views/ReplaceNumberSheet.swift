@@ -138,7 +138,12 @@ final class ReplaceNumberModel: ObservableObject {
                                                          to: keychain)
             flow.confirmed(storedLocally: stored)
             retyped = ""
-            if stored { await authVM.refreshProfile() }
+            if stored {
+                await authVM.refreshProfile()
+                // MR-179: a rotation cancels every deletion on hold, from any
+                // origin; the list says so.
+                authVM.refreshPendingDeletion()
+            }
         } catch {
             flow.confirmFailed(Self.failure(of: error))
         }
