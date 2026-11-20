@@ -75,6 +75,15 @@ final class SignOutRevocationTests: XCTestCase {
         XCTAssertFalse(SignOutRevocation.revokesLateRotation(generationAtStart: 4, generationNow: 4))
     }
 
+    /// The tokens never print (CredentialRedacting, as every credential type).
+    func testTheSignOutTokensPrintNoToken() {
+        let tokens = SignOutTokens(accessToken: "access-secret-xyz", refreshToken: "refresh-secret-xyz")
+        for printed in ["\(tokens)", String(describing: tokens), String(reflecting: tokens)] {
+            XCTAssertFalse(printed.contains("access-secret-xyz"), printed)
+            XCTAssertFalse(printed.contains("refresh-secret-xyz"), printed)
+        }
+    }
+
     // MARK: - Source pins (APIClient and AuthViewModel cannot be compiled here)
 
     private func source(_ path: String) throws -> String {

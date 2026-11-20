@@ -124,6 +124,13 @@ extension RefreshBody: CredentialRedacting {
     }
 }
 
+/// MR-2532: the tokens a sign-out ends on the server (RefreshAnswer.swift).
+extension SignOutTokens: CredentialRedacting {
+    var redactedFields: [(label: String, value: String)] {
+        [("accessToken", Redaction.optional(accessToken)), ("refreshToken", Redaction.optional(refreshToken))]
+    }
+}
+
 // MARK: - Sign-in responses
 
 extension TokenPairDTO: CredentialRedacting {
