@@ -310,11 +310,20 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
+      # cache-cleanup: never (MR-2511), as in Unit Tests and Build APK, the
+      # jobs that save a Gradle cache from main. The default cleanup deletes
+      # what the job did not "access", and a warm build reads POMs, Gradle
+      # module files and plugin markers from Gradle's descriptor cache without
+      # touching them, so every second main save lost ~620 of them and each
+      # job restoring it fetched them again from Maven Central, whose rate
+      # limit failed the first one ("Plugin [id:
+      # 'org.jetbrains.kotlin.multiplatform' ...] was not found", 2026-11-19).
       - name: Set up Gradle
         if: ${{ needs.changes.outputs.android != 'false' }}
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-cleanup: never
 
       - name: Run Lint
         if: ${{ needs.changes.outputs.android != 'false' }}
@@ -351,10 +360,13 @@ jobs:
       # purpose: 23 test classes read repo files (Swift sources, workflows,
       # fdroid/, store-assets/) that are not declared test-task inputs, so a
       # cached test result would be replayed after exactly the change it guards.
+      # cache-cleanup: never (MR-2511): the default cleanup drops the metadata
+      # a warm build reads from Gradle's descriptor cache. See Lint Check.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-cleanup: never
 
       # :shared:testAndroidHostTest is named explicitly: the root
       # testDebugUnitTest compiles :shared but runs no test task in it.
@@ -643,10 +655,13 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
+      # cache-cleanup: never (MR-2511): the default cleanup drops the metadata
+      # a warm build reads from Gradle's descriptor cache. See Lint Check.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-cleanup: never
 
       # Go module + build caches for the two 32-bit Xray engines built from
       # source. Never the engines themselves (see the action). Restored on
