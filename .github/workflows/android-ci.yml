@@ -62,17 +62,24 @@ jobs:
   # iosApp/ is additionally inert for the Android build, lint and CodeQL.
   #
   # It also names the month's Gradle cache lineage (MR-2536), which every job
-  # with a setup-gradle step sets as GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX.
+  # with a setup-gradle step sets as GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX, and
+  # decides which of the jobs that save main's Gradle cache save in this run
+  # (MR-2554).
   changes:
     name: Detect changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
+      # gradle-cache-write.sh lists this repository's Actions caches.
+      actions: read
     outputs:
       android: ${{ steps.classify.outputs.android }}
       jvm: ${{ steps.classify.outputs.jvm }}
       gradle_cache_prefix: ${{ steps.gradle-cache.outputs.gradle_cache_prefix }}
+      gradle_cache_write_lint: ${{ steps.gradle-write.outputs.lint }}
+      gradle_cache_write_test: ${{ steps.gradle-write.outputs.test }}
+      gradle_cache_write_build: ${{ steps.gradle-write.outputs.build }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -117,6 +124,26 @@ jobs:
             echo "$result"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # MR-2554: which of Lint Check, Unit Tests and Build APK save main's
+      # Gradle cache in this run. A push to main saves only when it changed a
+      # Gradle input, or when the month's lineage has no entry for that job
+      # yet (or only one a build that failed early saved); otherwise the job
+      # restores that entry and saves nothing. Before, every main push that
+      # changed Kotlin saved ~880 MB of new transforms entries (the transforms
+      # of that commit's own code, useless to the next one), which kept the
+      # repository's Actions cache at its 10 GB cap. Never fails, and errs
+      # towards saving; see the script. The jobs it names gate their
+      # setup-gradle step on its outputs (gradle-cache-write-test.sh checks).
+      - id: gradle-write
+        if: ${{ !cancelled() }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          PREFIX: ${{ steps.gradle-cache.outputs.gradle_cache_prefix }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/gradle-cache-write.sh lint test build
 
   # The cheap repository gates run on EVERY pull request, docs-only included:
   # check_pq_docs.sh exists precisely to stop a falsified claim landing in
@@ -270,6 +297,7 @@ jobs:
           python3 scripts/tests/check_r8_keeps_test.py
           python3 scripts/tests/verify_android_release_apk_test.py
           bash .github/scripts/gradle-cache-prefix-test.sh
+          bash .github/scripts/gradle-cache-write-test.sh
 
       # macos.yml, ios.yml, android.yml and fdroid.yml run only on tags and
       # dispatches, so a gate removed from one would first be missed on release
@@ -346,11 +374,13 @@ jobs:
       # 'org.jetbrains.kotlin.multiplatform' ...] was not found", 2026-11-19).
       # So an entry only grows; the job's GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX
       # starts a new lineage every month instead (MR-2536, see `changes`).
+      # On main it saves only when `changes` says so (MR-2554): a push that
+      # changed a Gradle input, or no usable entry this month yet.
       - name: Set up Gradle
         if: ${{ needs.changes.outputs.android != 'false' }}
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-read-only: ${{ github.ref != 'refs/heads/main' || needs.changes.outputs.gradle_cache_write_lint != 'true' }}
           cache-cleanup: never
 
       - name: Run Lint
@@ -393,10 +423,11 @@ jobs:
       # cached test result would be replayed after exactly the change it guards.
       # cache-cleanup: never (MR-2511): the default cleanup drops the metadata
       # a warm build reads from Gradle's descriptor cache. See Lint Check.
+      # On main it saves only when `changes` says so (MR-2554).
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-read-only: ${{ github.ref != 'refs/heads/main' || needs.changes.outputs.gradle_cache_write_test != 'true' }}
           cache-cleanup: never
 
       # :shared:testAndroidHostTest is named explicitly: the root
@@ -694,10 +725,11 @@ jobs:
 
       # cache-cleanup: never (MR-2511): the default cleanup drops the metadata
       # a warm build reads from Gradle's descriptor cache. See Lint Check.
+      # On main it saves only when `changes` says so (MR-2554).
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-read-only: ${{ github.ref != 'refs/heads/main' || needs.changes.outputs.gradle_cache_write_build != 'true' }}
           cache-cleanup: never
 
       # Go module + build caches for the two 32-bit Xray engines built from
@@ -993,13 +1025,14 @@ jobs:
       #
       # Whose "Build APK" it is (MR-2512): the attempt's run_started_at is read
       # once. A job counts as this attempt's if it started then or later, or
-      # as carried over if it is completed and ended before then (re-run
+      # as carried over if it is completed and ended then or before (re-run
       # failed jobs, or one job: then whatever its conclusion). Anything else,
       # such as in_progress with an older start, is not matched. A plain
       # "started >= run_started_at" would refuse every carried-over job.
       # It must start within 20 minutes of this wait (a job no runner takes
-      # held this one for 75), and every `gh api` call runs under
-      # `timeout 60` (a hung call did too).
+      # held this one for 75); once seen running, a read that regresses is
+      # bounded by its deadline, not cut by that cap (MR-2557). Every
+      # `gh api` call runs under `timeout -k 10 60` (a hung call did too).
       #
       # The deadline is anchored to that job's start and outlasts its own
       # timeout-minutes (BUILD_TIMEOUT_MIN below; the self-test fails when the
