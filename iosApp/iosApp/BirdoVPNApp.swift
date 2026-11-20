@@ -69,6 +69,21 @@ struct BirdoVPNApp: App {
                     }
                     #endif
             }
+            // MR-2244: a `birdo://` link (a deep link, or the SSO callback if
+            // it ever arrives outside ASWebAuthenticationSession) goes to the
+            // window that is already open. Without this, SwiftUI on macOS
+            // opened a NEW window for every URL no open scene claimed, which
+            // the WindowGroup's windows never did: a second window showing the
+            // same tunnel and session, which the New Window removal below is
+            // there to prevent. "*" on both sides: this window prefers every
+            // URL and accepts every URL, so ContentView's `.onOpenURL` runs in
+            // it. With no window open (closed; the app keeps running) SwiftUI
+            // still opens one for the URL, which is then the only one. iOS
+            // runs one scene (UIApplicationSupportsMultipleScenes is false)
+            // and is left as it was.
+            #if os(macOS)
+            .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+            #endif
         }
         // 760pt fits inside the 15-inch Air's usable height with room for the
         // menu bar; 480 matches the content column so nothing is letterboxed on
@@ -97,8 +112,9 @@ struct BirdoVPNApp: App {
     ///
     /// EVERY window, each against its own screen, because removing New Window
     /// does not make one the only case: a Mac that ran the rejected build may
-    /// restore a saved layout of several, possibly across displays, and SwiftUI
-    /// opens a new window for a `birdo://` URL that no open scene claims.
+    /// restore a saved layout of several, possibly across displays. (A
+    /// `birdo://` URL no longer adds one: the open window claims every URL,
+    /// `handlesExternalEvents` above, MR-2244.)
     /// Sheets move with their parent and a full-screen window fills its screen
     /// on purpose, so both are left alone.
     ///
