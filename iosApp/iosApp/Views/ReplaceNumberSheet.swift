@@ -136,6 +136,13 @@ final class ReplaceNumberModel: ObservableObject {
                                                          accessToken: tokens.accessToken,
                                                          refreshToken: tokens.refreshToken,
                                                          to: keychain)
+            // MR-2539: the stored pair is a new session, as a sign-in's is
+            // (`completeAuthentication`), so the refresh wait, backoff step and
+            // retry the old token earned go now, before the new pair's first
+            // request: Android's `storeSignInTokens` and Desktop's
+            // `begin_session` do the same. A pair the keychain refused started
+            // no session here, and the user is told to sign in again.
+            if stored { await api.beginSession() }
             flow.confirmed(storedLocally: stored)
             retyped = ""
             if stored { await authVM.refreshProfile() }
