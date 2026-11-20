@@ -372,10 +372,15 @@ final class RelayOfferTests: XCTestCase {
                 "RelayRetry.offer(after: failedId, in: fresh, cached: cached, origin: origin, budget: budget)"), line)
         }
         let finish = slice(vm, from: "private func finishUnansweredRelay(", to: "\n    }\n")
+        // MR-2343 round 2: the one other place, the heartbeat's stop when a
+        // user pick's server has gone and nothing in its country qualifies.
+        // HeartbeatPolicyTests pins how that offer is chosen (a fresh list only).
+        let heartbeatStop = slice(vm, from: "private func moveOffDrainedServer() {", to: "\n    }\n")
         let setting = lines.filter { $0.contains("relayOffer = ") && !$0.contains("relayOffer = nil") }
         XCTAssertFalse(setting.isEmpty)
         for line in setting {
-            XCTAssertTrue(finish.contains(line), "relayOffer set outside finishUnansweredRelay: \(line)")
+            XCTAssertTrue(finish.contains(line) || heartbeatStop.contains(line),
+                          "relayOffer set outside finishUnansweredRelay and the heartbeat's stop: \(line)")
         }
         // Never beside the blocked-network message.
         XCTAssertTrue(finish.contains("RelayRetry.offerFits(verdict)"))

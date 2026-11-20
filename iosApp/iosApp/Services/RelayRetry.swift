@@ -212,11 +212,15 @@ enum RelayRecovery: Equatable, Sendable {
     case tryingAnotherServer
     /// The tunnel is down and the TCP probe is out (`RelayProbe`).
     case checkingNetwork
+    /// MR-2343: the heartbeat's one quiet rebuild of the same route after a
+    /// reap is under way (`HeartbeatOutcome.rebuild`).
+    case reconnecting
 
     var label: String {
         switch self {
         case .tryingAnotherServer: return "Trying another server…"
         case .checkingNetwork: return "Checking the connection…"
+        case .reconnecting: return ConnectionPhase.reconnectingLabel
         }
     }
 }
