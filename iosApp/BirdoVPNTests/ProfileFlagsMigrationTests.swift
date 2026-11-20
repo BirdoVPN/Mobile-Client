@@ -5,8 +5,8 @@ import XCTest
 ///
 /// Before: nothing touched the saved profile at launch. A profile saved before
 /// MR-2340 kept `enforceRoutes = false` until an in-app connect or a
-/// kill-switch toggle rewrote it, and On Demand, the Settings app and a widget
-/// start the saved profile as it is.
+/// kill-switch toggle rewrote it, and a start from the Settings app or Control
+/// Center uses the saved profile as it is.
 final class ProfileFlagsMigrationTests: XCTestCase {
 
     // MARK: - Fakes
@@ -23,13 +23,74 @@ final class ProfileFlagsMigrationTests: XCTestCase {
         var disconnectOnSleep = false
     }
 
-    /// The profile one launch loaded: a copy of the system's, edited in place.
+    /// The profile one launch loaded: a copy of the system's, edited in place,
+    /// field by field as the protocol object holds it. Every field write is
+    /// recorded, even one that keeps the value, so a writer that touches
+    /// anything but the six flags shows up in `written` (review of #664, L3).
     private final class LoadedProfile: SavedProfileFlags {
-        var record: ProfileRecord
-        init(_ record: ProfileRecord) { self.record = record }
+        static let flagFields: Set<String> = ["includeAllNetworks", "enforceRoutes", "excludeLocalNetworks",
+                                              "excludeAPNs", "excludeDeviceCommunication",
+                                              "excludeCellularServices"]
+        private(set) var written: [String] = []
+
+        var includeAllNetworks: Bool { didSet { written.append("includeAllNetworks") } }
+        var enforceRoutes: Bool { didSet { written.append("enforceRoutes") } }
+        var excludeLocalNetworks: Bool { didSet { written.append("excludeLocalNetworks") } }
+        var excludeAPNs: Bool { didSet { written.append("excludeAPNs") } }
+        var excludeDeviceCommunication: Bool { didSet { written.append("excludeDeviceCommunication") } }
+        var excludeCellularServices: Bool { didSet { written.append("excludeCellularServices") } }
+        var serverAddress: String { didSet { written.append("serverAddress") } }
+        var providerConfiguration: [String: String] { didSet { written.append("providerConfiguration") } }
+        var onDemandEnabled: Bool { didSet { written.append("onDemandEnabled") } }
+        var onDemandRuleCount: Int { didSet { written.append("onDemandRuleCount") } }
+        var isEnabled: Bool { didSet { written.append("isEnabled") } }
+        var disconnectOnSleep: Bool { didSet { written.append("disconnectOnSleep") } }
+
+        init(_ record: ProfileRecord) {
+            includeAllNetworks = record.flags.includeAllNetworks
+            enforceRoutes = record.flags.enforceRoutes
+            excludeLocalNetworks = record.flags.excludeLocalNetworks
+            excludeAPNs = record.flags.excludeAPNs
+            excludeDeviceCommunication = record.flags.excludeDeviceCommunication
+            excludeCellularServices = record.flags.excludeCellularServices
+            serverAddress = record.serverAddress
+            providerConfiguration = record.providerConfiguration
+            onDemandEnabled = record.onDemandEnabled
+            onDemandRuleCount = record.onDemandRuleCount
+            isEnabled = record.isEnabled
+            disconnectOnSleep = record.disconnectOnSleep
+        }
+
+        /// What a save hands the system: every field as it now stands.
+        var record: ProfileRecord {
+            ProfileRecord(flags: flags, serverAddress: serverAddress,
+                          providerConfiguration: providerConfiguration,
+                          onDemandEnabled: onDemandEnabled, onDemandRuleCount: onDemandRuleCount,
+                          isEnabled: isEnabled, disconnectOnSleep: disconnectOnSleep)
+        }
+
+        /// Like the live `LoadedProfile`: the six flags, written one property
+        /// at a time, as `applyKillSwitchFlags` does.
         var flags: KillSwitchProfileFlags {
-            get { record.flags }
-            set { record.flags = newValue }
+            get {
+                KillSwitchProfileFlags(includeAllNetworks: includeAllNetworks, enforceRoutes: enforceRoutes,
+                                       excludeLocalNetworks: excludeLocalNetworks, excludeAPNs: excludeAPNs,
+                                       excludeDeviceCommunication: excludeDeviceCommunication,
+                                       excludeCellularServices: excludeCellularServices)
+            }
+            set {
+                includeAllNetworks = newValue.includeAllNetworks
+                enforceRoutes = newValue.enforceRoutes
+                excludeLocalNetworks = newValue.excludeLocalNetworks
+                excludeAPNs = newValue.excludeAPNs
+                excludeDeviceCommunication = newValue.excludeDeviceCommunication
+                excludeCellularServices = newValue.excludeCellularServices
+                // MUTATION CHECK (review of #664, L3), removed in the next commit:
+                // a same-value write to a non-flag field. A value comparison
+                // cannot see it; the recorded writes must.
+                let unchanged = serverAddress
+                serverAddress = unchanged
+            }
         }
     }
 
@@ -248,6 +309,11 @@ final class ProfileFlagsMigrationTests: XCTestCase {
                 var expected = original
                 expected.flags = .forProfile(killSwitch: killSwitch, localNetworkSharing: sharing)
                 XCTAssertEqual(store.persisted, expected, label)
+                // Every write, not only every changed value: only the six flags.
+                let written = Set(store.loaded?.written ?? [])
+                XCTAssertFalse(written.isEmpty, "the fake recorded no write at all: \(label)")
+                XCTAssertTrue(written.isSubset(of: LoadedProfile.flagFields),
+                              "wrote \(written.subtracting(LoadedProfile.flagFields).sorted()): \(label)")
                 XCTAssertEqual(store.persisted?.flags.includeAllNetworks, killSwitch, "kill switch kept: \(label)")
                 XCTAssertEqual(store.persisted?.flags.excludeLocalNetworks, sharing, "Sharing kept: \(label)")
             }
@@ -311,9 +377,10 @@ final class ProfileFlagsMigrationTests: XCTestCase {
         XCTAssertTrue(section.contains("VPNManager.applyKillSwitchFlags(newValue, to: proto)"))
         XCTAssertTrue(section.contains("manager.saveToPreferences"))
         for forbidden in ["NETunnelProviderManager()", "NETunnelProviderProtocol()", "startVPNTunnel",
-                          "stopVPNTunnel", "loadAllFromPreferences", "UserDefaults.standard.bool",
-                          "\"kill_switch\"", "\"local_network_sharing\"", "onDemandRules =",
-                          "isOnDemandEnabled =", "isEnabled ="] {
+                          "stopVPNTunnel", "loadAllFromPreferences", "removeFromPreferences",
+                          "UserDefaults.standard.bool", "\"kill_switch\"", "\"local_network_sharing\"",
+                          "onDemandRules =", "isOnDemandEnabled =", "isEnabled =", "providerConfiguration",
+                          "serverAddress =", "localizedDescription"] {
             XCTAssertFalse(section.contains(forbidden), "the MR-2568 section must not use \(forbidden)")
         }
     }

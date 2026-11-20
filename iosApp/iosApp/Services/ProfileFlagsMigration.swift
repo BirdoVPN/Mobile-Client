@@ -8,10 +8,12 @@ import Foundation
 /// written into the system's saved profile only by an in-app connect, a
 /// kill-switch toggle or the circuit breaker's fail-open, so a profile saved by
 /// an older build kept `enforceRoutes = false` until one of those happened.
-/// Meanwhile On Demand, the Settings app and a widget start the SAVED profile
-/// as it is, so those users stayed open to TunnelVision (a more specific local
-/// or DHCP option 121 route beating the tunnel) and to Local Network Sharing
-/// OFF not being delivered.
+/// Meanwhile a start from the Settings app or Control Center uses the SAVED
+/// profile as it is. The profiles that gain `enforceRoutes` are the kill-switch
+/// OFF ones, which never have On Demand armed (`applyKillSwitchFlag` arms it
+/// only with the kill switch on). So those users stayed open to TunnelVision
+/// (a more specific local or DHCP option 121 route beating the tunnel), and
+/// the Local Network Sharing value saved in their profile was not delivered.
 ///
 /// The rules, each pinned by ProfileFlagsMigrationTests:
 ///   - Only an EXISTING profile is rewritten. `SavedProfileStore` has no way to

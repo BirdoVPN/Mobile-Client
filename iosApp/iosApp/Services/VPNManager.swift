@@ -1090,9 +1090,12 @@ extension VPNManager {
     /// file already relies on the same thing: `applyKillSwitchFlag` saves new
     /// protocol flags mid-session, and the live swap saves while connected
     /// without restarting it. So the session keeps running on its old flags,
-    /// and the new ones apply from the next tunnel start, which for these
-    /// users is mostly an On Demand re-dial. The device check confirms that a
-    /// save does not drop a connected session.
+    /// and the new ones apply from the next tunnel start: from the Settings
+    /// app or Control Center, or an in-app connect (which writes the current
+    /// flags itself). Kill-switch-OFF profiles, the ones that gain
+    /// `enforceRoutes`, never have On Demand armed. Owner device check 3 (a
+    /// connected kill-switch-OFF profile saved by a pre-MR-2340 build)
+    /// confirms that the save does not drop the session.
     ///
     /// Logs carry counts only.
     private func migrateSavedProfileFlags(_ mgr: NETunnelProviderManager?) {
