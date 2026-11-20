@@ -67,7 +67,7 @@ struct KillSwitchProfileFlags: Equatable, Sendable {
     static func forProfile(killSwitch: Bool, localNetworkSharing: Bool) -> KillSwitchProfileFlags {
         KillSwitchProfileFlags(
             includeAllNetworks: killSwitch,
-            enforceRoutes: killSwitch,
+            enforceRoutes: true,
             excludeLocalNetworks: localNetworkSharing,
             excludeAPNs: !killSwitch,
             excludeDeviceCommunication: !killSwitch,
