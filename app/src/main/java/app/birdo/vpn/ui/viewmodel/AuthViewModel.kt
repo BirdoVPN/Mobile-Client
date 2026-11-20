@@ -130,6 +130,8 @@ data class AuthUiState(
      * MR-2378: bumped when a sign-out stopped after its cancel-first went
      * through but the list read after it did not answer "nothing waits": the
      * confirmation stays, showing what is known now, and nobody is signed out.
+     * Since MR-2398 no screen reads it (the dialog follows [isSigningOut], which
+     * drops in the same step); it stays as the signal the hold tests read.
      */
     val signOutReconsidered: Int = 0,
     /**
@@ -1057,7 +1059,9 @@ class AuthViewModel @Inject constructor(
      * Applies one read. A read that started before a cancel still applies
      * while that cancel is out: the epoch moves only when a cancel SUCCEEDS
      * (iOS #624 residual R3), so a failed cancel leaves this answer standing.
-     * True when the list answered and its answer was applied.
+     * True when the list answered: this read's answer was applied, or one sent
+     * after it already was (see below). False when it did not answer, or its
+     * answer is stale against this app's own change (the epoch).
      *
      * MR-2398: [epoch] and [sent] are both taken when the read is SENT, never
      * when it answers. A read answering after one sent later has already been
