@@ -250,34 +250,25 @@ enum HeartbeatPolicy {
         sinceLastOk >= reapWindow ? .rebuild : .end(.revoked)
     }
 
-    /// Where `.moveServer` goes: the owner's rule for a server that has gone
-    /// (2026-11-19, MR-2343 round 2). It applies alike to a drained server
-    /// (listed offline in `list`) and a deleted one (missing from `list`).
+    /// Where `.moveServer` goes: `RelayRetry.next` with the list the session
+    /// was dialled from (`cached`), the one implementation of the retry rule
+    /// (MR-2535, review L1 of #651 round 2). It applies alike to a drained
+    /// server (listed offline in `list`) and a deleted one (missing from it):
     ///
-    /// - AUTOMATIC pick (`SelectionOrigin.automatic`): the best server
-    ///   anywhere, i.e. QuickSelect's best of all the others. Nobody chose a
-    ///   location, so there is no same-city preference and no need to know
-    ///   where the gone server was.
-    /// - USER pick: stay within its own country (MR-2212), the same city
-    ///   first (`RelayRetry.next`). A deleted server's location is read from
-    ///   `cached`, the list it was dialled from. When it is in neither list,
-    ///   or nothing in its country qualifies, the result is nil.
+    /// - the SAME city first, for either pick, when the gone server is still
+    ///   listed (drained), as iOS RelayRetry (#655), Android and Desktop do;
+    /// - then an AUTOMATIC pick (`SelectionOrigin.automatic`) moves to the
+    ///   best server anywhere, and a USER pick stays in its own country
+    ///   (MR-2212);
+    /// - a DELETED server follows the owner's rule (2026-11-19): an automatic
+    ///   pick moves to the best server anywhere, a user pick within the
+    ///   country `cached` gives it, else nowhere.
     ///
     /// Only servers listed online and open to this plan qualify. nil means no
     /// move, and the session ends (`HeartbeatEnding.serverOffline`).
     static func moveTarget<S: RelayRetryCandidate>(from goneId: String, in list: [S], cached: [S],
                                                    origin: SelectionOrigin) -> RelayRetry.Choice<S>? {
-        let gone = list.first(where: { $0.id == goneId }) ?? cached.first(where: { $0.id == goneId })
-        switch origin {
-        case .automatic:
-            guard let best = QuickSelect.bestServer(in: list.filter { $0.id != goneId }) else { return nil }
-            return RelayRetry.Choice(server: best, reach: reach(from: gone, to: best))
-        case .user:
-            guard let gone else { return nil }
-            var known = list
-            if !known.contains(where: { $0.id == goneId }) { known.append(gone) }
-            return RelayRetry.next(after: goneId, in: known, origin: .user)
-        }
+        RelayRetry.next(after: goneId, in: list, cached: cached, origin: origin)
     }
 
     /// The one tap (#648's `RelayOffer`, MR-2493) beside the stop, for a USER
@@ -291,17 +282,6 @@ enum HeartbeatPolicy {
                                               origin: SelectionOrigin) -> S? {
         guard origin == .user else { return nil }
         return QuickSelect.bestServer(in: fresh.filter { $0.id != goneId })
-    }
-
-    /// How far an automatic move reaches, for the log line (counts only). A
-    /// gone server neither list knows logs as other-country.
-    private static func reach<S: RelayRetryCandidate>(from gone: S?, to target: S) -> RelayRetry.Reach {
-        func normalized(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-        guard let gone else { return .otherCountry }
-        let country = normalized(gone.countryCode)
-        guard !country.isEmpty, country == normalized(target.countryCode) else { return .otherCountry }
-        let city = normalized(gone.city)
-        return !city.isEmpty && city == normalized(target.city) ? .sameCity : .sameCountry
     }
 }
 

@@ -187,15 +187,16 @@ final class HeartbeatPolicyTests: XCTestCase {
 
     /// Round 2: the OWNER's rule for a server that has gone (owner decision,
     /// relayed by the lead at 2026-11-19 21:29Z, superseding the 21:16Z "no
-    /// move"). It is the same whether the server is drained (still listed,
-    /// offline) or DELETED (no longer in the fresh list):
-    ///   * an AUTOMATIC pick moves to the best server anywhere. That is
-    ///     QuickSelect's best of all the others, with no same-city preference
-    ///     and no need to know where the gone server was;
+    /// move"), carried out by `RelayRetry.next` (MR-2535):
+    ///   * a DELETED server (no longer in the fresh list): an AUTOMATIC pick
+    ///     moves to the best server anywhere, QuickSelect's best of all the
+    ///     others, with no need to know where the gone server was;
     ///   * a USER pick moves within its own country, read from the list it was
     ///     dialled from when the fresh one no longer carries it (the same
     ///     city first). When nothing there qualifies, nothing moves and the
     ///     session ends ("This server went offline. Choose another location.").
+    /// A DRAINED server (still listed, offline) goes to its same-city twin
+    /// first for either pick: `testADrainedServerMovesToItsCityFirstForEitherPick`.
     func testAGoneServerFollowsTheOwnersRule() {
         let dialledFrom = [Node(id: "de-1"),
                            Node(id: "de-1b", load: 60),
@@ -204,11 +205,11 @@ final class HeartbeatPolicyTests: XCTestCase {
         let deleted = Array(dialledFrom.dropFirst())
         var drained = dialledFrom
         drained[0].isOnline = false
+        // AUTOMATIC, deleted: the best anywhere, past the busier same-city twin.
+        let automatic = HeartbeatPolicy.moveTarget(from: "de-1", in: deleted, cached: dialledFrom, origin: .automatic)
+        XCTAssertEqual(automatic?.server.id, "nl-1")
+        XCTAssertEqual(automatic?.reach, .otherCountry)
         for (label, list) in [("deleted", deleted), ("drained", drained)] {
-            // AUTOMATIC: the best anywhere, past the busier same-city twin.
-            let automatic = HeartbeatPolicy.moveTarget(from: "de-1", in: list, cached: dialledFrom, origin: .automatic)
-            XCTAssertEqual(automatic?.server.id, "nl-1", label)
-            XCTAssertEqual(automatic?.reach, .otherCountry, label)
             // USER: its own country, the same city first.
             let user = HeartbeatPolicy.moveTarget(from: "de-1", in: list, cached: dialledFrom, origin: .user)
             XCTAssertEqual(user?.server.id, "de-1b", label)
@@ -232,6 +233,70 @@ final class HeartbeatPolicyTests: XCTestCase {
                                                   origin: .automatic)?.server.id, "de-1b")
         XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: [closed[1], closed[2]], cached: dialledFrom,
                                                 origin: .automatic))
+    }
+
+    /// MR-2535 (review L1 of #651 round 2): a DRAINED server, still listed
+    /// (offline), goes to another relay in its own city first, whoever picked
+    /// it, as the connect retry (#655), Android and Desktop do. Before, an
+    /// automatic pick went straight to the least loaded server anywhere and
+    /// skipped the same-city twin. With no twin left, an automatic pick still
+    /// goes anywhere and a user pick stays in its country.
+    func testADrainedServerMovesToItsCityFirstForEitherPick() {
+        let dialledFrom = [Node(id: "de-1"),
+                           Node(id: "de-1b", load: 60),
+                           Node(id: "de-2", city: "Berlin", load: 50),
+                           Node(id: "nl-1", countryCode: "NL", city: "Amsterdam", load: 1)]
+        var drained = dialledFrom
+        drained[0].isOnline = false
+        for origin in [SelectionOrigin.automatic, .user] {
+            let choice = HeartbeatPolicy.moveTarget(from: "de-1", in: drained, cached: dialledFrom, origin: origin)
+            XCTAssertEqual(choice?.server.id, "de-1b", "\(origin): the same city first, past a less loaded abroad")
+            XCTAssertEqual(choice?.reach, .sameCity, "\(origin)")
+        }
+        // No twin left (offline too): an automatic pick goes anywhere, a user
+        // pick stays in its country.
+        var noTwin = drained
+        noTwin[1].isOnline = false
+        let automatic = HeartbeatPolicy.moveTarget(from: "de-1", in: noTwin, cached: dialledFrom, origin: .automatic)
+        XCTAssertEqual(automatic?.server.id, "nl-1")
+        XCTAssertEqual(automatic?.reach, .otherCountry)
+        let user = HeartbeatPolicy.moveTarget(from: "de-1", in: noTwin, cached: dialledFrom, origin: .user)
+        XCTAssertEqual(user?.server.id, "de-2")
+        XCTAssertEqual(user?.reach, .sameCountry)
+    }
+
+    /// MR-2535: one implementation. The heartbeat's move IS the connect
+    /// retry's `RelayRetry.next` with the cached list, for every gone server
+    /// (listed, deleted, unknown to both lists), both picks, and many mixes of
+    /// online, open-to-this-plan and load.
+    func testTheMoveIsTheRetryRuleForEveryListShape() {
+        let places: [(String, String)] = [("DE", "Frankfurt"), ("DE", "Berlin"), ("NL", "Amsterdam")]
+        var compared = 0
+        for mask in 0..<(1 << 9) {
+            // Six relays, two per place; the mask's bits pick online and open.
+            var nodes: [Node] = []
+            for i in 0..<6 {
+                let place = places[i / 2]
+                var node = Node(id: "n\(i)", countryCode: place.0, city: place.1,
+                                load: Int32((i * 37 + mask) % 90))
+                node.isOnline = mask & (1 << (i % 9)) != 0
+                node.accessible = mask & (1 << ((i + 3) % 9)) != 0
+                nodes.append(node)
+            }
+            let shapes: [[Node]] = [nodes, Array(nodes.dropFirst()), nodes.filter { $0.id != "n2" }]
+            for list in shapes {
+                for gone in ["n0", "n2", "zz"] {
+                    for origin in [SelectionOrigin.automatic, .user] {
+                        let move = HeartbeatPolicy.moveTarget(from: gone, in: list, cached: nodes, origin: origin)
+                        let retry = RelayRetry.next(after: gone, in: list, cached: nodes, origin: origin)
+                        XCTAssertEqual(move?.server.id, retry?.server.id, "mask \(mask) gone \(gone) \(origin)")
+                        XCTAssertEqual(move?.reach, retry?.reach, "mask \(mask) gone \(gone) \(origin)")
+                        compared += 1
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(compared, 512 * 3 * 3 * 2)
     }
 
     /// Round 2: when a USER pick cannot move (nothing qualifies in its
