@@ -898,6 +898,10 @@ final class VPNManager: @unchecked Sendable {
                 let status = existing.connection.status
                 DispatchQueue.main.async { self.onStatusChange?(status) }
             }
+            // MR-2568: bring a profile an older build saved up to the current
+            // flags, once. On the SAME manager object just stored in `manager`,
+            // so a later save through it can never write the old flags back.
+            self.migrateSavedProfileFlags(managers?.first)
         }
     }
 
@@ -1067,6 +1071,104 @@ final class VPNManager: @unchecked Sendable {
         return "\(host):\(port)"
     }
 }
+
+// MARK: - Saved-profile flags (MR-2568)
+
+extension VPNManager {
+    /// MR-2568: on the first launch after an update, rewrite the flags of the
+    /// profile an older build saved (`ProfileFlagsMigration`), once. Called
+    /// from `loadManager()`, which runs once per process when
+    /// `VPNManager.shared` is first used (`VpnViewModel`, an app-level
+    /// `@StateObject`), so it is the launch hook on iOS and macOS alike.
+    ///
+    /// It never creates a profile and never starts, stops or reconnects the
+    /// tunnel. A CONNECTED profile is saved like any other. Apple documents no
+    /// effect of a save on a running session (`NEVPNManager.saveToPreferences`,
+    /// `NEVPNProtocol.enforceRoutes` / `includeAllNetworks`, "Routing your VPN
+    /// network traffic"); its DTS guidance for changed settings is "save, then
+    /// reconnect the tunnel" (developer.apple.com/forums/thread/692546). This
+    /// file already relies on the same thing: `applyKillSwitchFlag` saves new
+    /// protocol flags mid-session, and the live swap saves while connected
+    /// without restarting it. So the session keeps running on its old flags,
+    /// and the new ones apply from the next tunnel start, which for these
+    /// users is mostly an On Demand re-dial. The device check confirms that a
+    /// save does not drop a connected session.
+    ///
+    /// Logs carry counts only.
+    private func migrateSavedProfileFlags(_ mgr: NETunnelProviderManager?) {
+        ProfileFlagsMigration.run(store: LoadedProfileStore(mgr),
+                                  marker: DefaultsProfileFlagsMarker()) { outcome in
+            debugLog("[VPNManager] saved-profile flags (MR-2568): rewritten=%ld current=%ld failed=%ld",
+                     outcome == .rewritten ? 1 : 0,
+                     outcome == .alreadyCurrent ? 1 : 0,
+                     outcome == .saveFailed ? 1 : 0)
+        }
+    }
+
+    /// The profile `loadManager()` loaded, and a save of THAT object. There is
+    /// no path here that makes a `NETunnelProviderManager`.
+    private final class LoadedProfileStore: SavedProfileStore {
+        private let manager: NETunnelProviderManager?
+        let profile: SavedProfileFlags?
+
+        init(_ manager: NETunnelProviderManager?) {
+            self.manager = manager
+            profile = manager.flatMap { LoadedProfile($0) }
+        }
+
+        func saveProfile(_ done: @escaping @Sendable (Bool) -> Void) {
+            guard let manager else { return done(false) }
+            manager.saveToPreferences { error in
+                if let error {
+                    debugLog("[VPNManager] saved-profile flags (MR-2568): save failed (code %ld), retried at the next launch",
+                             (error as NSError).code)
+                }
+                done(error == nil)
+            }
+        }
+    }
+
+    /// The loaded profile's flags. Written through `applyKillSwitchFlags`, the
+    /// one writer `connect`, `applyKillSwitchFlag` and `failOpenAndStop` use,
+    /// onto the protocol object the profile already has, so nothing else on
+    /// it changes.
+    private final class LoadedProfile: SavedProfileFlags {
+        private let manager: NETunnelProviderManager
+        private let proto: NETunnelProviderProtocol
+
+        init?(_ manager: NETunnelProviderManager) {
+            guard let proto = manager.protocolConfiguration as? NETunnelProviderProtocol else { return nil }
+            self.manager = manager
+            self.proto = proto
+        }
+
+        var flags: KillSwitchProfileFlags {
+            get {
+                // `excludeDeviceCommunication` exists from iOS 17.4 / macOS
+                // 14.4 and `applyKillSwitchFlags` writes it only there. Below
+                // that, read the value the decision expects, so a flag the OS
+                // cannot hold never makes a profile look out of date.
+                let deviceCommunication: Bool
+                if #available(iOS 17.4, macOS 14.4, *) {
+                    deviceCommunication = proto.excludeDeviceCommunication
+                } else {
+                    deviceCommunication = !proto.includeAllNetworks
+                }
+                return KillSwitchProfileFlags(includeAllNetworks: proto.includeAllNetworks,
+                                              enforceRoutes: proto.enforceRoutes,
+                                              excludeLocalNetworks: proto.excludeLocalNetworks,
+                                              excludeAPNs: proto.excludeAPNs,
+                                              excludeDeviceCommunication: deviceCommunication,
+                                              excludeCellularServices: proto.excludeCellularServices)
+            }
+            set {
+                VPNManager.applyKillSwitchFlags(newValue, to: proto)
+                manager.protocolConfiguration = proto
+            }
+        }
+    }
+}
+// END saved-profile flags (MR-2568)
 
 enum VPNManagerError: Error, LocalizedError {
     case keychainUnavailable

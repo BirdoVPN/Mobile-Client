@@ -71,9 +71,18 @@ enum ProfileFlagsMigration {
     static func run(store: SavedProfileStore,
                     marker: ProfileFlagsMarker,
                     done: @escaping @Sendable (Outcome) -> Void) {
-        // WIP spec-first (MR-2568): main's behaviour. Nothing rewrites the
-        // saved profile at launch.
-        done(.notNeeded)
+        guard marker.version < currentVersion else { return done(.notNeeded) }
+        guard let profile = store.profile else { return done(.noProfile) }
+        let wanted = Self.target(for: profile.flags)
+        guard profile.flags != wanted else {
+            marker.version = currentVersion
+            return done(.alreadyCurrent)
+        }
+        profile.flags = wanted
+        store.saveProfile { saved in
+            if saved { marker.version = currentVersion }
+            done(saved ? .rewritten : .saveFailed)
+        }
     }
 }
 
