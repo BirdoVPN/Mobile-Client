@@ -120,6 +120,10 @@ class DataplaneFaultReportingTest {
             "A1-034's decision table (LiveRebuildPolicy) as pure functions: nothing to catch. " +
             "VpnManager and BirdoVpnService carry the directives out and report there " +
             "(live_rebuild_* codes)",
+        "RelayRetry.kt" to
+            "MR-2492's retry rule (which relay a session moves to when its server went offline, " +
+            "and whether it may move) as pure functions: no Android, no I/O, nothing to catch. " +
+            "VpnManager carries the choice out and publishes the outcome",
         "TunnelRouting.kt" to
             "D-6's routing rules (who is excluded from the tunnel, the Xray carve-out, which API " +
             "client a call uses, the socket-protect verdict) as pure functions: nothing to catch. " +

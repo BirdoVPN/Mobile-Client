@@ -59,8 +59,11 @@ final class VpnViewModel: ObservableObject {
 
     /// Home offers the plans under the banner: the refusal it shows is a
     /// server outside the plan or the Free allowance used up. Only while that
-    /// refusal is still what the banner says.
+    /// refusal is still what the banner says. MR-2343: also when the heartbeat
+    /// ended the session at the Free allowance's end, while its sentence is
+    /// what the banner says.
     var refusalOffersPlans: Bool {
+        if let ending = heartbeatEnding, error == ending.message { return ending.offersPlans }
         guard let refusal = connectRefusal, error == refusal.message else { return false }
         return refusal.offersPlans
     }
@@ -235,6 +238,16 @@ final class VpnViewModel: ObservableObject {
         connectRefusal = error as? ConnectRefusedError
     }
 
+    /// MR-2287: count a failed dial by its reason, when it is one the failure
+    /// counts cover (`DialFailure(dialError:)`). A no-op unless the user opted
+    /// in, which no build offers yet (`FailureCounts`). The code, not the
+    /// message: the message can carry server text.
+    private func noteDialFailure(after error: Error) {
+        guard let failure = DialFailure(dialError: error) else { return }
+        debugLog("[VpnViewModel] dial failed (%@)", failure.rawValue)
+        FailureCounts.shared.record(failure)
+    }
+
     private var dismissedFloors: Set<String> {
         Set(dismissedFloorsRaw.split(separator: ",").map(String.init).filter { !$0.isEmpty })
     }
@@ -318,6 +331,17 @@ final class VpnViewModel: ObservableObject {
     // from deinit). Every read/write outside deinit is on the main actor.
     nonisolated(unsafe) private var statsTimer: Timer?
     nonisolated(unsafe) private var heartbeatTimer: Timer?
+
+    /// MR-2343: the Free plan's grace notice the last heartbeat asked for
+    /// (`QuotaGrace`), shown on Home while connected. Dropped with the session.
+    @Published private(set) var quotaGrace: QuotaGrace?
+    /// MR-2343: when the session last heard a `valid: true` beat, for the reap
+    /// inference (`HeartbeatPolicy.reapWindow`). Set when its heartbeat starts.
+    private var lastHeartbeatOkAt: Date?
+    /// MR-2343: one quiet rebuild per window after a reap.
+    private var heartbeatRebuildBudget = HeartbeatRebuildBudget()
+    /// MR-2343: the ending the heartbeat last put on the banner (`refusalOffersPlans`).
+    private var heartbeatEnding: HeartbeatEnding?
 
     /// MR-974: the per-session proof behind `handshakeProven`. Reset when a
     /// session comes up from down or goes down, and when a live rebuild puts a
@@ -707,6 +731,7 @@ final class VpnViewModel: ObservableObject {
                 holdAutomaticDials(after: error)
                 showUpdateRequired(after: error)
                 noteRefusal(after: error)
+                noteDialFailure(after: error)
                 self.error = error.localizedDescription
                 reportUnauthorized(error)
                 isConnecting = false
@@ -882,6 +907,7 @@ final class VpnViewModel: ObservableObject {
             holdAutomaticDials(after: error)
             showUpdateRequired(after: error)
             noteRefusal(after: error)
+            noteDialFailure(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             isConnecting = false
@@ -1125,6 +1151,9 @@ final class VpnViewModel: ObservableObject {
             failClosedNotice = notice
 
         case .tearDownFailOpen:
+            // MR-2287: counted per relay that never answered, the automatic
+            // retry's included (a no-op unless the user opted in, `FailureCounts`).
+            FailureCounts.shared.record(.tunnelNeverHandshook)
             // Never handshook. Do NOT arm on-demand — that is the trap this exists to
             // avoid. Tear down explicitly so iOS has nothing to re-dial.
             //
@@ -1461,7 +1490,10 @@ final class VpnViewModel: ObservableObject {
                 // MR-2212: the retry's own dial went down before it could
                 // answer (not the teardown that precedes it): its "Trying
                 // another server…" is over, and the reason below is the answer.
-                if relayRecovery == .tryingAnotherServer, !isTearingDownForRedial { relayRecovery = nil }
+                // MR-2343: the same for the heartbeat's move off a drained
+                // server and its quiet rebuild ("Reconnecting…").
+                if relayRecovery == .tryingAnotherServer || relayRecovery == .reconnecting,
+                   !isTearingDownForRedial { relayRecovery = nil }
                 if let appexReason = vpnManager.takeExtensionFailure() {
                     error = "Tunnel failed: \(appexReason)"
                 } else if let reason = vpnManager.lastDisconnectReason {
@@ -1540,6 +1572,9 @@ final class VpnViewModel: ObservableObject {
         isSwitching = false
         bytesReceived = 0
         bytesSent = 0
+        // MR-2343: the grace notice and the last good beat belong to this session.
+        quotaGrace = nil
+        lastHeartbeatOkAt = nil
         stopStatsTimer()
         stopHeartbeat()
     }
@@ -1715,6 +1750,7 @@ final class VpnViewModel: ObservableObject {
             holdAutomaticDials(after: error)
             showUpdateRequired(after: error)
             noteRefusal(after: error)
+            noteDialFailure(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             flagsOwnedElsewhere = await finishRebuild(.configRequestFailed, ctx)
@@ -1783,6 +1819,7 @@ final class VpnViewModel: ObservableObject {
             // restore had failed — leaving the persisted profile, and so the
             // armed on-demand rule's re-dial, on a peer this client had just
             // deleted.
+            noteDialFailure(after: swapError)
             connectRefusal = nil
             self.error = swapError.localizedDescription
             flagsOwnedElsewhere = await finishRebuild(.swapFailed, ctx)
@@ -2048,7 +2085,11 @@ final class VpnViewModel: ObservableObject {
     /// again from a FRESH `/vpn/servers` (capped; the cached list when it does
     /// not answer in time), so a relay depooled since the list was cached, a
     /// jurisdiction hold included, is not dialled. The server's connect gate
-    /// refuses a node that is not ONLINE either way.
+    /// refuses a node that is not ONLINE either way. A failed relay the fresh
+    /// list no longer carries was deleted (owner decision 2026-11-19): a
+    /// server the client chose moves to the best relay anywhere, a location
+    /// the user picked stays in its country as the list the dial was chosen
+    /// from gives it (`RelayRetry.next`, `cached`).
     private func retryOnAnotherRelay() -> Bool {
         guard activeMultiHop == nil,
               let failedId = connectedServerId ?? selectedServer?.id else { return false }
@@ -2062,6 +2103,11 @@ final class VpnViewModel: ObservableObject {
         // MR-2493 (review of #648, point 4): as the retry took it, naming the
         // relay it left, for an offer should this end without a target.
         let budget = relayRetryBudget
+        // Owner decision 2026-11-19, MR-2518: the list this dial was chosen
+        // from, read now (a refresh during the wait would replace it). A relay
+        // the fresh list no longer carries was deleted: its country is read
+        // here, the target is still chosen from the fresh list.
+        let cached = servers
         let host = lastDialRelayHost
         let selectedAtFailure = selectedServer?.id
         let generation = relayRetryGeneration
@@ -2094,13 +2140,13 @@ final class VpnViewModel: ObservableObject {
                 self.servers = fresh
                 self.serverCacheTimestamp = Date()
             }
-            guard let next = RelayRetry.next(after: failedId, in: self.servers, origin: origin) else {
+            guard let next = RelayRetry.next(after: failedId, in: self.servers, cached: cached, origin: origin) else {
                 // Nothing qualifies any more: say what is true instead. MR-2493:
                 // a location the user picked may be offered the best other
                 // one, chosen from the fresh list only.
                 var offer: ServerInfo?
                 if let fresh {
-                    offer = RelayRetry.offer(after: failedId, in: fresh, origin: origin, budget: budget)
+                    offer = RelayRetry.offer(after: failedId, in: fresh, cached: cached, origin: origin, budget: budget)
                 }
                 await self.finishUnansweredRelay(
                     host: RelayProbeVerdict.probeHost(host, tunnelStillUp: tunnelStillUp),
@@ -2159,6 +2205,9 @@ final class VpnViewModel: ObservableObject {
         // As the failed dial left it: after a retry that did not answer, it
         // names the pick the retry left, which the offer excludes too.
         let budget = relayRetryBudget
+        // MR-2518 (review N1 of #648): the list this dial was chosen from, for
+        // a failed relay's country should the fresh list no longer carry it.
+        let cached = servers
         relayRecovery = .checkingNetwork
         vpnManager.disconnect()
         releaseServerSlot()
@@ -2177,7 +2226,7 @@ final class VpnViewModel: ObservableObject {
                 if let fresh {
                     self.servers = fresh
                     self.serverCacheTimestamp = Date()
-                    offer = RelayRetry.offer(after: failedId, in: fresh, origin: origin, budget: budget)
+                    offer = RelayRetry.offer(after: failedId, in: fresh, cached: cached, origin: origin, budget: budget)
                 }
             }
             await self.finishUnansweredRelay(host: probeHost, offer: offer, generation: generation)
@@ -2316,6 +2365,9 @@ final class VpnViewModel: ObservableObject {
     private func startHeartbeat() {
         // Idempotent for the same reason as startStatsTimer().
         stopHeartbeat()
+        // MR-2343: the session's reap clock starts with its heartbeat. A
+        // repeated `.connected` (a reassert) keeps the one already running.
+        if lastHeartbeatOkAt == nil { lastHeartbeatOkAt = Date() }
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: Self.heartbeatInterval,
                                               repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -2346,20 +2398,163 @@ final class VpnViewModel: ObservableObject {
             debugLog("[VpnViewModel] heartbeat failed: %@", error.localizedDescription)
             return
         }
-        if !result.valid {
-            // Revoked server-side (silent free-tier eviction, admin revoke…).
-            // This heartbeat is the ONLY way the client learns about it. The
-            // peer is already gone, so drop the handle rather than DELETE it,
-            // then tear down locally and tell the user why in the server's
-            // own words.
-            let message = result.message ?? "Connection has been revoked. Please reconnect."
-            setActiveKeyId(nil)
-            disconnect()
-            error = message
-        } else if result.serverOnline == false {
-            // Android parity: log only. The node may flap during maintenance;
-            // the session stays valid and the message repeats if it persists.
-            debugLog("[VpnViewModel] heartbeat: current server reports offline")
+        // MR-2343: act only on a reply for the session the beat was sent for
+        // (Android's WEB-HB rule). A disconnect, a switch or a rebuild that
+        // landed while this beat was in flight owns the session now. A reply
+        // about the key it replaced ("evicted" for a live rebuild's old key,
+        // "revoked" after a DELETE) must not end the new one.
+        guard isConnected, activeKeyId == keyId, !isRebuildingLive, !isTearingDownForRedial else { return }
+        // MR-2343: the decision is HeartbeatPolicy's (HeartbeatWire.swift),
+        // which ConnectContractTests runs over every reply the contract's
+        // server writes. This function only carries it out.
+        let now = Date()
+        let sinceLastOk = lastHeartbeatOkAt.map { now.timeIntervalSince($0) } ?? 0
+        let outcome = heartbeatRebuildBudget.admit(
+            HeartbeatPolicy.outcome(of: result, sinceLastOk: sinceLastOk,
+                                    multiHop: activeMultiHop != nil, now: now),
+            now: now)
+        switch outcome {
+        case .keep(let nodeOffline, let grace):
+            if result.valid { lastHeartbeatOkAt = now }
+            if quotaGrace != grace { quotaGrace = grace }
+            if nodeOffline {
+                // Android parity: log only. The node may flap during maintenance;
+                // the session stays valid and the message repeats if it persists.
+                debugLog("[VpnViewModel] heartbeat: current server reports offline")
+            }
+        case .rebuild:
+            rebuildAfterReap()
+        case .moveServer:
+            moveOffDrainedServer()
+        case .end(let ending):
+            endSessionForServer(ending)
+        }
+    }
+
+    /// MR-2343: the server ended this session on purpose (revoked, evicted,
+    /// the Free allowance, a Multi-Hop node gone, a reap past its budget).
+    /// This heartbeat is the only way the client learns of it. The peer is
+    /// already gone, so the handle is dropped rather than DELETEd. Then the
+    /// tunnel comes down locally, the user reads why (the client's sentence
+    /// for the reason, never the reply's), and nothing reconnects on its own.
+    private func endSessionForServer(_ ending: HeartbeatEnding) {
+        setActiveKeyId(nil)
+        disconnect()
+        heartbeatEnding = ending
+        error = ending.message
+    }
+
+    /// MR-2343: server housekeeping released the key (`reaped`) and nobody
+    /// ended anything. Rebuild the same route once, quietly: "Reconnecting…"
+    /// and no banner (Android REAPED, Desktop MR-2369).
+    /// `HeartbeatRebuildBudget` has already admitted it; a second reap inside
+    /// its window ends the session instead.
+    ///
+    /// Disconnect-first, like `retryOnAnotherRelay`. The key is gone, so the
+    /// in-place rebuild (#159) would be refused for it and would fall back to
+    /// this path anyway. Like every disconnect-first path, it leaves a gap
+    /// unprotected. The teardown is waited out behind `isTearingDownForRedial`
+    /// so that no second peer is minted while the first tunnel goes down.
+    private func rebuildAfterReap() {
+        let pair = activeMultiHop
+        let server = servers.first { $0.id == connectedServerId } ?? selectedServer
+        guard pair != nil || server != nil else {
+            endSessionForServer(.revoked)
+            return
+        }
+        let origin = selectionOrigin
+        let generation = relayRetryGeneration
+        relayRecovery = .reconnecting
+        setActiveKeyId(nil)
+        isTearingDownForRedial = true
+        vpnManager.disconnect()
+        Task { [weak self] in
+            await self?.awaitTeardown()
+            guard let self else { return }
+            self.isTearingDownForRedial = false
+            // The user disconnected, signed out or dialled again while we waited.
+            guard generation == self.relayRetryGeneration else { return }
+            self.resetSessionState()
+            guard !self.isConnected, !self.isConnecting else {
+                self.relayRecovery = nil
+                return
+            }
+            if let pair {
+                // The same pair, never a single-hop downgrade. (connectMultiHop
+                // also clears the breaker; the rebuild budget bounds this caller.)
+                if !(await self.connectMultiHop(entry: pair.entry, exit: pair.exit)) {
+                    self.relayRecovery = nil
+                }
+            } else if let server {
+                if self.selectedServer?.id != server.id {
+                    self.selectedServer = server
+                    self.selectionOrigin = origin
+                }
+                self.connect(userInitiated: false)
+            }
+        }
+    }
+
+    /// MR-2343: the key went with its drained or deleted server. Connect to
+    /// a different one, chosen by the owner's rule (2026-11-19,
+    /// `HeartbeatPolicy.moveTarget`). A server the client chose moves to the
+    /// best server anywhere. A location the user picked stays in its country,
+    /// read from the cached list when the server was deleted, and the session
+    /// stops when nothing qualifies there. When no relay qualifies, the
+    /// session ends and the banner says so. Multi-Hop never comes here:
+    /// HeartbeatPolicy ends a pair's session, because the pair is the user's
+    /// to choose.
+    ///
+    /// Disconnect-first, like `retryOnAnotherRelay`, from a fresh
+    /// `/vpn/servers` (capped; else the cached list), so the drained node is
+    /// not dialled again.
+    private func moveOffDrainedServer() {
+        guard let goneId = connectedServerId ?? selectedServer?.id else {
+            endSessionForServer(.serverOffline)
+            return
+        }
+        let origin = selectionOrigin
+        let generation = relayRetryGeneration
+        relayRecovery = .tryingAnotherServer
+        setActiveKeyId(nil)
+        isTearingDownForRedial = true
+        vpnManager.disconnect()
+        Task { [weak self] in
+            await self?.awaitTeardown()
+            guard let self else { return }
+            self.isTearingDownForRedial = false
+            // The user disconnected, signed out or dialled again while we waited.
+            guard generation == self.relayRetryGeneration else { return }
+            self.resetSessionState()
+            let cached = self.servers
+            let fresh = await self.freshServerList(within: Self.retryListCap)
+            guard generation == self.relayRetryGeneration else { return }
+            guard !self.isConnected, !self.isConnecting else {
+                self.relayRecovery = nil
+                return
+            }
+            if let fresh {
+                self.servers = fresh
+                self.serverCacheTimestamp = Date()
+            }
+            guard let next = HeartbeatPolicy.moveTarget(from: goneId, in: self.servers, cached: cached,
+                                                        origin: origin) else {
+                self.relayRecovery = nil
+                self.heartbeatEnding = .serverOffline
+                self.error = HeartbeatEnding.serverOffline.message
+                // Round 2 (owner rule): a user pick stops with #648's one tap
+                // beside the notice (MR-2493). It is chosen from a fresh list
+                // only, and never dialled until tapped.
+                let offer = fresh.flatMap { HeartbeatPolicy.offer(from: goneId, in: $0, origin: origin) }
+                self.relayOffer = self.makeRelayOffer(offer, beside: HeartbeatEnding.serverOffline.message, fits: true)
+                return
+            }
+            // Counts only: how far the move reaches, never which relay.
+            debugLog("[VpnViewModel] heartbeat: server went offline, moving (%@)", next.reach.rawValue)
+            self.selectedServer = next.server
+            // Chosen under the rule of the pick it replaces, as the retry does.
+            self.selectionOrigin = origin
+            self.connect(userInitiated: false)
         }
     }
 

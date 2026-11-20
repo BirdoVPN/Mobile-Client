@@ -96,11 +96,25 @@ enum RelayRetry {
     ///   3. `.user`: the best other relay in the SAME country;
     ///   4. nothing; the caller then says what is true instead.
     /// "Best" is QuickSelect's rule: online, accessible to this plan, least
-    /// loaded. nil when `failedId` is not in `list`: without the failed
-    /// relay's country the user's choice cannot be kept, so nothing moves.
+    /// loaded.
+    ///
+    /// A `failedId` that `list` no longer carries was DELETED. Owner decision
+    /// (2026-11-19), for a caller that passes `cached`, the list the failed
+    /// dial was chosen from (`afterDeleted`):
+    ///   * `.automatic`: the best relay in `list`, in any country, with no
+    ///     same-city preference; it needs no location;
+    ///   * `.user`: its city and country as `cached` gives them, then rules 1
+    ///     and 3; nil when `cached` does not know its country either.
+    /// The target always comes from `list`; `cached` only says where the
+    /// deleted relay was. Without `cached`, a deleted relay moves nothing:
+    /// without its country the user's choice cannot be kept (#645).
     static func next<S: RelayRetryCandidate>(after failedId: String, in list: [S],
+                                             cached: [S]? = nil,
                                              origin: SelectionOrigin) -> Choice<S>? {
-        guard let failed = list.first(where: { $0.id == failedId }) else { return nil }
+        guard let failed = list.first(where: { $0.id == failedId }) else {
+            guard let cached else { return nil }
+            return afterDeleted(failedId, in: list, cached: cached, origin: origin)
+        }
         if let sibling = sibling(of: failedId, in: list) {
             return Choice(server: sibling, reach: .sameCity)
         }
@@ -115,6 +129,25 @@ enum RelayRetry {
             let sameCountry = others.filter { normalized($0.countryCode) == country }
             guard let best = QuickSelect.bestServer(in: sameCountry) else { return nil }
             return Choice(server: best, reach: .sameCountry)
+        }
+    }
+
+    /// `next` for a relay `list` no longer carries (deleted), with the list
+    /// it was chosen from: the owner's rule, 2026-11-19.
+    private static func afterDeleted<S: RelayRetryCandidate>(_ failedId: String, in list: [S], cached: [S],
+                                                             origin: SelectionOrigin) -> Choice<S>? {
+        let gone = cached.first(where: { $0.id == failedId })
+        switch origin {
+        case .automatic:
+            guard let best = QuickSelect.bestServer(in: list) else { return nil }
+            // Not even cached: nothing to measure from, so the widest reach.
+            guard let gone else { return Choice(server: best, reach: .otherCountry) }
+            return Choice(server: best, reach: reach(from: gone, to: best))
+        case .user:
+            // The cached listing stands in for the one the relay lost, for its
+            // location only: `next` never returns `failedId` itself.
+            guard let gone else { return nil }
+            return next(after: failedId, in: list + [gone], origin: .user)
         }
     }
 
@@ -179,11 +212,15 @@ enum RelayRecovery: Equatable, Sendable {
     case tryingAnotherServer
     /// The tunnel is down and the TCP probe is out (`RelayProbe`).
     case checkingNetwork
+    /// MR-2343: the heartbeat's one quiet rebuild of the same route after a
+    /// reap is under way (`HeartbeatOutcome.rebuild`).
+    case reconnecting
 
     var label: String {
         switch self {
         case .tryingAnotherServer: return "Trying another server…"
         case .checkingNetwork: return "Checking the connection…"
+        case .reconnecting: return ConnectionPhase.reconnectingLabel
         }
     }
 }
@@ -243,21 +280,27 @@ extension RelayRetry {
     ///   * otherwise the best eligible relay OUTSIDE that country. That
     ///     includes the same-country retry having failed too (review of #648,
     ///     point 4): no retry is left for anything still in the country.
-    /// When no failed relay is listed with a country, nothing is known to be
-    /// in it: the best of the rest, as before.
+    /// MR-2518 (review N1 of #648): a failed relay the fresh list no longer
+    /// carries (deleted) is looked up in `cached`, the list the failed dial
+    /// was chosen from, for its country only. When neither list knows a
+    /// failed relay's country, nothing is known to be in it: the best of the
+    /// rest, as before.
     ///
     /// "Eligible" and "best" are QuickSelect's rule (online, open to this
     /// plan, least loaded), applied to the list given, which the caller
     /// fetches fresh: the server's list is the only authority. Nothing is
     /// dialled until the user taps it.
     static func offer<S: RelayRetryCandidate>(after failedId: String, in list: [S],
+                                              cached: [S]? = nil,
                                               origin: SelectionOrigin,
                                               budget: RelayRetryBudget) -> S? {
         guard origin == .user else { return nil }
         var failed: Set<String> = [failedId]
         if let left = budget.retriedFrom { failed.insert(left) }
         let others = list.filter { !failed.contains($0.id) }
-        let country = list.first(where: { failed.contains($0.id) }).map { normalized($0.countryCode) } ?? ""
+        let failedListing = list.first(where: { failed.contains($0.id) })
+            ?? cached?.first(where: { failed.contains($0.id) })
+        let country = failedListing.map { normalized($0.countryCode) } ?? ""
         guard !country.isEmpty else { return QuickSelect.bestServer(in: others) }
         if !budget.spent,
            QuickSelect.bestServer(in: others.filter { normalized($0.countryCode) == country }) != nil {

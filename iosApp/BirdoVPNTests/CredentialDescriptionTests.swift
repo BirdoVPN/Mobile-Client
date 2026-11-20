@@ -243,6 +243,19 @@ final class CredentialDescriptionTests: XCTestCase {
                       "Resolved hides whether the account is anonymous or had a number")
     }
 
+    // MARK: - Post-quantum plan (MR-2287)
+
+    func testDecapsulationPlanPrintsNoNonce() {
+        let nonce = Data("apple-nonce-stu".utf8)
+        let plan = PQDecapsulationPlan.derive(ciphertext: Data(repeating: 7, count: 1568), nonce: nonce)
+        assertNoSecret(plan)
+        XCTAssertEqual(plan.description, "PQDecapsulationPlan(plan: derive, ciphertext: 1568 bytes, nonce: [REDACTED])")
+        var dumped = ""
+        dump(plan, to: &dumped)
+        XCTAssertFalse(dumped.contains("\(nonce.count) bytes"), "dump walked into the nonce's bytes")
+        XCTAssertEqual(PQDecapsulationPlan.classical.description, "PQDecapsulationPlan(plan: classical)")
+    }
+
     // MARK: - Codable is untouched
 
     func testRedactionNeverReachesTheWire() throws {

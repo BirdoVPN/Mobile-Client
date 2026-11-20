@@ -256,10 +256,26 @@ class VpnManager @Inject constructor(
 
     /**
      * A server the heartbeat said went offline for good (`server_offline`,
-     * valid = false): the next automatic re-dial picks another one. Cleared
+     * valid = false): the next automatic re-dial moves off it, once, under
+     * the rule of whoever chose it ([moveOffGoneServer], MR-2492). Cleared
      * once a session is up and by every user or system dial.
      */
     private var avoidServerId: String? = null
+
+    /**
+     * MR-2492: the one automatic move off a server that went offline
+     * ([RelayRetry.plan], iOS's RelayRetryBudget). Refilled where
+     * [avoidServerId] is cleared: a session that came up, and every user or
+     * system dial.
+     */
+    private val relayRetryBudget = RelayRetryBudget()
+
+    /**
+     * MR-2492: the relay the one move went to, until a session is up again.
+     * When the move's own /connect does not get through, the supervisor's
+     * re-dials go back to it: never a second move.
+     */
+    private var relayRetryTarget: String? = null
 
     /** The dial in flight, owned by [scope] so a caller's cancellation cannot strand it (A1-011). */
     private var dialJob: Job? = null
@@ -729,14 +745,20 @@ class VpnManager @Inject constructor(
      *   stealth transport regardless of plan, because plain WireGuard has been
      *   observed failing on this network. Null on an ordinary connect, which
      *   always tries the fast path first.
+     * @param pickedBy MR-2492: who chose [serverId].
+     *   [SelectionOrigin.AUTOMATIC] only for the client's own pick (Home's
+     *   pre-select, or a last server the client had picked). A location the
+     *   user tapped is [SelectionOrigin.USER], the default: if its server goes
+     *   offline, a move never takes it out of its country.
      */
     suspend fun connect(
         serverId: String,
         fallbackReason: String? = null,
+        pickedBy: SelectionOrigin = SelectionOrigin.USER,
     ): ApiResult<ConnectResponse> = runDial {
         val prior = _state.value
         val gen = beginDial(DialOrigin.USER, prior)
-        dialSingle(serverId, fallbackReason, gen, prior)
+        dialSingle(serverId, fallbackReason, gen, prior, pickedBy)
     }
 
     /**
@@ -964,6 +986,9 @@ class VpnManager @Inject constructor(
                 intentGeneration++
                 cancelRecovery()
                 avoidServerId = null
+                // MR-2492: a new start gets its one move back.
+                relayRetryBudget.refill()
+                relayRetryTarget = null
                 deadSessionKey = null
                 resumeTap.set(null)
                 session = if (origin == DialOrigin.USER) {
@@ -1129,17 +1154,23 @@ class VpnManager @Inject constructor(
         }
     }
 
+    /**
+     * @param pickedBy MR-2492: who chose [serverId], stored with it as the
+     *   last server when the dial lands. A re-dial of the last server passes
+     *   [lastServerOrigin].
+     */
     private suspend fun dialSingle(
         serverId: String,
         fallbackReason: String?,
         gen: Long,
         prior: VpnState,
+        pickedBy: SelectionOrigin,
         allowLiveRebuild: Boolean = true,
     ): ApiResult<ConnectResponse> {
         // A1-034: a switch or a settings reapply on a live single-hop session
         // rebuilds it in place instead of tearing it down to the block.
         if (allowLiveRebuild && fallbackReason == null && activeMultiHop == null && liveRebuildEligible(prior)) {
-            return liveRebuildSingle(serverId, gen, prior)
+            return liveRebuildSingle(serverId, gen, prior, pickedBy)
         }
         if (!teardownLiveSession(prior, gen)) return ApiResult.Error(SUPERSEDED)
 
@@ -1239,7 +1270,9 @@ class VpnManager @Inject constructor(
                     // WireGuard handshake is observed. We stay in Connecting.
                     _connectedServer.value = config.serverNode?.name ?: "Unknown Server"
                     _connectedServerId.value = serverId
-                    prefs.lastServerId = serverId
+                    // MR-2492: who chose it goes with it, in the same write, for
+                    // the re-dials the tile, the widget and a system start make later.
+                    prefs.rememberLastServer(serverId, autoPicked = pickedBy == SelectionOrigin.AUTOMATIC)
                     return result
                 }
                 is ApiResult.Error -> {
@@ -1532,7 +1565,7 @@ class VpnManager @Inject constructor(
         if (BirdoVpnService.running) context.startService(intent) else context.startForegroundService(intent)
     }
 
-    private suspend fun quickDial(gen: Long, prior: VpnState, exclude: String? = null): ApiResult<ConnectResponse> {
+    private suspend fun quickDial(gen: Long, prior: VpnState): ApiResult<ConnectResponse> {
         // Connecting is published for the server lookup so every surface shows
         // the dial at once; dialSingle is handed the state from BEFORE it, so
         // a quick connect from idle no longer mistakes its own Connecting for
@@ -1549,14 +1582,102 @@ class VpnManager @Inject constructor(
             return ApiResult.Error(serversResult.message, serversResult.code)
         }
         if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
-        // [exclude]: a server the heartbeat said went offline for good.
-        val servers = (serversResult as ApiResult.Success).data.filter { it.id != exclude }
+        val servers = (serversResult as ApiResult.Success).data
         val bestServer = bestServer(servers)
         if (bestServer == null) {
             publishError(SessionCopy.NO_SERVERS, FailureKind.REFUSED)
             return ApiResult.Error(SessionCopy.NO_SERVERS)
         }
-        return dialSingle(bestServer.id, null, gen, prior)
+        // MR-2492: the client chose this server, not the user.
+        return dialSingle(bestServer.id, null, gen, prior, SelectionOrigin.AUTOMATIC)
+    }
+
+    /** MR-2492: who chose prefs.lastServerId, as the dial that landed on it recorded. */
+    private fun lastServerOrigin(): SelectionOrigin = SelectionOrigin.ofLastServer(prefs.lastServerAutoPicked)
+
+    /**
+     * MR-2492 (MR-2212's rule; iOS RelayRetry, Mobile #645): the heartbeat, or
+     * the probe after a dead tunnel, said [goneId], the server this session
+     * was on, went offline for good. Move ONCE ([RelayRetry.plan]) to a relay
+     * chosen from a fresh /vpn/servers: the same city first; then, for a
+     * server the client chose, the best relay in any country, and for a
+     * location the user picked, only another relay in its own country.
+     * Online and open to this plan in every case. When nothing qualifies,
+     * stop and say so: a location the user picked never leaves its country
+     * without a tap. This used to be a quick connect that skipped [goneId],
+     * the best relay in ANY country, whoever had chosen the location.
+     *
+     * The move takes the rule of the pick it replaces: a server the client
+     * chose stays the client's choice, a location the user picked stays
+     * theirs. When the move's own /connect does not get through, the
+     * supervisor's re-dials go back to the same relay ([relayRetryTarget]),
+     * never to a second one.
+     */
+    private suspend fun moveOffGoneServer(gen: Long, prior: VpnState, goneId: String): ApiResult<ConnectResponse> {
+        val pickedBy = lastServerOrigin()
+        relayRetryTarget?.let { target ->
+            android.util.Log.i("VpnManager", RelayRetry.logLine(null, alreadySpent = true))
+            return dialSingle(target, null, gen, prior, pickedBy)
+        }
+        enterConnecting(gen)
+        // Owner decision (round 3): a server deleted from the fleet is gone
+        // from the fresh list; where it was is only in the list cached before
+        // it, so that entry is read first, before the refresh replaces it.
+        val lastKnown = repository.lastKnownServer(goneId)
+        // Fresh, as on iOS: a relay depooled since the list was cached (a
+        // jurisdiction hold included) is not chosen. The server's connect
+        // gate refuses a node that is not online either way.
+        val serversResult = repository.getServers(forceRefresh = true)
+        if (serversResult is ApiResult.Error) {
+            if (!superseded(gen)) {
+                publishError(
+                    apiErrorCopy(serversResult.code, serversResult.message),
+                    FailureKind.fromHttpStatus(serversResult.code),
+                )
+            }
+            return ApiResult.Error(serversResult.message, serversResult.code)
+        }
+        if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
+        val servers = (serversResult as ApiResult.Success).data
+        val spentBefore = relayRetryBudget.spent
+        val planned = RelayRetry.plan(goneId, servers, pickedBy, relayRetryBudget, lastKnown)
+        // Counts only: whether it moves and how far, never which relay.
+        android.util.Log.i("VpnManager", RelayRetry.logLine(planned, spentBefore))
+        if (planned == null) {
+            // Round 2 (lead vpn-c6): nothing this plan can use is left anywhere
+            // is a plan matter, said as a quick connect says it. Otherwise it
+            // is reachability: a location the user picked has nothing left in
+            // its country, or a deleted server's country is unknown; Home
+            // offers Choose server beside it.
+            val message = if (bestServer(servers.filter { it.id != goneId }) == null) {
+                SessionCopy.NO_SERVERS
+            } else {
+                SessionCopy.SERVER_UNREACHABLE
+            }
+            stopOnGoneServer(message)
+            return ApiResult.Error(message)
+        }
+        relayRetryTarget = planned.server.id
+        return dialSingle(planned.server.id, null, gen, prior, pickedBy)
+    }
+
+    /**
+     * MR-2492 (review of #652, M1): the server this single-hop session was on
+     * went offline and nothing replaces it; [message] says why, as REFUSED, so
+     * the supervisor stops and never re-dials on its own.
+     *  - Kill switch on: fail-closed. The block the teardown put up stays held
+     *    (giveUp keeps it for a session that was up), as for any such stop.
+     *  - Kill switch off: the user chose fail-open, and the dead tunnel carries
+     *    nothing, so it comes down, as a revoke's does ([endSessionForServer]).
+     *    The Error alone left the interface up on a peer the server had
+     *    removed: no traffic at all, for a user who chose not to block.
+     */
+    private suspend fun stopOnGoneServer(message: String) {
+        if (prefs.killSwitchEnabled) {
+            publishError(message, FailureKind.REFUSED)
+        } else {
+            endSessionForServer(message, FailureKind.REFUSED)
+        }
     }
 
     private suspend fun preferredDial(
@@ -1602,7 +1723,7 @@ class VpnManager @Inject constructor(
             }
             MultiHopPolicy.NewConnection.SingleHop -> {
                 val last = prefs.lastServerId
-                if (last != null) dialSingle(last, null, gen, prior) else quickDial(gen, prior)
+                if (last != null) dialSingle(last, null, gen, prior, lastServerOrigin()) else quickDial(gen, prior)
             }
         }
     }
@@ -1640,9 +1761,10 @@ class VpnManager @Inject constructor(
         val last = prefs.lastServerId
         when {
             route != null -> dialMultiHop(route.first, route.second, null, gen, prior)
-            // The heartbeat said this server went offline: the best other one.
-            last != null && last == avoidServerId -> quickDial(gen, prior, exclude = last)
-            last != null -> dialSingle(last, null, gen, prior)
+            // The heartbeat said this server went offline: move once, under
+            // the rule of whoever chose it (MR-2492).
+            last != null && last == avoidServerId -> moveOffGoneServer(gen, prior, last)
+            last != null -> dialSingle(last, null, gen, prior, lastServerOrigin())
             else -> quickDial(gen, prior)
         }
     }
@@ -1706,7 +1828,7 @@ class VpnManager @Inject constructor(
                 if (multiHop != null) {
                     dialMultiHop(multiHop.first, multiHop.second, TransportFallbackReason.HANDSHAKE_TIMEOUT, gen, prior)
                 } else {
-                    dialSingle(serverId!!, TransportFallbackReason.HANDSHAKE_TIMEOUT, gen, prior)
+                    dialSingle(serverId!!, TransportFallbackReason.HANDSHAKE_TIMEOUT, gen, prior, lastServerOrigin())
                 }
             } is ApiResult.Success
             // Only remember the preference when the fallback actually produced a
@@ -1927,8 +2049,13 @@ class VpnManager @Inject constructor(
         return key to null
     }
 
-    private suspend fun liveRebuildSingle(serverId: String, gen: Long, prior: VpnState): ApiResult<ConnectResponse> {
-        val oldKey = sessionKeyId ?: return dialSingle(serverId, null, gen, prior, allowLiveRebuild = false)
+    private suspend fun liveRebuildSingle(
+        serverId: String,
+        gen: Long,
+        prior: VpnState,
+        pickedBy: SelectionOrigin,
+    ): ApiResult<ConnectResponse> {
+        val oldKey = sessionKeyId ?: return dialSingle(serverId, null, gen, prior, pickedBy, allowLiveRebuild = false)
         val hold = holdFailuresForRebuild()
         // MR-703: as in a dial, this rebuild's pair is wiped here unless
         // LIVE_REBUILD handed it to the service (which then consumes or drops it).
@@ -1990,13 +2117,17 @@ class VpnManager @Inject constructor(
         val stopped = settleHeldFailure(hold, directive, unansweredRequest(event, result))
         return when (directive) {
             LiveRebuildPolicy.Directive.LEGACY_TEARDOWN ->
-                if (stopped != null) ApiResult.Error(stopped) else dialSingle(serverId, null, gen, prior, allowLiveRebuild = false)
+                if (stopped != null) {
+                    ApiResult.Error(stopped)
+                } else {
+                    dialSingle(serverId, null, gen, prior, pickedBy, allowLiveRebuild = false)
+                }
             LiveRebuildPolicy.Directive.KEEP_OLD_SESSION ->
                 ApiResult.Error(keptSessionCopy(event, config?.message, result as? ApiResult.Error))
             LiveRebuildPolicy.Directive.COMMIT_NEW -> {
                 _connectedServer.value = config!!.serverNode?.name ?: "Unknown Server"
                 _connectedServerId.value = serverId
-                prefs.lastServerId = serverId
+                prefs.rememberLastServer(serverId, autoPicked = pickedBy == SelectionOrigin.AUTOMATIC)
                 ApiResult.Success(config)
             }
             LiveRebuildPolicy.Directive.FAILED_CLOSED -> ApiResult.Error(SessionCopy.switchFailedClosed(prefs.killSwitchEnabled))
@@ -2538,6 +2669,9 @@ class VpnManager @Inject constructor(
             is VpnState.Connected -> {
                 session = session.connected()
                 avoidServerId = null
+                // MR-2492: a relay answered; the next server that goes away gets its one move.
+                relayRetryBudget.refill()
+                relayRetryTarget = null
                 cancelRecovery()
                 connectWatchdogJob?.cancel()
                 _switching.value = false
@@ -2995,7 +3129,7 @@ class VpnManager @Inject constructor(
                 if (mh != null) {
                     dialMultiHop(mh.first, mh.second, null, gen, prior, allowLiveRebuild = true)
                 } else {
-                    dialSingle(serverId!!, null, gen, prior)
+                    dialSingle(serverId!!, null, gen, prior, lastServerOrigin())
                 }
             }.also { result ->
                 if (result is ApiResult.Error && _state.value is VpnState.Connected && result.message != SUPERSEDED) {
@@ -3221,9 +3355,11 @@ class VpnManager @Inject constructor(
      *  - EVICTED: another device of this account took the slot. As REVOKED,
      *    with the sentence that says so — and never re-dialled, or the two
      *    devices would evict each other in turn (A1-004's ping-pong).
-     *  - SERVER_GONE: the node was drained or destroyed. Re-dial a DIFFERENT
-     *    server, fail-closed meanwhile; a Multi-Hop route cannot be re-chosen
-     *    for the user, so it stops and says which choice to make.
+     *  - SERVER_GONE: the node was drained or destroyed. Move once to a
+     *    DIFFERENT server, fail-closed meanwhile, under MR-2492's rule
+     *    ([moveOffGoneServer]): a location the user picked stays in its
+     *    country or stops; a Multi-Hop route cannot be re-chosen for the
+     *    user, so it stops and says which choice to make.
      */
     private suspend fun onHeartbeatVerdict(verdict: HeartbeatPolicy.Verdict) {
         when (verdict) {
@@ -3251,11 +3387,20 @@ class VpnManager @Inject constructor(
                 endSessionForServer(context.getString(R.string.session_quota_exceeded), FailureKind.QUOTA_EXCEEDED)
             }
             HeartbeatPolicy.Verdict.SERVER_GONE -> if (activeMultiHop != null) {
-                sessionDeadTeardown(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, FailureKind.REFUSED)
+                // MR-2492 round 3 (review of #652, M1): fail-closed behind the
+                // block with the kill switch on; with it off the dead route
+                // comes down, as stopOnGoneServer does for a single hop.
+                if (prefs.killSwitchEnabled) {
+                    sessionDeadTeardown(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, FailureKind.REFUSED)
+                } else {
+                    endSessionForServer(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, FailureKind.REFUSED)
+                }
             } else {
-                android.util.Log.w("VpnManager", "Heartbeat: this server went offline — moving to another")
+                android.util.Log.w("VpnManager", "Heartbeat: this server went offline — the retry rule decides")
                 avoidServerId = prefs.lastServerId
-                sessionDeadTeardown(SessionCopy.SERVER_OFFLINE, FailureKind.DIED_AFTER_HANDSHAKE)
+                // MR-2492 round 2: "another location" only for a server the
+                // client chose; a location the user picked may not move at all.
+                sessionDeadTeardown(SessionCopy.serverOffline(lastServerOrigin()), FailureKind.DIED_AFTER_HANDSHAKE)
             }
         }
     }
@@ -3288,7 +3433,9 @@ class VpnManager @Inject constructor(
 
     /**
      * The server ended this session on purpose: release the block, show
-     * [message], forget the intent, and never re-dial on our own.
+     * [message], forget the intent, and never re-dial on our own. Also the
+     * fail-open end of a session whose server went offline with nothing to
+     * replace it (MR-2492, kill switch off: there is no block to release).
      */
     private suspend fun endSessionForServer(message: String, kind: FailureKind) {
         _quotaGrace.value = null
