@@ -824,7 +824,9 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
     # 30 as before, plus the wait for "Build APK". That wait ends at the latest
-    # 45 minutes after "Build APK" starts: its 40-minute timeout, plus 5.
+    # 45 minutes after "Build APK" starts: its 40-minute timeout, plus 5. And
+    # "Build APK" must start within 20 minutes of the wait (MR-2512), so the
+    # wait itself ends within 20 + 45 = 65 (the self-test checks both).
     timeout-minutes: 75
     permissions:
       contents: read
@@ -951,6 +953,16 @@ jobs:
       # this attempt reports it with its original start time (seen in run
       # 44154693443, attempt 2). Its APKs, which are that job's, are then the
       # ones tested.
+      #
+      # Whose "Build APK" it is (MR-2512): the attempt's run_started_at is read
+      # once. A job counts as this attempt's if it started then or later, or
+      # as carried over if it is completed and ended before then (re-run
+      # failed jobs, or one job: then whatever its conclusion). Anything else,
+      # such as in_progress with an older start, is not matched. A plain
+      # "started >= run_started_at" would refuse every carried-over job.
+      # It must start within 20 minutes of this wait (a job no runner takes
+      # held this one for 75), and every `gh api` call runs under
+      # `timeout 60` (a hung call did too).
       #
       # The deadline is anchored to that job's start and outlasts its own
       # timeout-minutes (BUILD_TIMEOUT_MIN below; the self-test fails when the
