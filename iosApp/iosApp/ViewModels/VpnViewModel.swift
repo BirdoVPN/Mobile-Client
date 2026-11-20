@@ -781,6 +781,10 @@ final class VpnViewModel: ObservableObject {
     /// `authVM.logout()`.
     func disconnectForSignOut() async {
         isReapplyingSettings = false
+        // Review of #662 (F2): a retry, a probe or a heartbeat redial still
+        // out stands down now, as for `disconnect()`, not only once
+        // `resetForLogout()` runs after the DELETE below.
+        relayRetryGeneration &+= 1
         let keyId = activeKeyId
         setActiveKeyId(nil)
         vpnManager.disconnect()
@@ -803,6 +807,8 @@ final class VpnViewModel: ObservableObject {
     func tearDownForAccountDeletion() -> Bool {
         let wasUp = isConnected || isConnecting
         isReapplyingSettings = false
+        // Review of #662 (F2): as for a sign-out, anything still out stands down.
+        relayRetryGeneration &+= 1
         setActiveKeyId(nil)
         vpnManager.disconnect()
         resetSessionState()
@@ -2728,7 +2734,9 @@ final class VpnViewModel: ObservableObject {
                 return ended(.routeNotConfirmed)
             }
         }
-        // 3. The new peer on the RUNNING session.
+        // 3. The new peer on the RUNNING session, while there still is one
+        //    (review of #662, F2: never install a key over a teardown).
+        guard isConnected else { return ended(.sessionGoneBeforeSwap, route: route) }
         setActiveKeyId(config.keyId)
         do {
             try await vpnManager.swapConfig(config: config)

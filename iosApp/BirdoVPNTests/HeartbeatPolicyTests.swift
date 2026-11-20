@@ -539,6 +539,27 @@ final class HeartbeatPolicyTests: XCTestCase {
         XCTAssertTrue(commit.contains("lastHeartbeatOkAt = Date()"))
     }
 
+    /// Review of #662 (F2): a sign-out and an account deletion stop an attempt
+    /// that is out, as a user disconnect does. Both used to leave the
+    /// generation alone until `resetForLogout()`'s `disconnect()` ran after the
+    /// DELETE, so for up to ~31 s the attempt could still install its key in
+    /// the shared keychain over the teardown, or dial again. And the attempt
+    /// installs nothing once the session is gone.
+    func testASignOutOrADeletionStopsTheInPlaceAttempt() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        for start in ["func disconnectForSignOut() async {", "func tearDownForAccountDeletion() -> Bool {"] {
+            let body = slice(vm, from: start, to: "\n    }\n")
+            let bump = try XCTUnwrap(body.range(of: "relayRetryGeneration &+= 1"), start)
+            let stop = try XCTUnwrap(body.range(of: "vpnManager.disconnect()"), start)
+            XCTAssertLessThan(bump.lowerBound, stop.lowerBound, start)
+        }
+        let attempt = slice(vm, from: "private func attemptRedialInPlace(", to: "\n    }\n")
+        let guarded = try XCTUnwrap(attempt.range(of:
+            "guard isConnected else { return ended(.sessionGoneBeforeSwap, route: route) }"))
+        let install = try XCTUnwrap(attempt.range(of: "setActiveKeyId(config.keyId)"))
+        XCTAssertLessThan(guarded.lowerBound, install.lowerBound)
+    }
+
     // MARK: - MR-2525: the in-place table (HeartbeatRedial)
 
     /// Only a new peer that delivered bytes is kept.
