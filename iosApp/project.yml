@@ -72,6 +72,19 @@ packages:
     #      "private" key. No Birdo code calls WireGuardKit's PrivateKey() today
     #      (APIClient uses CryptoKit); android-ci.yml's lint job fails if the
     #      patch is lost in a re-vendor.
+    # And two for the route contract (MR-953), each Foundation-only files in
+    # Sources/WireGuardKit plus marked call sites, pinned by BirdoVPNTests
+    # (which compiles those files directly and reads the call sites):
+    #   5. WireGuardAdapter.setNetworkSettings FAILS CLOSED (F4): upstream logged
+    #      "proceeding anyway" after a 5 s settings timeout. Now one re-ask, then
+    #      the start/update/resume fails (TunnelSettingsApply.swift). A failed
+    #      resume is retried on a timer and then reported to the provider
+    #      through onResumeExhausted (TunnelResumeWatchdog.swift).
+    #   6. PacketTunnelSettingsGenerator gives a tunnel with no IPv6 address a
+    #      placeholder ULA when IPv6 is routed into it, so ::/0 is installed into
+    #      the tunnel instead of being left to the OS (F3, TunnelIPv6Blackhole.swift).
+    #      The generator itself is tested by the package's own test target
+    #      (Tests/WireGuardKitTests, `swift test` in apple-ci.yml's macOS job).
     path: Vendor/wireguard-apple
 
 targets:
@@ -426,7 +439,27 @@ targets:
       # WireGuardKit turns them into includedRoutes. Foundation-only, pinned by
       # TunnelRoutesTests; VPNManager (NetworkExtension) cannot be compiled here.
       - path: iosApp/Services/TunnelRoutes.swift
-      # Guideline 4: the arithmetic that keeps a Mac window below the menu bar.
+      # MR-953 F3/F4: the two Foundation-only halves of local WireGuardKit
+      # patches 5 and 6 (see packages: above), compiled straight from the
+      # vendored package; WireGuardKit itself is not linked into this bundle.
+      - path: Vendor/wireguard-apple/Sources/WireGuardKit/TunnelSettingsApply.swift
+      - path: Vendor/wireguard-apple/Sources/WireGuardKit/TunnelResumeWatchdog.swift
+      - path: Vendor/wireguard-apple/Sources/WireGuardKit/TunnelIPv6Blackhole.swift
+      # MR-953 F1: the heartbeat's HTTP/1.1 bytes, which the extension sends
+      # THROUGH the tunnel (TunnelHeartbeatTransport). Foundation-only, pinned
+      # by HeartbeatHTTPTests; the transport itself needs NetworkExtension.
+      - path: PacketTunnel/HeartbeatHTTP.swift
+      # ...the exchange around those bytes: its deadline (the request's own
+      # timeout, capped), its exactly-once completion and its errors.
+      # Foundation-only, run by HeartbeatExchangeTests.
+      - path: PacketTunnel/HeartbeatExchange.swift
+      # ...and the trust decision of that connection (standard validation, then
+      # an SPKI pin) with the iOS 17 path's write gate. Foundation + Security +
+      # CommonCrypto, all system frameworks, so HeartbeatTrustTests runs the
+      # real decision against certificate fixtures. The pin SET stays in
+      # PacketTunnelProvider.swift, which this bundle cannot compile.
+      - path: PacketTunnel/HeartbeatTrust.swift
+      # Guideline 4:the arithmetic that keeps a Mac window below the menu bar.
       # Compiled on every platform, though only the macOS app calls it, because
       # this bundle's CI run is on the iOS Simulator. CoreGraphics geometry
       # only, pinned by WindowFrameClampTests; MacWindow (AppKit, in

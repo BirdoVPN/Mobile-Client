@@ -56,6 +56,23 @@ public class WireGuardAdapter {
     /// Adapter state.
     private var state: State = .stopped
 
+    /// BIRDO LOCAL PATCH 5 (MR-953 F4): called, on the adapter's work queue, when a resume after a
+    /// path change has failed on a satisfied path and the timed retries are used up. The adapter
+    /// stays paused (traffic held, WireGuard off); the provider decides what happens to the
+    /// tunnel. Set it once, before `start`.
+    public var onResumeExhausted: (() -> Void)?
+
+    /// BIRDO LOCAL PATCH 5 (MR-953 F4): retries a failed resume on a timer instead of waiting for
+    /// a path event that may never come. See TunnelResumeWatchdog.swift.
+    private lazy var resumeWatchdog = TunnelResumeWatchdog(
+        queue: workQueue,
+        attempt: { [weak self] in self?.retryResume() ?? .notNeeded },
+        onExhausted: { [weak self] in
+            self?.logHandler(.error, "Tunnel could not resume after a network change; retries used up")
+            self?.onResumeExhausted?()
+        }
+    )
+
     /// Tunnel device file descriptor.
     private var tunnelFileDescriptor: Int32? {
         var ctlInfo = ctl_info()
@@ -227,6 +244,8 @@ public class WireGuardAdapter {
 
             self.networkMonitor?.cancel()
             self.networkMonitor = nil
+            // BIRDO LOCAL PATCH 5: no resume retry may outlive the tunnel.
+            self.resumeWatchdog.reset()
 
             self.state = .stopped
 
@@ -307,33 +326,26 @@ public class WireGuardAdapter {
     /// This method ensures that the call to `setTunnelNetworkSettings` does not time out, as in
     /// certain scenarios the completion handler given to it may not be invoked by the system.
     ///
+    /// BIRDO LOCAL PATCH 5 (MR-953 F4): FAILS CLOSED. Upstream logged the timeout and carried
+    /// on after 5 s, starting WireGuard on settings the system may never have
+    /// applied, so the tunnel reported itself up without its routes. Now an unanswered
+    /// request is asked again once, and a second silence throws
+    /// `.setNetworkSettings(TunnelSettingsApplyTimedOut)`: start fails, update fails (the
+    /// running config stays), and a resume after a path change stays paused (traffic held)
+    /// while `resumeWatchdog` retries it and then reports it. See TunnelSettingsApply.swift.
+    ///
     /// - Parameters:
     ///   - networkSettings: an instance of type `NEPacketTunnelNetworkSettings`.
     /// - Throws: an error of type `WireGuardAdapterError`.
     /// - Returns: `PacketTunnelSettingsGenerator`.
     private func setNetworkSettings(_ networkSettings: NEPacketTunnelNetworkSettings) throws {
-        var systemError: Error?
-        let condition = NSCondition()
-
-        // Activate the condition
-        condition.lock()
-        defer { condition.unlock() }
-
-        self.packetTunnelProvider?.setTunnelNetworkSettings(networkSettings) { error in
-            systemError = error
-            condition.signal()
-        }
-
-        // Packet tunnel's `setTunnelNetworkSettings` times out in certain
-        // scenarios & never calls the given callback.
-        let setTunnelNetworkSettingsTimeout: TimeInterval = 5 // seconds
-
-        if condition.wait(until: Date().addingTimeInterval(setTunnelNetworkSettingsTimeout)) {
-            if let systemError = systemError {
-                throw WireGuardAdapterError.setNetworkSettings(systemError)
+        let failure = TunnelSettingsApply.run(log: { self.logHandler(.error, $0) }) { completion in
+            self.packetTunnelProvider?.setTunnelNetworkSettings(networkSettings) { error in
+                completion(error)
             }
-        } else {
-            self.logHandler(.error, "setTunnelNetworkSettings timed out after 5 seconds; proceeding anyway")
+        }
+        if let failure = failure {
+            throw WireGuardAdapterError.setNetworkSettings(failure)
         }
     }
 
@@ -438,22 +450,21 @@ public class WireGuardAdapter {
             }
 
         case .temporaryShutdown(let settingsGenerator):
-            guard path.status.isSatisfiable else { return }
+            guard path.status.isSatisfiable else {
+                // BIRDO LOCAL PATCH 5: offline again. The next satisfied path owns the resume.
+                self.resumeWatchdog.reset()
+                return
+            }
 
             self.logHandler(.verbose, "Connectivity online, resuming backend.")
 
-            do {
-                try self.setNetworkSettings(settingsGenerator.generateNetworkSettings())
-
-                let (wgConfig, resolutionResults) = settingsGenerator.uapiConfiguration()
-                self.logEndpointResolutionResults(resolutionResults)
-
-                self.state = .started(
-                    try self.startWireGuardBackend(wgConfig: wgConfig),
-                    settingsGenerator
-                )
-            } catch {
-                self.logHandler(.error, "Failed to restart backend: \(error.localizedDescription)")
+            // BIRDO LOCAL PATCH 5 (MR-953 F4): upstream logged a failed resume and waited for the
+            // next path event, which may never come: the adapter then stayed paused on a good
+            // network while the system said connected. A failure now starts the retry timer.
+            if self.resumeBackend(with: settingsGenerator) {
+                self.resumeWatchdog.reset()
+            } else {
+                self.resumeWatchdog.pathResumeFailed()
             }
 
         case .stopped:
@@ -464,6 +475,50 @@ public class WireGuardAdapter {
         #error("Unsupported")
         #endif
     }
+
+    /// BIRDO LOCAL PATCH 5 (MR-953 F4): the timed retry of a failed resume. Only while the adapter
+    /// is still paused and the path is satisfied; otherwise there is nothing to retry (macOS never
+    /// pauses, so this is always `.notNeeded` there).
+    private func retryResume() -> TunnelResumeWatchdog.Attempt {
+        #if os(iOS)
+        // The decision is TunnelResumeWatchdog.retry's (run by TunnelResumeWatchdogTests); this
+        // only supplies the adapter's state.
+        var paused: PacketTunnelSettingsGenerator?
+        if case .temporaryShutdown(let settingsGenerator) = self.state {
+            paused = settingsGenerator
+        }
+        let satisfied = self.networkMonitor?.currentPath.status.isSatisfiable == true
+        return TunnelResumeWatchdog.retry(paused: paused, pathSatisfied: satisfied) { settingsGenerator in
+            self.logHandler(.verbose, "Retrying the resume after a failed attempt.")
+            return self.resumeBackend(with: settingsGenerator)
+        }
+        #else
+        return .notNeeded
+        #endif
+    }
+
+    #if os(iOS)
+    /// Upstream's resume (re-apply the network settings, restart the backend) as one step, shared
+    /// by the path monitor and the retry timer. False leaves the adapter paused: WireGuard is
+    /// never started on settings that were not applied.
+    private func resumeBackend(with settingsGenerator: PacketTunnelSettingsGenerator) -> Bool {
+        do {
+            try self.setNetworkSettings(settingsGenerator.generateNetworkSettings())
+
+            let (wgConfig, resolutionResults) = settingsGenerator.uapiConfiguration()
+            self.logEndpointResolutionResults(resolutionResults)
+
+            self.state = .started(
+                try self.startWireGuardBackend(wgConfig: wgConfig),
+                settingsGenerator
+            )
+            return true
+        } catch {
+            self.logHandler(.error, "Failed to restart backend: \(error.localizedDescription)")
+            return false
+        }
+    }
+    #endif
 }
 
 /// A enum describing WireGuard log levels defined in `api-apple.go`.

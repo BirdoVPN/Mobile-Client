@@ -20,7 +20,7 @@ import os.log
 /// `Task`, whose closure is `@Sendable` and therefore requires a Sendable
 /// `self`. The cross-context mutable state is `heartbeatTask` and
 /// `tunnelStartedAt` (via its locked accessor), both guarded by
-/// `heartbeatLock`; the lazily-initialised `adapter`/`heartbeatSession` are set
+/// `heartbeatLock`; the lazily-initialised `adapter`/`heartbeatTransport` are set
 /// once and treated as effectively immutable thereafter (the existing stats /
 /// wake callbacks already read them off-thread). Mirrors the codebase's
 /// `VPNManager: @unchecked Sendable` posture on the host side.
@@ -43,9 +43,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     /// in the host app: iOS suspends the host seconds after the device locks,
     /// so a host-app timer stops and the backend reaps the peer after 5 min —
     /// with the kill switch ON (includeAllNetworks) that blackholes ALL device
-    /// traffic. The extension lives exactly as long as the tunnel and its
-    /// URLSession rides the live tunnel, so it can keep the peer alive as long
-    /// as the tunnel is up.
+    /// traffic. The extension lives exactly as long as the tunnel, so it can
+    /// keep the peer alive as long as the tunnel is up. Its request goes
+    /// THROUGH the tunnel (`heartbeatTransport`, MR-953 F1): a URLSession here
+    /// does not, because NetworkExtension routes the provider's own
+    /// connections outside its own tunnel.
     private static let heartbeatInterval: TimeInterval = 30
     /// Base URL of the API — same host the host app's APIClient targets.
     private static let apiBaseURL = URL(string: "https://api.birdo.app")!
@@ -78,26 +80,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         set { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; _breakerNodeId = newValue }
     }
 
-    /// Dedicated URLSession for the heartbeat. Ephemeral + no cache so no auth
-    /// header or body is ever written to disk, matching the host APIClient —
-    /// and SPKI-PINNED like the host APIClient. This session carries the
-    /// account's bearer token every 30 s for the tunnel's whole life, a
-    /// strictly higher-volume exposure than the host app's occasional calls,
-    /// so an unpinned session here was a hole in the app's pinning guarantee.
-    private lazy var heartbeatSession: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 20
-        config.timeoutIntervalForResource = 30
-        config.httpCookieStorage = nil
-        config.urlCache = nil
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: config,
-                          delegate: HeartbeatPinningDelegate(),
-                          delegateQueue: nil)
-    }()
+    /// The heartbeat's connection, THROUGH this tunnel or not at all (MR-953
+    /// F1, TunnelHeartbeatTransport). It was a URLSession, which
+    /// NetworkExtension routes outside the provider's own tunnel: the bearer
+    /// token, the key id and a lookup of api.birdo.app left from the user's
+    /// real IP every 30 s. Still no cookie, cache or disk (a raw TLS
+    /// connection keeps nothing), and still SPKI-PINNED like the host
+    /// APIClient (`HeartbeatPins`): this connection carries the account's
+    /// bearer token every 30 s for the tunnel's whole life.
+    private lazy var heartbeatTransport = TunnelHeartbeatTransport(provider: self)
 
     private lazy var adapter: WireGuardAdapter = {
-        WireGuardAdapter(with: self) { [weak self] level, message in
+        let adapter = WireGuardAdapter(with: self) { [weak self] level, message in
             guard let self else { return }
             let type: OSLogType
             switch level {
@@ -146,6 +140,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 os_log("wg: %{private}@", log: self.log, type: type, message)
             }
         }
+        // MR-953 F4: a resume after a network change that cannot re-apply the
+        // tunnel's settings leaves the adapter paused while the system still
+        // says connected. The adapter retries on a timer, then reports here.
+        adapter.onResumeExhausted = { [weak self] in self?.handleResumeExhausted() }
+        return adapter
     }()
 
     override func startTunnel(
@@ -487,6 +486,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     /// so a dead peer stops blackholing traffic even while the host app is
     /// suspended. Transport failures and a stale-token 401 are IGNORED — a
     /// missed heartbeat or an expired token must never kill a live tunnel.
+    ///
+    /// MR-953 F1 limit: the beat goes THROUGH the tunnel, so `{valid:false}`
+    /// arrives only while the node still carries this peer (a revoked key on a
+    /// live node). A node that has already dropped the peer carries nothing,
+    /// and that eviction is caught as a dead data plane (handshake age, below),
+    /// not here. Faster detection is MR-1622/MR-1623 (Mobile #605); nothing
+    /// here may ask the server from outside the tunnel instead.
     private func startHeartbeat(keyId: String, token: String, clientVersion: String) {
         heartbeatLock.lock()
         heartbeatTask?.cancel()
@@ -498,7 +504,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 guard let self else { return }
                 // Data-plane liveness FIRST, and independently of the network
                 // heartbeat below. The heartbeat cannot detect a dead tunnel: its
-                // URLSession rides the live tunnel, so the one condition worth
+                // request goes through the tunnel (MR-953 F1), so the one condition worth
                 // detecting is exactly the condition that disables the detector.
                 await self.checkDataPlaneLiveness()
                 await self.sendHeartbeat(keyId: keyId, token: token, clientVersion: clientVersion)
@@ -534,7 +540,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await heartbeatSession.data(for: request)
+            (data, response) = try await heartbeatTransport.send(request)
+        } catch TunnelHeartbeatTransport.TransportError.tunnelUnavailable {
+            // MR-953 F1: no way into the tunnel, so the beat is skipped. It is
+            // never sent around the tunnel instead.
+            os_log("Heartbeat skipped: no route into the tunnel", log: log, type: .info)
+            return
         } catch {
             // Transient transport failure — NEVER tear down over a missed beat.
             os_log("Heartbeat transport failure (ignored)", log: log, type: .info)
@@ -637,6 +648,36 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             os_log("Circuit breaker tripped; no on-demand rule armed — stopping for good, traffic falls back to the physical interface",
                    log: log, type: .error)
             cancelTunnelWithError(TunnelError.circuitBreakerTripped)
+        }
+    }
+
+    /// MR-953 F4: the adapter could not resume after a network change.
+    ///
+    /// On iOS WireGuardKit turns WireGuard off while the device is offline and
+    /// re-applies the tunnel's network settings when a path comes back. When
+    /// the system does not apply them the adapter stays paused (it never
+    /// starts WireGuard on settings that were not applied), retries on a timer
+    /// (TunnelResumeWatchdog) and then calls this. Before, nothing noticed: a
+    /// paused adapter has no runtime configuration, so `checkDataPlaneLiveness`
+    /// returned early on every tick while the system said connected and the
+    /// device had no connectivity at all.
+    ///
+    /// It is a dead data plane like any other, so it goes through the breaker:
+    /// a bounded re-dial (a fresh start applies the settings anew), then the
+    /// breaker's own fail-open. `.diedAfterHandshake` is its class: the tunnel
+    /// worked until the network changed under it.
+    ///
+    /// Called on the adapter's work queue. The teardown is moved off it,
+    /// because stopping the tunnel needs that queue.
+    private func handleResumeExhausted() {
+        os_log("Tunnel could not resume after a network change; treating the data plane as dead",
+               log: log, type: .error)
+        Task { [weak self] in
+            self?.handleDataPlaneFailure(.diedAfterHandshake, error: NSError(
+                domain: "app.birdo.vpn.tunnel",
+                code: -1002,
+                userInfo: [NSLocalizedDescriptionKey: "The VPN connection could not resume after a network change."]
+            ))
         }
     }
 
@@ -903,7 +944,9 @@ enum TunnelError: Error, LocalizedError {
 
 // MARK: - Certificate Pinning (extension copy)
 
-/// SPKI-pinning URLSession delegate for the heartbeat session.
+/// SPKI pinning for the heartbeat's TLS connection (TunnelHeartbeatTransport).
+/// It was the heartbeat URLSession's delegate until the heartbeat moved into
+/// the tunnel (MR-953 F1); the pin set and the check are unchanged.
 ///
 /// The appex and the host app do not share source files, so — exactly like
 /// `sharedAccessGroup` above — this is a deliberate per-target copy of the
@@ -911,10 +954,11 @@ enum TunnelError: Error, LocalizedError {
 /// lockstep with it (and with Android's `NetworkModule.kt` /
 /// `network_security_config.xml`). Pin-set expiration: 2027-06-01.
 ///
-/// Fails CLOSED on every uncertain path: standard CA validation first, then at
-/// least one certificate in the chain must match a pinned SPKI hash; an
-/// unreadable chain or key cancels the challenge rather than falling through.
-private final class HeartbeatPinningDelegate: NSObject, URLSessionDelegate {
+/// Fails CLOSED on every uncertain path: standard CA validation for the host
+/// first, then at least one certificate in the chain must match a pinned SPKI
+/// hash; an unreadable chain or key refuses rather than falling through
+/// (`PinnedTrust`, HeartbeatTrust.swift).
+enum HeartbeatPins {
     /// Base64-encoded SHA-256 hashes of the SubjectPublicKeyInfo (SPKI) of
     /// every certificate we accept, anywhere in the chain.
     ///
@@ -953,89 +997,11 @@ private final class HeartbeatPinningDelegate: NSObject, URLSessionDelegate {
         "0Bbh/jEZSKymTy3kTOhsmlHKBB32EDu1KojrP3YfV9c=",
     ]
 
-    func urlSession(
-        _ session: URLSession,
-        didReceive challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-    ) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.performDefaultHandling, nil)
-            return
-        }
-
-        var trustError: CFError?
-        guard SecTrustEvaluateWithError(trust, &trustError) else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
-
-        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
-        for cert in chain {
-            guard let pubKey = SecCertificateCopyKey(cert),
-                  let pubKeyData = SecKeyCopyExternalRepresentation(pubKey, nil) as Data? else {
-                continue
-            }
-            let spkiHeader = Self.spkiHeader(for: pubKey)
-            var hashable = spkiHeader
-            hashable.append(pubKeyData)
-            let hash = Self.sha256(hashable).base64EncodedString()
-            if Self.pins.contains(hash) {
-                completionHandler(.useCredential, URLCredential(trust: trust))
-                return
-            }
-        }
-        completionHandler(.cancelAuthenticationChallenge, nil)
-    }
-
-    /// ASN.1 SubjectPublicKeyInfo header bytes that prefix the raw key data
-    /// produced by `SecKeyCopyExternalRepresentation`. RSA 2048/4096 +
-    /// EC P-256 / P-384 cover every CA in the pin set.
-    private static func spkiHeader(for key: SecKey) -> Data {
-        let attrs = SecKeyCopyAttributes(key) as? [CFString: Any] ?? [:]
-        let type = (attrs[kSecAttrKeyType] as? String) ?? ""
-        let size = (attrs[kSecAttrKeySizeInBits] as? Int) ?? 0
-        let rsaType = kSecAttrKeyTypeRSA as String
-        let ecType = kSecAttrKeyTypeECSECPrimeRandom as String
-        switch (type, size) {
-        case (rsaType, 2048):
-            return Data([
-                0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09,
-                0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
-                0x01, 0x05, 0x00, 0x03, 0x82, 0x01, 0x0f, 0x00,
-            ])
-        case (rsaType, 4096):
-            return Data([
-                0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09,
-                0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
-                0x01, 0x05, 0x00, 0x03, 0x82, 0x02, 0x0f, 0x00,
-            ])
-        case (ecType, 256):
-            return Data([
-                0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86,
-                0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
-                0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
-                0x42, 0x00,
-            ])
-        case (ecType, 384):
-            return Data([
-                0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86,
-                0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b,
-                0x81, 0x04, 0x00, 0x22, 0x03, 0x62, 0x00,
-            ])
-        default:
-            return Data() // Unknown key type — hash will not match any pin.
-        }
-    }
-
-    private static func sha256(_ data: Data) -> Data {
-        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        data.withUnsafeBytes {
-            _ = CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash)
-        }
-        return Data(hash)
+    /// True only when `trust` passes standard validation as `host` AND at least
+    /// one certificate in its chain matches a pinned SPKI. The decision itself
+    /// is `PinnedTrust.isTrusted` (HeartbeatTrust.swift), which the unit tests
+    /// run against certificate fixtures; this supplies the pin set.
+    static func isTrusted(_ trust: SecTrust, host: String) -> Bool {
+        PinnedTrust.isTrusted(trust, host: host, pins: pins)
     }
 }

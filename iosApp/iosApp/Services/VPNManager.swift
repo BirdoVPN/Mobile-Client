@@ -14,9 +14,12 @@ import Security
 ///   blocked when the tunnel is down, even on cellular. With it, APNs and
 ///   device-communication traffic are kept in the tunnel too (MR-1728,
 ///   `KillSwitchProfileFlags`); carrier services stay exempt on purpose.
+/// - `enforceRoutes = true` always (MR-953 F2): the tunnel's routes beat any
+///   local or DHCP-pushed route (TunnelVision), kill switch on or off.
 /// - `excludeLocalNetworks` tracks the user's Local Network Sharing setting
 ///   (default OFF, matching Android): ON keeps AirPlay / printers reachable by
 ///   routing LAN traffic around the tunnel; OFF carries the LAN in the tunnel.
+///   iOS honours it only next to `enforceRoutes` or `includeAllNetworks`.
 /// - `disconnectOnSleep = false` keeps the tunnel up across screen-off so
 ///   background fetches stay protected.
 final class VPNManager: @unchecked Sendable {
@@ -267,9 +270,13 @@ final class VPNManager: @unchecked Sendable {
         let localNetworkSharing = UserDefaults.standard.bool(forKey: "local_network_sharing")
         // MR-1728: includeAllNetworks / enforceRoutes AND the exemptions Apple
         // otherwise leaves outside the tunnel (APNs, device communication),
-        // decided in one place.
-        Self.applyKillSwitchFlags(.forKillSwitch(killSwitch), to: proto)
-        proto.excludeLocalNetworks = localNetworkSharing
+        // decided in one place. MR-953 F2: enforceRoutes is on whatever the
+        // kill switch says, and excludeLocalNetworks (which iOS honours only
+        // with enforceRoutes or includeAllNetworks) follows Local Network
+        // Sharing — see KillSwitchProfileFlags.
+        Self.applyKillSwitchFlags(.forProfile(killSwitch: killSwitch,
+                                              localNetworkSharing: localNetworkSharing),
+                                  to: proto)
         proto.disconnectOnSleep = false
 
         mgr.protocolConfiguration = proto
@@ -676,7 +683,12 @@ final class VPNManager: @unchecked Sendable {
     func applyKillSwitchFlag(_ enabled: Bool) {
         guard let mgr = manager else { return }
         if let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol {
-            Self.applyKillSwitchFlags(.forKillSwitch(enabled), to: proto)
+            // Local Network Sharing is carried over from the profile, never
+            // re-read: a pending change to it needs a restart, and
+            // `liveProfileNeedsRestart` detects that by the difference.
+            Self.applyKillSwitchFlags(.forProfile(killSwitch: enabled,
+                                                  localNetworkSharing: proto.excludeLocalNetworks),
+                                      to: proto)
             mgr.protocolConfiguration = proto
         }
         let status = mgr.connection.status
@@ -712,11 +724,13 @@ final class VPNManager: @unchecked Sendable {
     /// `applyKillSwitchFlag`, `failOpenAndStop`) all come through here, so an
     /// exemption can no longer be set on one path and left at Apple's default
     /// on another. Like `includeAllNetworks`, iOS applies them from the next
-    /// tunnel start.
+    /// tunnel start. `excludeLocalNetworks` comes through here too (MR-953 F2),
+    /// because it only works next to `enforceRoutes`.
     private static func applyKillSwitchFlags(_ flags: KillSwitchProfileFlags,
                                              to proto: NETunnelProviderProtocol) {
         proto.includeAllNetworks = flags.includeAllNetworks
         proto.enforceRoutes = flags.enforceRoutes
+        proto.excludeLocalNetworks = flags.excludeLocalNetworks
         proto.excludeAPNs = flags.excludeAPNs
         proto.excludeCellularServices = flags.excludeCellularServices
         if #available(iOS 17.4, macOS 14.4, *) {
@@ -730,7 +744,9 @@ final class VPNManager: @unchecked Sendable {
     /// has left a tripped breaker record. Puts the device back on the open
     /// network, in the order that ordering actually requires:
     ///
-    ///   1. clear `includeAllNetworks`/`enforceRoutes` on the persisted profile,
+    ///   1. clear `includeAllNetworks` on the persisted profile (`enforceRoutes`
+    ///      stays on since MR-953 F2: it only routes while a tunnel is up and
+    ///      blocks nothing when it is down),
     ///   2. disarm the on-demand rule **and persist it**,
     ///   3. only then stop the tunnel.
     ///
@@ -755,7 +771,9 @@ final class VPNManager: @unchecked Sendable {
         }
         debugLog("[VPNManager] circuit breaker tripped — failing OPEN (disarming on-demand, clearing kill-switch flags, stopping)")
         if let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol {
-            Self.applyKillSwitchFlags(.forKillSwitch(false), to: proto)
+            Self.applyKillSwitchFlags(.forProfile(killSwitch: false,
+                                                  localNetworkSharing: proto.excludeLocalNetworks),
+                                      to: proto)
             mgr.protocolConfiguration = proto
         }
         mgr.isOnDemandEnabled = false
