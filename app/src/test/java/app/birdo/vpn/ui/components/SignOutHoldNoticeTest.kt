@@ -2,9 +2,13 @@ package app.birdo.vpn.ui.components
 
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -46,6 +50,13 @@ class SignOutHoldNoticeTest {
     private var anyway = 0
     private var dismissals = 0
 
+    /**
+     * MR-2398: the view model's `isSigningOut`, the dialog's only source of
+     * "signing out". AuthViewModel.signOut and signOutAnyway raise it in the
+     * same step as the tap, so the harness does too.
+     */
+    private var vmSigningOut by mutableStateOf(false)
+
     private fun show(
         filedHere: Boolean,
         cancelling: Boolean = false,
@@ -56,12 +67,16 @@ class SignOutHoldNoticeTest {
         cancellable: Boolean = hold != null,
         proceeding: Boolean = false,
     ) {
+        vmSigningOut = proceeding
         rule.setContent {
             MaterialTheme {
                 SignOutConfirmDialog(
                     isConnected = false,
                     isAnonymousAccount = false,
-                    onConfirm = { confirms++ },
+                    onConfirm = {
+                        confirms++
+                        vmSigningOut = true
+                    },
                     onDismiss = { dismissals++ },
                     pendingDeletionAt = hold,
                     pendingDeletionFiledHere = filedHere,
@@ -70,9 +85,12 @@ class SignOutHoldNoticeTest {
                     pendingDeletionError = error,
                     onCancelPendingDeletion = { cancels++ },
                     signOutBlockedReason = blocked,
-                    onSignOutAnyway = { anyway++ },
+                    onSignOutAnyway = {
+                        anyway++
+                        vmSigningOut = true
+                    },
                     pendingDeletionCancellable = cancellable,
-                    isSigningOut = proceeding,
+                    isSigningOut = vmSigningOut,
                 )
             }
         }
@@ -257,6 +275,55 @@ class SignOutHoldNoticeTest {
 
         rule.onNodeWithText(text(R.string.sign_out_stay_signed_in)).performClick()
         assertEquals(0, dismissals)
+    }
+
+    /**
+     * MR-2398: the process died mid sign-out and came back with a fresh view
+     * model, nothing running. The dialog kept its own saved "signing out"
+     * copy, which came back with it: the restored dialog could not be
+     * dismissed and its spinner never ended. It now follows the view model.
+     */
+    @Test
+    fun `a dialog restored after process death with a fresh view model can be dismissed`() {
+        val tester = StateRestorationTester(rule)
+        tester.setContent {
+            MaterialTheme {
+                SignOutConfirmDialog(
+                    isConnected = false,
+                    isAnonymousAccount = false,
+                    onConfirm = {
+                        confirms++
+                        vmSigningOut = true
+                    },
+                    onDismiss = { dismissals++ },
+                    pendingDeletionAt = at,
+                    pendingDeletionFiledHere = true,
+                    isSigningOut = vmSigningOut,
+                )
+            }
+        }
+        rule.onNodeWithText(text(R.string.sign_out)).performClick()
+        assertEquals(1, confirms)
+
+        // The process dies; the view model comes back fresh, with nothing running.
+        vmSigningOut = false
+        tester.emulateSavedInstanceStateRestore()
+
+        rule.onAllNodes(hasText(text(R.string.signing_out))).assertCountEquals(0)
+        rule.onNodeWithText(text(R.string.sign_out_stay_signed_in)).performClick()
+        assertEquals(1, dismissals)
+    }
+
+    /**
+     * MR-2398 (the spinner nit): the spinner followed the dialog's own flag,
+     * so a sign-out the view model had under way that this dialog's button
+     * did not start showed a disabled "Sign out" with no progress.
+     */
+    @Test
+    fun `the spinner shows whenever the view model is signing out`() {
+        show(filedHere = false, hold = null, proceeding = true)
+
+        rule.onNodeWithText(text(R.string.signing_out)).assertIsDisplayed()
     }
 
     @Test

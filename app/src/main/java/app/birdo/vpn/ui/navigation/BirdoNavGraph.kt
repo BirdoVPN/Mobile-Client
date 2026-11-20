@@ -584,7 +584,6 @@ fun BirdoNavGraph(
                         pendingDeletionCancellable = authState.pendingDeletion != null ||
                             authState.deletionHoldFiledHereId != null,
                         holdCancelNote = authState.holdCancelNote,
-                        signOutReconsidered = authState.signOutReconsidered,
                         isSigningOut = authState.isSigningOut,
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
@@ -726,7 +725,6 @@ fun BirdoNavGraph(
                         pendingDeletionCancellable = authState.pendingDeletion != null ||
                             authState.deletionHoldFiledHereId != null,
                         holdCancelNote = authState.holdCancelNote,
-                        signOutReconsidered = authState.signOutReconsidered,
                         isSigningOut = authState.isSigningOut,
                         pendingDeletionListAnswered = authState.pendingDeletionListAnswered,
                     )

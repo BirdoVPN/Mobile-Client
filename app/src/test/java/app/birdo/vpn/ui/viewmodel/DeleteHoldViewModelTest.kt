@@ -421,6 +421,76 @@ class DeleteHoldViewModelTest {
         assertFalse(vm.uiState.value.isCancellingPendingDeletion)
     }
 
+    /**
+     * MR-2398: a cancel's own re-read took the epoch when it ANSWERED. A hold
+     * filed while that read was out moves the epoch; the read, sent before
+     * that hold existed, then said "nothing waits" and cleared it.
+     */
+    @Test
+    fun `a cancel's re-read sent before a new hold was filed cannot clear it`() = runTest {
+        val vm = viewModelWithOwnHold()
+        // 404: already gone, so the cancel reads the list again.
+        coEvery { repository.cancelPendingChange("p1") } returns ApiResult.Success(false)
+        val reRead = CompletableDeferred<ApiResult<PendingDeletion?>>()
+        coEvery { repository.pendingDeletion() } coAnswers { reRead.await() }
+        vm.cancelPendingDeletion()
+        assertTrue(vm.uiState.value.isCancellingPendingDeletion)
+
+        val newHold = PendingDeletion("p2", tomorrow)
+        coEvery { repository.requestDeletionHold(null, null) } returns
+            ApiResult.Success(DeletionHoldResult.Held(newHold, alreadyPending = false))
+        vm.requestDeletionHold("")
+        assertEquals(newHold, vm.uiState.value.pendingDeletion)
+
+        reRead.complete(ApiResult.Success(null))
+
+        assertEquals("an answer older than the new hold does not clear it", newHold, vm.uiState.value.pendingDeletion)
+        assertFalse(vm.uiState.value.isCancellingPendingDeletion)
+    }
+
+    /**
+     * MR-2398: the check before sign-out runs its own read beside the
+     * session's re-reads, and nothing ordered them: the one that answered
+     * LAST won, even when it was sent first and its answer was older.
+     */
+    @Test
+    fun `a read sent earlier cannot put its answer over one sent later`() = runTest {
+        val vm = viewModelFor(anon)
+        val sentFirst = CompletableDeferred<ApiResult<PendingDeletion?>>()
+        val sentSecond = CompletableDeferred<ApiResult<PendingDeletion?>>()
+        val answers = ArrayDeque(listOf(sentFirst, sentSecond))
+        coEvery { repository.pendingDeletion() } coAnswers { answers.removeFirst().await() }
+
+        vm.checkBeforeSignOut()
+        vm.refreshPendingDeletion() // e.g. ON_RESUME while the check is out
+        sentSecond.complete(ApiResult.Success(held))
+        assertEquals(held, vm.uiState.value.pendingDeletion)
+
+        sentFirst.complete(ApiResult.Success(null))
+
+        assertEquals("an older answer does not clear a newer one", held, vm.uiState.value.pendingDeletion)
+        assertFalse(vm.uiState.value.isCheckingBeforeSignOut)
+        assertFalse(vm.uiState.value.pendingDeletionUnknown)
+    }
+
+    /** MR-2398: nor does an older read's failure mark a newer answer unknown. */
+    @Test
+    fun `an older read that fails after a newer answer changes nothing`() = runTest {
+        val vm = viewModelFor(anon)
+        val sentFirst = CompletableDeferred<ApiResult<PendingDeletion?>>()
+        val sentSecond = CompletableDeferred<ApiResult<PendingDeletion?>>()
+        val answers = ArrayDeque(listOf(sentFirst, sentSecond))
+        coEvery { repository.pendingDeletion() } coAnswers { answers.removeFirst().await() }
+
+        vm.checkBeforeSignOut()
+        vm.refreshPendingDeletion()
+        sentSecond.complete(ApiResult.Success(null))
+        sentFirst.complete(ApiResult.Error(StringsXml.text("error_unreachable"), 0, FailureReason.UNREACHABLE))
+
+        assertNull(vm.uiState.value.pendingDeletion)
+        assertFalse("the newer read answered", vm.uiState.value.pendingDeletionUnknown)
+    }
+
     @Test
     fun `no list read starts while a cancel is in flight`() = runTest {
         val vm = viewModelFor(anon)

@@ -130,6 +130,8 @@ data class AuthUiState(
      * MR-2378: bumped when a sign-out stopped after its cancel-first went
      * through but the list read after it did not answer "nothing waits": the
      * confirmation stays, showing what is known now, and nobody is signed out.
+     * Since MR-2398 no screen reads it (the dialog follows [isSigningOut], which
+     * drops in the same step); it stays as the signal the hold tests read.
      */
     val signOutReconsidered: Int = 0,
     /**
@@ -357,6 +359,19 @@ class AuthViewModel @Inject constructor(
      * hold back on screen (review of #616).
      */
     private var pendingDeletionEpoch = 0
+
+    /**
+     * MR-2398: every list read takes its place in line when it is SENT. The
+     * session-start, on-resume and check-before-sign-out reads and a cancel's
+     * own re-read can overlap; without an order, whichever answered LAST was
+     * applied, so a read sent earlier could put an older answer over a newer
+     * one. A read never applies over the answer of one sent after it.
+     * Declared before init, like [pendingDeletionEpoch]: init starts a read.
+     */
+    private var pendingDeletionReadsSent = 0
+
+    /** The place in line of the newest read whose answer was applied ([applyRead]). */
+    private var newestAppliedRead = 0
 
     init {
         // Not before the CURRENT consent is accepted (audit D-12, A2-028): GET
@@ -1032,7 +1047,8 @@ class AuthViewModel @Inject constructor(
         if (!_uiState.value.isLoggedIn || _uiState.value.isCancellingPendingDeletion) return
         pendingDeletionJob?.cancel()
         val epoch = pendingDeletionEpoch
-        pendingDeletionJob = viewModelScope.launch { applyRead(readPendingDeletion(), epoch) }
+        val sent = ++pendingDeletionReadsSent
+        pendingDeletionJob = viewModelScope.launch { applyRead(readPendingDeletion(), epoch, sent) }
     }
 
     /** One pending-changes read, capped (MR-2378): null when it did not answer in time. */
@@ -1043,15 +1059,23 @@ class AuthViewModel @Inject constructor(
      * Applies one read. A read that started before a cancel still applies
      * while that cancel is out: the epoch moves only when a cancel SUCCEEDS
      * (iOS #624 residual R3), so a failed cancel leaves this answer standing.
-     * True when the list answered and its answer was applied.
+     * True when the list answered: this read's answer was applied, or one sent
+     * after it already was (see below). False when it did not answer, or its
+     * answer is stale against this app's own change (the epoch).
+     *
+     * MR-2398: [epoch] and [sent] are both taken when the read is SENT, never
+     * when it answers. A read answering after one sent later has already been
+     * applied changes nothing: the list has answered more recently (true).
      */
-    private fun applyRead(result: ApiResult<PendingDeletion?>?, epoch: Int): Boolean {
+    private fun applyRead(result: ApiResult<PendingDeletion?>?, epoch: Int, sent: Int): Boolean {
         if (result is ApiResult.Error && result.code == 401) {
             onSessionExpired()
             return false
         }
         if (!_uiState.value.isLoggedIn || epoch != pendingDeletionEpoch) return false
+        if (sent < newestAppliedRead) return true
         return if (result is ApiResult.Success) {
+            newestAppliedRead = sent
             applyListed(result.data)
             true
         } else {
@@ -1150,9 +1174,10 @@ class AuthViewModel @Inject constructor(
         if (state.isCheckingBeforeSignOut || state.pendingDeletion != null || !state.isLoggedIn) return
         _uiState.value = state.copy(isCheckingBeforeSignOut = true)
         val epoch = pendingDeletionEpoch
+        val sent = ++pendingDeletionReadsSent
         viewModelScope.launch {
             try {
-                applyRead(readPendingDeletion(), epoch)
+                applyRead(readPendingDeletion(), epoch, sent)
             } finally {
                 _uiState.value = _uiState.value.copy(isCheckingBeforeSignOut = false)
             }
@@ -1234,7 +1259,11 @@ class AuthViewModel @Inject constructor(
                     // A 404, or a sign-out: read the list again, in this
                     // cancel's own job (no other read cancels it), with the
                     // cancel still counted as in flight until it answers.
-                    val answered = applyRead(readPendingDeletion(), pendingDeletionEpoch)
+                    // MR-2398: the epoch and the place in line are read
+                    // before the read is sent, never after it answers.
+                    val epoch = pendingDeletionEpoch
+                    val sent = ++pendingDeletionReadsSent
+                    val answered = applyRead(readPendingDeletion(), epoch, sent)
                     _uiState.value = _uiState.value.copy(isCancellingPendingDeletion = false)
                     if (thenSignOut != null) afterCancelFirst(cancelled, answered, thenSignOut)
                 }
