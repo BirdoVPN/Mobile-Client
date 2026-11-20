@@ -140,6 +140,35 @@ class AuthViewModelTest {
         assertEquals("Your session has expired. Sign in again.", state.error)
     }
 
+    /**
+     * MR-1771 / MR-2500 (lead, 2026-11-19): coming to the foreground retries a
+     * held or backing-off refresh ([BirdoRepository.retryHeldRefresh]). No
+     * retry owed, a rotation or a transient answer keeps the user signed in;
+     * only the retry's 401 signs out. A signed-out app does not ask.
+     */
+    @Test
+    fun `the foreground retries a held refresh and signs out only on its 401`() = runTest {
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+        viewModel = createViewModel()
+        assertTrue(viewModel.uiState.value.isLoggedIn)
+
+        val kept = listOf(null, app.birdo.vpn.data.repository.RefreshOutcome.SUCCESS, app.birdo.vpn.data.repository.RefreshOutcome.TRANSIENT)
+        for (outcome in kept) {
+            coEvery { repository.retryHeldRefresh() } returns outcome
+            viewModel.onAppForeground()
+            assertTrue("after $outcome", viewModel.uiState.value.isLoggedIn)
+        }
+        coVerify(exactly = 3) { repository.retryHeldRefresh() }
+
+        coEvery { repository.retryHeldRefresh() } returns app.birdo.vpn.data.repository.RefreshOutcome.UNAUTHORIZED
+        viewModel.onAppForeground()
+        assertFalse(viewModel.uiState.value.isLoggedIn)
+        assertTrue(viewModel.uiState.value.sessionExpired)
+
+        viewModel.onAppForeground()
+        coVerify(exactly = 4) { repository.retryHeldRefresh() }
+    }
+
     @Test
     fun `init with network error keeps token-based session and does not crash`() = runTest {
         // Non-401 errors (e.g. network) should not log the user out if a token is stored;

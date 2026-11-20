@@ -51,8 +51,28 @@ internal object RetryAfter {
         return clamp(seconds)
     }
 
+    /**
+     * `details.retryAfter` from an error body, in whole seconds as sent and
+     * NOT clamped: the key birdo-web's `refusal()` writes, and the one every
+     * `/auth/refresh` 429 carries since web #912 (`details: {code:
+     * "rate_limited", retryAfter: N}`, N the Retry-After header's seconds).
+     * The refresh clamps it its own way ([RefreshRetry.serverWaitMs]).
+     * Connect refusals name theirs `retryAfterSeconds` ([fromBody]).
+     */
+    fun refusalDetailsSeconds(raw: String?): Long? {
+        if (raw.isNullOrBlank()) return null
+        val root = runCatching { json.parseToJsonElement(raw) }.getOrNull() as? JsonObject ?: return null
+        return ((root["details"] as? JsonObject)?.get("retryAfter") as? JsonPrimitive)?.longOrNull
+    }
+
+    /**
+     * A delta-seconds `Retry-After` header, in seconds as sent and NOT
+     * clamped. An HTTP date is no number: the device clock is not the server's.
+     */
+    fun headerSeconds(value: String?): Long? = value?.trim()?.toLongOrNull()
+
     /** A delta-seconds `Retry-After` header. An HTTP date is ignored: the device clock is not the server's. */
-    fun fromHeader(value: String?): Long? = value?.trim()?.toLongOrNull()?.let(::clamp)
+    fun fromHeader(value: String?): Long? = headerSeconds(value)?.let(::clamp)
 
     // Capped in seconds BEFORE the multiply: a huge value used to overflow
     // into a negative and come out as MIN_MS, the opposite of what it asked.

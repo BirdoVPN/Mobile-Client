@@ -363,11 +363,15 @@ targets:
       # $defs.ConnectRefusal. APIClient.swift, VpnViewModel.swift and HomeView
       # (its callers) cannot be compiled into this bundle.
       - path: iosApp/Services/ConnectRefusal.swift
-      # MR-1771: what a /auth/refresh answer means for the stored session (a
-      # 429 keeps it and is not re-asked before Retry-After; only 401/403 sign
-      # out) and the hold itself. Foundation-only by design, pinned by
-      # RefreshAnswerTests; it clamps with ConnectRetryAfter (the file above).
-      # APIClient.swift (its caller) cannot be compiled into this bundle.
+      # MR-1771 / MR-2500: what a /auth/refresh answer means for the stored
+      # session (only a 401 signs out; a 429 keeps it and waits Retry-After,
+      # else details.retryAfter, else 60 s; a 403, a 5xx or no answer keeps it
+      # and backs off), the hold, and the single-flight RefreshCoordinator.
+      # Foundation-only by design, pinned by RefreshAnswerTests; it clamps a
+      # named wait its own way (RefreshRetry.serverWait, 1 s .. 60 s, one table
+      # with Desktop #467), and RefreshAnswerTests checks it against
+      # ConnectRetryAfter (the file above). APIClient.swift (its caller)
+      # cannot be compiled into this bundle.
       - path: iosApp/Services/RefreshAnswer.swift
       # MR-1100: the Home globe's route — one leg for a single hop, you ->
       # entry -> exit for Multi-Hop — its camera framing and draw order.
