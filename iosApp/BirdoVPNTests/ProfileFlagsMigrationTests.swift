@@ -85,11 +85,6 @@ final class ProfileFlagsMigrationTests: XCTestCase {
                 excludeAPNs = newValue.excludeAPNs
                 excludeDeviceCommunication = newValue.excludeDeviceCommunication
                 excludeCellularServices = newValue.excludeCellularServices
-                // MUTATION CHECK (review of #664, L3), removed in the next commit:
-                // a same-value write to a non-flag field. A value comparison
-                // cannot see it; the recorded writes must.
-                let unchanged = serverAddress
-                serverAddress = unchanged
             }
         }
     }
