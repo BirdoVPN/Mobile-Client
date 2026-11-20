@@ -8,11 +8,15 @@
 #   pull request    the base tip's month (HEAD^1), not the merge commit's
 #   unreadable      no HEAD^1 (depth 1) or no repository: this UTC month,
 #                   a warning, exit 0
-#   wiring          every setup-gradle step in every workflow restores the
-#                   month's lineage (GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX) or
-#                   caches nothing (cache-disabled: true); `changes` publishes
-#                   the output, and computes it before `classify`, so a failed
-#                   classify cannot leave its fail-open jobs an empty prefix
+#   wiring          every setup-gradle step in every workflow (*.yml and
+#                   *.yaml) restores the month's lineage
+#                   (GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX) or caches nothing
+#                   (cache-disabled: true); `changes` publishes the output, and
+#                   computes it before `classify`, so a failed classify cannot
+#                   leave its fail-open jobs an empty prefix
+#   wiring refuses  (MR-2557) a step the parser cannot read (4-space steps), an
+#                   unwired *.yaml workflow, and a gradle-cache step with an
+#                   `if:` that can skip it; a correctly wired *.yaml passes
 set -euo pipefail
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,16 +105,28 @@ check "no repository: this UTC month, exit 0" eval 'wrote "$before-" || wrote "$
 #               (android-ci.yml)
 #   step-wired  it sets GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX in its own env:
 #               from steps.gradle-cache, and an earlier step of the same job
-#               has id gradle-cache and runs this script (baseline-profile.yml)
+#               has id gradle-cache, runs this script and has no `if:` that
+#               could skip it (MR-2557 N2; `!cancelled()`/`always()` are
+#               fine) (baseline-profile.yml)
 #   uncached    cache-disabled: true (gradle-verification-metadata.yml)
-wiring=$(awk '
+# The parser reads the layout these workflows use: jobs at 2 spaces, steps
+# as `      - ` at 6. An independent count of every
+# `uses: gradle/actions/setup-gradle@` line (any indentation, quoted or not)
+# must match the steps it parsed, so a step it cannot read (a 4-space step
+# list, say) fails the check instead of passing unseen (MR-2557 N1).
+wiring_of() { # <workflows dir>: "unwired <file>:<job>" lines, "counts ...", "grepped <n>"
+  local f
+  local -a files=()
+  for f in "$1"/*.yml "$1"/*.yaml; do [ -f "$f" ] && files+=("$f"); done
+  if [ "${#files[@]}" -eq 0 ]; then echo "counts 0 0 0"; echo "grepped 0"; return; fi
+  awk '
   function flush_step() {
     if (in_step && step_gradle) {
       n++; g_disabled[n] = step_disabled; g_wire[n] = step_wire; g_cache[n] = cache_seen
     }
-    if (in_step && step_cache_id && step_runs_script) cache_seen = 1
+    if (in_step && step_cache_id && step_runs_script && !step_cond) cache_seen = 1
     in_step = 0; step_gradle = 0; step_disabled = 0; step_wire = 0
-    step_cache_id = 0; step_runs_script = 0
+    step_cache_id = 0; step_runs_script = 0; step_cond = 0
   }
   function flush_job(   i) {
     flush_step()
@@ -137,12 +153,76 @@ wiring=$(awk '
   /^          cache-disabled:[[:space:]]*true[[:space:]]*$/ { step_disabled = 1 }
   index($0, "          GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX: ${{ steps.gradle-cache.outputs.gradle_cache_prefix }}") == 1 { step_wire = 1 }
   /^(      - |        )id: gradle-cache[[:space:]]*$/ { step_cache_id = 1 }
+  /^(      - |        )if:/ { if ($0 !~ /!cancelled\(\)|always\(\)/) step_cond = 1 }
   index($0, "bash .github/scripts/gradle-cache-prefix.sh") { step_runs_script = 1 }
-  END { flush_job(); printf "counts %d %d %d\n", total, wired, disabled }' "$workflows"/*.yml)
-unwired=$(sed -n 's/^unwired //p' <<<"$wiring" | tr '\n' ' ' | sed 's/ $//')
-read -r _ gradle_steps gradle_wired gradle_uncached < <(grep '^counts ' <<<"$wiring")
-check "all workflows: $gradle_steps setup-gradle steps, $gradle_wired restore the month's lineage, $gradle_uncached cache nothing${unwired:+ (missing the lineage: $unwired)}" \
-  eval '[ "$gradle_steps" -ge 1 ] && [ -z "$unwired" ] && [ "$gradle_wired" -ge 1 ]'
+  END { flush_job(); printf "counts %d %d %d\n", total, wired, disabled }' "${files[@]}"
+  echo "grepped $(grep -h -v '^[[:space:]]*#' "${files[@]}" |
+    grep -cE "uses:[[:space:]]*[\"']?gradle/actions/setup-gradle@" || true)"
+}
+wiring_msg=""
+wiring_ok() { # <workflows dir>: 0 when every setup-gradle step is wired or uncached; sets wiring_msg
+  local wiring unwired steps="" wired="" uncached="" grepped
+  wiring=$(wiring_of "$1")
+  unwired=$(sed -n 's/^unwired //p' <<<"$wiring" | tr '\n' ' ' | sed 's/ $//')
+  read -r _ steps wired uncached < <(grep '^counts ' <<<"$wiring") || true
+  grepped=$(sed -n 's/^grepped //p' <<<"$wiring")
+  wiring_msg="${steps:-?} setup-gradle steps, ${wired:-?} restore the month's lineage, ${uncached:-?} cache nothing${unwired:+ (missing the lineage: $unwired)}"
+  if [ "${grepped:-x}" != "${steps:-y}" ]; then
+    wiring_msg="$wiring_msg; but ${grepped:-?} lines use setup-gradle: a step the check cannot read (steps go at 6 spaces, \`      - \`, under a 2-space job)"
+    return 1
+  fi
+  [ "$steps" -ge 1 ] && [ -z "$unwired" ] && [ "$wired" -ge 1 ]
+}
+wiring_rc=0
+wiring_ok "$workflows" || wiring_rc=$?
+check "all workflows: $wiring_msg" eval '[ "$wiring_rc" -eq 0 ]'
+
+# The check against workflows it must refuse (MR-2557): each case is this
+# repository's workflows plus one more.
+synthetic() { # <case> <file name> <content>: a workflows dir; prints its path
+  local d="$work/wf-$1"
+  mkdir -p "$d"
+  cp "$workflows"/*.y*ml "$d"/
+  printf '%s\n' "$3" >"$d/$2"
+  printf '%s\n' "$d"
+}
+refused() { # <dir>: the wiring check fails on it
+  local rc=0
+  wiring_ok "$1" || rc=$?
+  [ "$rc" -ne 0 ]
+}
+accepted() { wiring_ok "$1"; }
+step_wired_job() { # <indent of the step list> <if: line or empty>: a step-wired job's workflow
+  local i="$1"
+  printf '%s\n' "name: synthetic" "on: workflow_dispatch" "jobs:" "  gen:" \
+    "    runs-on: ubuntu-24.04" "    steps:" \
+    "$i- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" \
+    "$i- id: gradle-cache"
+  [ -z "$2" ] || printf '%s\n' "$i  $2"
+  printf '%s\n' "$i  run: bash .github/scripts/gradle-cache-prefix.sh \"\$EVENT_NAME\"" \
+    "$i- name: Set up Gradle" \
+    "$i  uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c" \
+    "$i  env:" \
+    "$i    GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX: \${{ steps.gradle-cache.outputs.gradle_cache_prefix }}"
+}
+unwired_job() { # <indent of the step list>: setup-gradle with no prefix at all
+  printf '%s\n' "name: synthetic" "on: workflow_dispatch" "jobs:" "  gen:" \
+    "    runs-on: ubuntu-24.04" "    steps:" \
+    "$1- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" \
+    "$1- uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c"
+}
+check "wiring refuses: a new workflow whose steps sit at 4 spaces (unwired)" \
+  refused "$(synthetic n1-4space new.yml "$(unwired_job '    ')")"
+check "wiring refuses: a new unwired *.yaml workflow" \
+  refused "$(synthetic n1-yaml new.yaml "$(unwired_job '      ')")"
+check "wiring refuses: a quoted \`uses: \"gradle/actions/setup-gradle@...\"\` it cannot parse" \
+  refused "$(synthetic n1-quoted new.yml "$(unwired_job '      ' | sed 's|uses: gradle/\(.*\)$|uses: "gradle/\1"|')")"
+check "wiring refuses: a step-wired job whose gradle-cache step has \`if: false\`" \
+  refused "$(synthetic n2-if new.yml "$(step_wired_job '      ' 'if: false')")"
+check "wiring accepts: a correctly step-wired *.yaml workflow (control)" \
+  accepted "$(synthetic ok-yaml new.yaml "$(step_wired_job '      ' '')")"
+check "wiring accepts: a step-wired job whose gradle-cache step is \`if: \${{ !cancelled() }}\` (control)" \
+  accepted "$(synthetic ok-if-fail-open new.yml "$(step_wired_job '      ' 'if: ${{ !cancelled() }}')")"
 check "android-ci.yml: \`changes\` publishes gradle_cache_prefix from this script" eval '
   grep -qF "gradle_cache_prefix: \${{ steps.gradle-cache.outputs.gradle_cache_prefix }}" "$workflow" &&
   grep -qF "bash .github/scripts/gradle-cache-prefix.sh" "$workflow"'

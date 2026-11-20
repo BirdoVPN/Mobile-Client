@@ -22,10 +22,14 @@ esac
 # still has its full timeout plus 5 minutes, so the wait is at most
 # queued_cap_min + BUILD_TIMEOUT_MIN + 5 minutes; wait-build-apks-test.sh
 # fails unless that ends inside the emulator job's timeout-minutes.
+# The cap stops applying once this attempt's Build APK has been seen
+# running (MR-2557): a later read that regresses (queued, or no start, or an
+# older one) is then bounded by that start's deadline, not cut by the cap.
 queued_cap_min=20
 # Every API read is bounded (MR-2512): a hung `gh api` held the job until
-# its timeout. A read cut off counts as a failed one.
-gh_api() { timeout 60 gh api "$@"; }
+# its timeout. A read cut off counts as a failed one. -k 10 (MR-2557): a gh
+# that ignores the TERM is killed 10 s later instead of hanging again.
+gh_api() { timeout -k 10 60 gh api "$@"; }
 # Prints the id of the newest unexpired artifact named $1 that was
 # uploaded at or after $2 (ISO 8601 UTC, so the strings compare).
 # Newest by created_at (MR-2402): artifact ids do not grow with upload
@@ -61,6 +65,9 @@ done
 errors=0
 wait_start_s=$(date -u +%s)
 missing=0
+# The start of this attempt's Build APK once seen in_progress (MR-2557).
+seen_running=""
+seen_running_s=0
 while :; do
   # "Build APK" as THIS attempt reports it.
   if ! job=$(gh_api "$run/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
@@ -81,7 +88,8 @@ while :; do
   read -r status conclusion started completed <<< "$job"
   # Whose "Build APK" this is (MR-2512):
   #   this     it started at or after this attempt did.
-  #   carried  it is completed and ended before this attempt started: "Re-run
+  #   carried  it is completed and ended before this attempt started, or in
+  #            the same second (MR-2557: one ended 4 s before): "Re-run
   #            failed jobs" (or re-running one job) copies a job it does not
   #            re-run into the new attempt with the earlier attempt's times
   #            (run 44384671633, attempts 2 and 4). Its APKs are this
@@ -95,8 +103,14 @@ while :; do
   if [ "$started" != "-" ] && [ "$(date -u -d "$started" +%s)" -ge "$run_started_s" ]; then
     whose=this
   elif [ "$status" = completed ] && [ "$completed" != "-" ] &&
-       [ "$(date -u -d "$completed" +%s)" -lt "$run_started_s" ]; then
+       [ "$(date -u -d "$completed" +%s)" -le "$run_started_s" ]; then
+    # -le: a job that started in this attempt is `this` above, so one that
+    # ended in the second this attempt started can only be an earlier one's.
     whose=carried
+  fi
+  if [ "$status" = in_progress ] && [ "$whose" = this ]; then
+    seen_running="$started"
+    seen_running_s=$(date -u -d "$started" +%s)
   fi
   # The artifacts are read AFTER the job's state, so when that state
   # was "completed", every upload the job made is already listed.
@@ -133,15 +147,17 @@ while :; do
     echo "::error::Build APK ended ($conclusion) without uploading both APKs after its start ($started), so there is nothing to test. (If only this job was re-run more than 7 days later, its APKs have expired: re-run all jobs.)"
     exit 1
   fi
-  if [ "$status" = in_progress ] && [ "$whose" = this ]; then
-    limit=$(( $(date -u -d "$started" +%s) + (build_timeout_min + 5) * 60 ))
+  if [ -n "$seen_running" ]; then
+    # Running in this attempt now, or seen running earlier and this read
+    # regressed: the deadline of the start it was seen with (MR-2557).
+    limit=$(( seen_running_s + (build_timeout_min + 5) * 60 ))
     if [ "$(date -u +%s)" -ge "$limit" ]; then
-      echo "::error::Build APK started at $started, is past its ${build_timeout_min}-minute timeout plus 5 minutes and still uploaded no APKs"
+      echo "::error::Build APK started at $seen_running, is past its ${build_timeout_min}-minute timeout plus 5 minutes and still uploaded no APKs (it now reads $status, with start $started)"
       exit 1
     fi
   elif [ $(( $(date -u +%s) - wait_start_s )) -ge $(( queued_cap_min * 60 )) ]; then
-    # Not started in this attempt: queued, waiting, pending, requested, or
-    # in_progress with no start or one before this attempt's.
+    # Not seen running in this attempt: queued, waiting, pending, requested,
+    # or in_progress with no start or one before this attempt's.
     echo "::error::Build APK has not started in attempt $GITHUB_RUN_ATTEMPT (which started $run_started) within ${queued_cap_min} minutes of this wait: it is $status, with start $started. Nothing it uploads can be matched to this attempt, so this job stops here rather than at its timeout"
     exit 1
   fi
