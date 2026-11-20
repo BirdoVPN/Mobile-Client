@@ -26,6 +26,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -525,6 +526,11 @@ class BirdoRepository @Inject constructor(
                     if (sessionGeneration.get() != genAtStart ||
                         tokenManager.getRefreshToken() != presented
                     ) {
+                        // MR-2532: a sign-out landed while this refresh was on
+                        // the wire. The session it just renewed is not stored,
+                        // so it is revoked with the token it was handed: the
+                        // sign-out itself could only present the consumed one.
+                        if (sessionGeneration.get() != genAtStart) revokeLateRotation(body.refreshToken ?: presented)
                         RefreshOutcome.TRANSIENT
                     } else {
                         // DURABILITY: the server has CONSUMED the presented refresh
@@ -792,41 +798,38 @@ class BirdoRepository @Inject constructor(
     /**
      * Sign out: kill the session SERVER-side, then clear local state.
      *
-     * The server call used to be a bare `api.logout()` — the only authenticated
-     * call in this repository that did NOT go through [withAutoRefresh]. Access
-     * tokens live one hour and refresh tokens thirty days, so the ordinary case
-     * (open the app, use it, come back later, tap "Log out") presented an
-     * EXPIRED access token: /auth/logout answered 401, nothing retried, and the
-     * server never ran `revokeDeviceSessionLineage`. Local tokens were wiped, so
-     * the user was shown a clean logout while the refresh lineage stayed alive
-     * on the server for up to another thirty days — anyone holding a copy of
-     * that refresh token (the exact thing "log out" is supposed to defeat) could
-     * still mint sessions. Routing through withAutoRefresh spends one refresh to
-     * obtain a live jti and retries, so the lineage actually dies.
+     * Access tokens live one hour and refresh tokens thirty days, so the
+     * ordinary case (open the app, use it, come back later, tap "Log out")
+     * holds an EXPIRED access token, and a bare /auth/logout answered 401: the
+     * user saw a clean sign-out while the refresh lineage stayed alive on the
+     * server for up to another thirty days. A refresh first (the old fix, via
+     * withAutoRefresh) could not run while a refresh was held (MR-1771 /
+     * MR-2500), and a refresh only to log out risks the reuse response.
+     *
+     * MR-2532 (owner decision 2026-11-20, option a): sign-out NEVER refreshes.
+     * [endServerSession] sends the REFRESH token itself to /auth/logout when the
+     * access token cannot be presented or a refresh is held or owed, and the
+     * server revokes exactly that session, issuing nothing.
      *
      * Everything after the call stays UNCONDITIONAL. Local sign-out must happen
      * even when the device is offline, the server is down, or the refresh token
      * is itself dead — "Log out" can never leave the user signed in on the
-     * handset. The server half is best-effort and time-boxed: it can now cost up
-     * to three round trips (401 → refresh → retry) and OkHttp allows 30 s each,
-     * which is far longer than anyone will watch a spinner for a button whose
-     * local work is already done. On timeout the local clear still runs.
+     * handset. The server half is best-effort and time-boxed: at most two
+     * round trips, and OkHttp allows 30 s each, far longer than anyone will
+     * watch a spinner for a button whose local work is already done. On
+     * timeout the local clear still runs.
      */
     suspend fun logout() {
         // The session generation is bumped AFTER the server call, with the clear
         // (as deleteAccount does), never before it. A refresh still in flight
-        // when the user signs out — one the sign-out disconnect's 10 s bound gave
-        // up on, say — has already had its presented refresh token CONSUMED by
-        // the server. Bumped first, its fence dropped the rotated pair, the
-        // consumed token stayed on disk, and logout's own 401 → refresh replayed
-        // it: a soft 401 inside the server's 30 s rotation grace, an account-wide
-        // reuse revoke past it (review of #463). Bumped here, that refresh lands
-        // its pair, logout's refresh finds the access token already replaced
-        // (single-flight) and the logout retries on it.
+        // when the user signs out (one the sign-out disconnect's 10 s bound gave
+        // up on, say) has already had its presented refresh token CONSUMED by
+        // the server. Bumped first, its fence dropped the rotated pair and the
+        // consumed token stayed on disk (review of #463). Bumped here, that
+        // refresh lands its pair, and endServerSession waits for it and signs
+        // out with what it landed, never with the consumed token.
         try {
-            withTimeout(LOGOUT_SERVER_CALL_TIMEOUT_MS) {
-                withAutoRefreshNoBody(R.string.error_unexpected) { api.logout() }
-            }
+            withTimeout(LOGOUT_SERVER_CALL_TIMEOUT_MS) { endServerSession() }
         } catch (_: Exception) { /* best effort — local sign-out proceeds regardless */ }
         // Bump and clear as ONE step under [sessionLock] (finding #6, round 7): a
         // refresh committing its rotated pair right now — logout's own, past the
@@ -843,6 +846,49 @@ class BirdoRepository @Inject constructor(
         // unchanged by the NEXT account signed in on this handset, linking the
         // two (audit D-15). Best effort — sign-out must complete regardless.
         forgetPostQuantumKeypair()
+    }
+
+    /**
+     * MR-2532: a refresh that rotated the pair after a sign-out landed. Its
+     * pair is never stored (the fence in [lockedRefresh]), and the session it
+     * renewed is revoked with the refresh token it was handed, so a refresh on
+     * the wire at the moment of the sign-out cannot leave a session alive.
+     * Best effort, in the refresh's own scope; nothing waits for it.
+     */
+    private fun revokeLateRotation(refreshToken: String) {
+        refreshScope.launch {
+            try {
+                api.logoutWithRefreshToken(RefreshRequest(refreshToken))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Best effort: the session then ends at its own expiry.
+            }
+        }
+    }
+
+    /**
+     * MR-2532: the server half of [logout]. It never refreshes.
+     *
+     * 1. A refresh already on the wire is waited for (it holds [refreshMutex]):
+     *    the token it presented is consumed, and the pair read next is the one
+     *    it lands. Presenting the consumed token again would read as a reuse.
+     * 2. With a usable access token and no refresh held or owed: /auth/logout
+     *    with the bearer, as before. Any answer but a 401 ends it.
+     * 3. Otherwise, or on that 401: /auth/logout with the REFRESH token in the
+     *    body ([BirdoApi.logoutWithRefreshToken]). The server revokes exactly
+     *    that session and issues nothing; it refuses a token it does not know
+     *    without any reuse response.
+     */
+    private suspend fun endServerSession() {
+        refreshMutex.withLock { /* a refresh on the wire lands its pair first */ }
+        val refresh = tokenManager.getRefreshToken()
+        val held = refreshHoldMs() != null || refreshPending
+        if (tokenManager.hasUsableAccessToken() && !held) {
+            val answer = api.logout()
+            if (answer.code() != 401 || refresh == null) return
+        }
+        if (refresh != null) api.logoutWithRefreshToken(RefreshRequest(refresh))
     }
 
     /**

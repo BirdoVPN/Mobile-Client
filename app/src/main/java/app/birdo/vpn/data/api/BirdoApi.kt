@@ -84,6 +84,17 @@ interface BirdoApi {
     @POST("auth/logout")
     suspend fun logout(): Response<Unit>
 
+    /**
+     * MR-2532: the same route, signed out with the REFRESH token, in the body
+     * as /auth/refresh takes it. For a sign-out with no usable access token or
+     * with a refresh held or owed: the server revokes exactly that session and
+     * issues nothing, so a sign-out never has to refresh first.
+     */
+    @POST("auth/logout")
+    suspend fun logoutWithRefreshToken(
+        @Body request: RefreshRequest,
+    ): Response<Unit>
+
     // ── GDPR ─────────────────────────────────────────────────────
 
     /**

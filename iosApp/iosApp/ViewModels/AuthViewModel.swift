@@ -1298,12 +1298,16 @@ final class AuthViewModel: ObservableObject {
     /// `VpnViewModel.disconnect()` BEFORE this — logout wipes the shared
     /// keychain the tunnel extension reads. Server-side revocation is
     /// best-effort and never blocks the local wipe.
+    ///
+    /// MR-2532: both tokens are read before the wipe, and the server half
+    /// (`APIClient.signOut`) presents the refresh token whenever the access
+    /// token cannot end the session. It never refreshes.
     func logout() {
-        let token = keychain.accessToken
-        if token != nil {
+        let tokens = SignOutTokens(accessToken: keychain.accessToken, refreshToken: keychain.refreshToken)
+        if tokens.accessToken != nil || tokens.refreshToken != nil {
             let api = self.api
             Task.detached {
-                await api.logout(bearerToken: token)
+                await api.signOut(tokens)
             }
         }
         completeLocalLogout()

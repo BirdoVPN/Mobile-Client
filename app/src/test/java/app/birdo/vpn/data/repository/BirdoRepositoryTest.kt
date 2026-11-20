@@ -56,6 +56,10 @@ class BirdoRepositoryTest {
             platformVersion = "15",
             appVersion = "1.0.0",
         )
+        // MR-2532: a usable access token unless a test says otherwise (the
+        // relaxed mock would answer false, and every sign-out would take the
+        // refresh-token path).
+        every { tokenManager.hasUsableAccessToken(any()) } returns true
         repository = BirdoRepository(api, tokenManager, deviceInfoProvider, ApiErrorMapper(StringsXml))
         // The refresh runs in the repository's own scope (round 7). Put that
         // scope on runTest's scheduler — runTest adopts a test Main's — or the
@@ -335,21 +339,21 @@ class BirdoRepositoryTest {
 
     /**
      * Round 7, the case the finding named: logout()'s 15 s budget used to
-     * stretch to the refresh's own callTimeout when its 401 → refresh step
-     * stalled. Logout must return at its budget, and the refresh that outlives
-     * it must not write its rotated pair back over the sign-out.
+     * stretch to the refresh's own callTimeout when a refresh stalled. Since
+     * MR-2532 logout starts no refresh, but it waits for one already on the
+     * wire (its token is consumed). Logout must return at its budget, send
+     * nothing with the consumed token, and the refresh that outlives it must
+     * not write its rotated pair back over the sign-out.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun `logout returns at its budget while its refresh is stalled and the late rotation does not resurrect the session`() = runTest {
+    fun `logout returns at its budget while a refresh is stalled and the late rotation does not resurrect the session`() = runTest {
         var access: String? = "old_access"
         var refresh: String? = "old_refresh"
         every { tokenManager.getAccessToken() } answers { access }
         every { tokenManager.getRefreshToken() } answers { refresh }
         every { tokenManager.clearAll() } answers { access = null; refresh = null }
         every { tokenManager.setTokens(any(), any()) } answers { access = firstArg(); refresh = secondArg() }
-        coEvery { api.logout() } returns
-            Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
         val answer = CompletableDeferred<Unit>()
         coEvery { api.refreshToken(any()) } coAnswers {
             answer.await()
@@ -361,6 +365,10 @@ class BirdoRepositoryTest {
             delay(60_000)
             answer.complete(Unit)
         }
+        // A refresh on the wire whose caller has gone.
+        val caller = launch { repository.refreshToken() }
+        runCurrent()
+        caller.cancel()
 
         val startedAt = currentTime
         repository.logout()
@@ -370,10 +378,17 @@ class BirdoRepositoryTest {
             BirdoRepository.LOGOUT_SERVER_CALL_TIMEOUT_MS,
             currentTime - startedAt,
         )
+        coVerify(exactly = 0) { api.logout() }
+        coVerify(exactly = 0) { api.logoutWithRefreshToken(any()) }
         answer.complete(Unit)
         runCurrent()
         assertNull("the late rotation must not write a signed-out session back", refresh)
         verify(exactly = 0) { tokenManager.setTokens(any(), any()) }
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+        // MR-2532: the session that late rotation renewed is revoked with the
+        // token it was handed; the consumed one goes nowhere.
+        coVerify(exactly = 1) { api.logoutWithRefreshToken(RefreshRequest("new_refresh")) }
+        coVerify(exactly = 0) { api.logoutWithRefreshToken(RefreshRequest("old_refresh")) }
     }
 
     /**
@@ -428,8 +443,10 @@ class BirdoRepositoryTest {
         repository.logout()
 
         assertEquals("the consumed refresh token must not be presented twice", listOf("old_refresh"), presented)
-        // …and the logout reached the server on the rotated pair.
-        coVerify(exactly = 2) { api.logout() }
+        // MR-2532: logout waited for that refresh and reached the server once,
+        // on the pair it landed; the consumed token went nowhere.
+        coVerify(exactly = 1) { api.logout() }
+        coVerify(exactly = 0) { api.logoutWithRefreshToken(RefreshRequest("old_refresh")) }
         assertNull(refresh)
     }
 
@@ -1220,32 +1237,49 @@ class BirdoRepositoryTest {
     }
 
     /**
-     * The one that mattered: logout ran OUTSIDE withAutoRefresh, so an expired
-     * access token (the normal case — access tokens live 1h, refresh tokens 30
-     * days) made /auth/logout answer 401 with nothing retrying. Local tokens
-     * were still wiped, so the user saw a clean sign-out while the refresh
-     * lineage stayed alive server-side for up to another 30 days.
-     *
-     * Asserting TWO calls to api.logout is the whole point: one call means the
-     * 401 was accepted and the session outlived the logout.
+     * The one that mattered: an expired access token (the normal case: access
+     * tokens live 1h, refresh tokens 30 days) made /auth/logout answer 401, and
+     * the user saw a clean sign-out while the refresh lineage stayed alive
+     * server-side for up to another 30 days. MR-2532 (option a): the sign-out
+     * sends the REFRESH token itself and the server revokes that session. It
+     * never refreshes first: a held refresh could not, and a refresh only to
+     * log out risks the reuse response.
      */
     @Test
-    fun `logout with an expired access token refreshes and retries so the session dies server-side`() = runTest {
+    fun `logout with an expired access token sends the refresh token and never refreshes`() = runTest {
+        every { tokenManager.hasUsableAccessToken(any()) } returns false
         coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
-        coEvery { api.refreshToken(any()) } returns Response.success(
-            RefreshResponse(accessToken = "new_access", expiresIn = 3600)
-        )
-        val unauthorized = "Unauthorized".toResponseBody("text/plain".toMediaType())
-        coEvery { api.logout() } returnsMany listOf(
-            Response.error(401, unauthorized),
-            Response.success(Unit),
-        )
+        coEvery { api.logoutWithRefreshToken(any()) } returns Response.success(Unit)
 
         repository.logout()
 
-        coVerify(exactly = 1) { api.refreshToken(any()) }
-        coVerify(exactly = 2) { api.logout() }
+        coVerify(exactly = 1) { api.logoutWithRefreshToken(RefreshRequest("live_refresh")) }
+        coVerify(exactly = 0) { api.logout() }
+        coVerify(exactly = 0) { api.refreshToken(any()) }
         verify { tokenManager.clearAll() }
+    }
+
+    /**
+     * MR-2532: a refresh held (a 429's Retry-After) is exactly when the access
+     * token cannot be renewed. The sign-out sends the refresh token at once,
+     * even with an access token that still reads as usable, and asks for no
+     * refresh while the hold stands.
+     */
+    @Test
+    fun `logout during a refresh hold sends the refresh token without waiting for the hold`() = runTest {
+        repository.clock = { 1_000_000L }
+        coEvery { tokenManager.getRefreshToken() } returns "held_refresh"
+        coEvery { tokenManager.getAccessToken() } returns "old_access"
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(429, retryAfter = "60")
+        coEvery { api.logoutWithRefreshToken(any()) } returns Response.success(Unit)
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+
+        repository.logout()
+
+        coVerify(exactly = 1) { api.logoutWithRefreshToken(RefreshRequest("held_refresh")) }
+        coVerify(exactly = 0) { api.logout() }
+        coVerify(exactly = 1) { api.refreshToken(any()) } // the 429'd one; none at sign-out
     }
 
     /**
@@ -1289,12 +1323,16 @@ class BirdoRepositoryTest {
         coEvery { tokenManager.getRefreshToken() } returns "dead_refresh"
         val unauthorized = "Unauthorized".toResponseBody("text/plain".toMediaType())
         coEvery { api.logout() } returns Response.error(401, unauthorized)
-        coEvery { api.refreshToken(any()) } returns Response.error(401, unauthorized)
+        coEvery { api.logoutWithRefreshToken(any()) } returns Response.error(401, unauthorized)
 
         repository.logout()
 
+        // MR-2532: the bearer's 401 sends the refresh token ONCE to /auth/logout,
+        // which refuses an unknown token without any reuse response; nothing
+        // goes to /auth/refresh, and nothing is sent again.
         coVerify(exactly = 1) { api.logout() }
-        coVerify(exactly = 1) { api.refreshToken(any()) }
+        coVerify(exactly = 1) { api.logoutWithRefreshToken(RefreshRequest("dead_refresh")) }
+        coVerify(exactly = 0) { api.refreshToken(any()) }
     }
 
     /**
