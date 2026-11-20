@@ -250,34 +250,25 @@ enum HeartbeatPolicy {
         sinceLastOk >= reapWindow ? .rebuild : .end(.revoked)
     }
 
-    /// Where `.moveServer` goes: the owner's rule for a server that has gone
-    /// (2026-11-19, MR-2343 round 2). It applies alike to a drained server
-    /// (listed offline in `list`) and a deleted one (missing from `list`).
+    /// Where `.moveServer` goes: `RelayRetry.next` with the list the session
+    /// was dialled from (`cached`), the one implementation of the retry rule
+    /// (MR-2535, review L1 of #651 round 2). It applies alike to a drained
+    /// server (listed offline in `list`) and a deleted one (missing from it):
     ///
-    /// - AUTOMATIC pick (`SelectionOrigin.automatic`): the best server
-    ///   anywhere, i.e. QuickSelect's best of all the others. Nobody chose a
-    ///   location, so there is no same-city preference and no need to know
-    ///   where the gone server was.
-    /// - USER pick: stay within its own country (MR-2212), the same city
-    ///   first (`RelayRetry.next`). A deleted server's location is read from
-    ///   `cached`, the list it was dialled from. When it is in neither list,
-    ///   or nothing in its country qualifies, the result is nil.
+    /// - the SAME city first, for either pick, when the gone server is still
+    ///   listed (drained), as iOS RelayRetry (#655), Android and Desktop do;
+    /// - then an AUTOMATIC pick (`SelectionOrigin.automatic`) moves to the
+    ///   best server anywhere, and a USER pick stays in its own country
+    ///   (MR-2212);
+    /// - a DELETED server follows the owner's rule (2026-11-19): an automatic
+    ///   pick moves to the best server anywhere, a user pick within the
+    ///   country `cached` gives it, else nowhere.
     ///
     /// Only servers listed online and open to this plan qualify. nil means no
     /// move, and the session ends (`HeartbeatEnding.serverOffline`).
     static func moveTarget<S: RelayRetryCandidate>(from goneId: String, in list: [S], cached: [S],
                                                    origin: SelectionOrigin) -> RelayRetry.Choice<S>? {
-        let gone = list.first(where: { $0.id == goneId }) ?? cached.first(where: { $0.id == goneId })
-        switch origin {
-        case .automatic:
-            guard let best = QuickSelect.bestServer(in: list.filter { $0.id != goneId }) else { return nil }
-            return RelayRetry.Choice(server: best, reach: reach(from: gone, to: best))
-        case .user:
-            guard let gone else { return nil }
-            var known = list
-            if !known.contains(where: { $0.id == goneId }) { known.append(gone) }
-            return RelayRetry.next(after: goneId, in: known, origin: .user)
-        }
+        RelayRetry.next(after: goneId, in: list, cached: cached, origin: origin)
     }
 
     /// The one tap (#648's `RelayOffer`, MR-2493) beside the stop, for a USER
@@ -291,17 +282,6 @@ enum HeartbeatPolicy {
                                               origin: SelectionOrigin) -> S? {
         guard origin == .user else { return nil }
         return QuickSelect.bestServer(in: fresh.filter { $0.id != goneId })
-    }
-
-    /// How far an automatic move reaches, for the log line (counts only). A
-    /// gone server neither list knows logs as other-country.
-    private static func reach<S: RelayRetryCandidate>(from gone: S?, to target: S) -> RelayRetry.Reach {
-        func normalized(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-        guard let gone else { return .otherCountry }
-        let country = normalized(gone.countryCode)
-        guard !country.isEmpty, country == normalized(target.countryCode) else { return .otherCountry }
-        let city = normalized(gone.city)
-        return !city.isEmpty && city == normalized(target.city) ? .sameCity : .sameCountry
     }
 }
 
@@ -328,5 +308,103 @@ struct HeartbeatRebuildBudget: Equatable, Sendable {
         }
         lastRebuildAt = now
         return .rebuild
+    }
+}
+
+// MARK: - MR-2525: the rebuild and the move, in place first
+//
+// The heartbeat's rebuild (`reaped`) and move (`server_offline`) used to stop
+// the session first (`VPNManager.disconnect()`: on-demand saved OFF, the
+// tunnel stopped) and dial again. With the kill switch on, traffic left on the
+// physical interface for that gap. Android keeps its TUN up across the same
+// move.
+//
+// The reply that asks for the rebuild or the move came THROUGH the tunnel
+// (#621 F1: the host heartbeat rides it), so the old path answered a moment
+// ago. The new key is minted over it, and swapped onto the RUNNING session
+// (`VPNManager.swapConfig`, #159): the session never drops, so
+// `includeAllNetworks` and the armed on-demand rule keep blocking throughout.
+// No `rebuild` flag: the server has already removed the old key, so there is
+// nothing for it to defer (a rebuild would be refused `unknown-current-key`).
+//
+// Anything short of a proven new peer falls back to the disconnect-first path
+// this replaced, so the result is never worse than before. The attempt is
+// bounded: `mintCap` for the request, `LiveRebuildProbe` for the handshake.
+
+/// Where one in-place attempt ended. Each case is terminal for the attempt.
+enum HeartbeatRedialStep: Equatable, CaseIterable, Sendable {
+    /// The session was not up and settled when the outcome arrived (a
+    /// reassert, a re-dial): nothing to swap onto. Nothing minted.
+    case sessionNotUp
+    /// `/vpn/connect` (or the Multi-Hop one) got no answer (a transport
+    /// failure, or nothing within `HeartbeatRedial.mintCap`): the old path is
+    /// gone too. Nothing minted.
+    case mintFailed
+    /// The server ANSWERED the request with a refusal or an error. That answer
+    /// is the outcome, as it would be for the disconnect-first path's own
+    /// dial; the caller has recorded and shown it. Nothing minted.
+    case mintRefused
+    /// The user disconnected, signed out or dialled while the attempt was out.
+    /// A key may have been minted.
+    case userActed
+    /// Multi-Hop: the server confirmed a different route than asked for. A
+    /// key was minted; nothing was swapped.
+    case routeNotConfirmed
+    /// The session went away before the swap (`noLiveSession`, thrown before
+    /// any write). A key was minted; nothing was swapped.
+    case sessionGoneBeforeSwap
+    /// The swap was refused (keychain, preferences, the extension). The new
+    /// key was minted and may be half installed.
+    case swapFailed
+    /// The new peer delivered bytes inside the probe window: it is the session.
+    case newPeerHandshaked
+    /// The new peer stayed silent through the window, or the session dropped
+    /// while it was probed.
+    case newPeerSilent
+}
+
+/// What follows an in-place attempt.
+enum HeartbeatRedialDirective: Equatable, Sendable {
+    /// The new peer is the session. Nothing is stopped.
+    case commit
+    /// The user acted meanwhile and owns the state: change nothing else.
+    case standDown(releaseNewKey: Bool)
+    /// The server refused the new key: the session, whose own key is gone,
+    /// ends with the server's words. Nothing is asked again.
+    case stopAfterRefusal
+    /// The pre-MR-2525 path: stop, wait for the teardown, dial again.
+    case disconnectFirst(releaseNewKey: Bool)
+}
+
+enum HeartbeatRedial {
+    /// The cap on the in-place `/vpn/connect`. A request into a path that no
+    /// longer answers would otherwise wait out URLSession's timeout while
+    /// traffic is blocked; past the cap the disconnect-first path runs.
+    static let mintCap: Duration = .seconds(8)
+
+    /// The one table. Only a proven new peer is kept; a key minted for an
+    /// attempt that is not kept is always released (DELETE), so it cannot
+    /// hold the account's slot.
+    /// Whether a failed request was ANSWERED (a refusal, an HTTP error, an
+    /// unreadable body) rather than lost on the way (a transport failure, a
+    /// cancelled TLS pin check, the cap). Only an unanswered request is
+    /// worth the disconnect-first path's second dial.
+    static func serverAnswered(_ error: Error) -> Bool {
+        !(error is CancellationError || error is URLError)
+    }
+
+    static func directive(after step: HeartbeatRedialStep) -> HeartbeatRedialDirective {
+        switch step {
+        case .newPeerHandshaked:
+            return .commit
+        case .userActed:
+            return .standDown(releaseNewKey: true)
+        case .mintRefused:
+            return .stopAfterRefusal
+        case .sessionNotUp, .mintFailed:
+            return .disconnectFirst(releaseNewKey: false)
+        case .routeNotConfirmed, .sessionGoneBeforeSwap, .swapFailed, .newPeerSilent:
+            return .disconnectFirst(releaseNewKey: true)
+        }
     }
 }

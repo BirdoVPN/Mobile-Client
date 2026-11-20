@@ -187,15 +187,16 @@ final class HeartbeatPolicyTests: XCTestCase {
 
     /// Round 2: the OWNER's rule for a server that has gone (owner decision,
     /// relayed by the lead at 2026-11-19 21:29Z, superseding the 21:16Z "no
-    /// move"). It is the same whether the server is drained (still listed,
-    /// offline) or DELETED (no longer in the fresh list):
-    ///   * an AUTOMATIC pick moves to the best server anywhere. That is
-    ///     QuickSelect's best of all the others, with no same-city preference
-    ///     and no need to know where the gone server was;
+    /// move"), carried out by `RelayRetry.next` (MR-2535):
+    ///   * a DELETED server (no longer in the fresh list): an AUTOMATIC pick
+    ///     moves to the best server anywhere, QuickSelect's best of all the
+    ///     others, with no need to know where the gone server was;
     ///   * a USER pick moves within its own country, read from the list it was
     ///     dialled from when the fresh one no longer carries it (the same
     ///     city first). When nothing there qualifies, nothing moves and the
     ///     session ends ("This server went offline. Choose another location.").
+    /// A DRAINED server (still listed, offline) goes to its same-city twin
+    /// first for either pick: `testADrainedServerMovesToItsCityFirstForEitherPick`.
     func testAGoneServerFollowsTheOwnersRule() {
         let dialledFrom = [Node(id: "de-1"),
                            Node(id: "de-1b", load: 60),
@@ -204,11 +205,11 @@ final class HeartbeatPolicyTests: XCTestCase {
         let deleted = Array(dialledFrom.dropFirst())
         var drained = dialledFrom
         drained[0].isOnline = false
+        // AUTOMATIC, deleted: the best anywhere, past the busier same-city twin.
+        let automatic = HeartbeatPolicy.moveTarget(from: "de-1", in: deleted, cached: dialledFrom, origin: .automatic)
+        XCTAssertEqual(automatic?.server.id, "nl-1")
+        XCTAssertEqual(automatic?.reach, .otherCountry)
         for (label, list) in [("deleted", deleted), ("drained", drained)] {
-            // AUTOMATIC: the best anywhere, past the busier same-city twin.
-            let automatic = HeartbeatPolicy.moveTarget(from: "de-1", in: list, cached: dialledFrom, origin: .automatic)
-            XCTAssertEqual(automatic?.server.id, "nl-1", label)
-            XCTAssertEqual(automatic?.reach, .otherCountry, label)
             // USER: its own country, the same city first.
             let user = HeartbeatPolicy.moveTarget(from: "de-1", in: list, cached: dialledFrom, origin: .user)
             XCTAssertEqual(user?.server.id, "de-1b", label)
@@ -232,6 +233,70 @@ final class HeartbeatPolicyTests: XCTestCase {
                                                   origin: .automatic)?.server.id, "de-1b")
         XCTAssertNil(HeartbeatPolicy.moveTarget(from: "de-1", in: [closed[1], closed[2]], cached: dialledFrom,
                                                 origin: .automatic))
+    }
+
+    /// MR-2535 (review L1 of #651 round 2): a DRAINED server, still listed
+    /// (offline), goes to another relay in its own city first, whoever picked
+    /// it, as the connect retry (#655), Android and Desktop do. Before, an
+    /// automatic pick went straight to the least loaded server anywhere and
+    /// skipped the same-city twin. With no twin left, an automatic pick still
+    /// goes anywhere and a user pick stays in its country.
+    func testADrainedServerMovesToItsCityFirstForEitherPick() {
+        let dialledFrom = [Node(id: "de-1"),
+                           Node(id: "de-1b", load: 60),
+                           Node(id: "de-2", city: "Berlin", load: 50),
+                           Node(id: "nl-1", countryCode: "NL", city: "Amsterdam", load: 1)]
+        var drained = dialledFrom
+        drained[0].isOnline = false
+        for origin in [SelectionOrigin.automatic, .user] {
+            let choice = HeartbeatPolicy.moveTarget(from: "de-1", in: drained, cached: dialledFrom, origin: origin)
+            XCTAssertEqual(choice?.server.id, "de-1b", "\(origin): the same city first, past a less loaded abroad")
+            XCTAssertEqual(choice?.reach, .sameCity, "\(origin)")
+        }
+        // No twin left (offline too): an automatic pick goes anywhere, a user
+        // pick stays in its country.
+        var noTwin = drained
+        noTwin[1].isOnline = false
+        let automatic = HeartbeatPolicy.moveTarget(from: "de-1", in: noTwin, cached: dialledFrom, origin: .automatic)
+        XCTAssertEqual(automatic?.server.id, "nl-1")
+        XCTAssertEqual(automatic?.reach, .otherCountry)
+        let user = HeartbeatPolicy.moveTarget(from: "de-1", in: noTwin, cached: dialledFrom, origin: .user)
+        XCTAssertEqual(user?.server.id, "de-2")
+        XCTAssertEqual(user?.reach, .sameCountry)
+    }
+
+    /// MR-2535: one implementation. The heartbeat's move IS the connect
+    /// retry's `RelayRetry.next` with the cached list, for every gone server
+    /// (listed, deleted, unknown to both lists), both picks, and many mixes of
+    /// online, open-to-this-plan and load.
+    func testTheMoveIsTheRetryRuleForEveryListShape() {
+        let places: [(String, String)] = [("DE", "Frankfurt"), ("DE", "Berlin"), ("NL", "Amsterdam")]
+        var compared = 0
+        for mask in 0..<(1 << 9) {
+            // Six relays, two per place; the mask's bits pick online and open.
+            var nodes: [Node] = []
+            for i in 0..<6 {
+                let place = places[i / 2]
+                var node = Node(id: "n\(i)", countryCode: place.0, city: place.1,
+                                load: Int32((i * 37 + mask) % 90))
+                node.isOnline = mask & (1 << (i % 9)) != 0
+                node.accessible = mask & (1 << ((i + 3) % 9)) != 0
+                nodes.append(node)
+            }
+            let shapes: [[Node]] = [nodes, Array(nodes.dropFirst()), nodes.filter { $0.id != "n2" }]
+            for list in shapes {
+                for gone in ["n0", "n2", "zz"] {
+                    for origin in [SelectionOrigin.automatic, .user] {
+                        let move = HeartbeatPolicy.moveTarget(from: gone, in: list, cached: nodes, origin: origin)
+                        let retry = RelayRetry.next(after: gone, in: list, cached: nodes, origin: origin)
+                        XCTAssertEqual(move?.server.id, retry?.server.id, "mask \(mask) gone \(gone) \(origin)")
+                        XCTAssertEqual(move?.reach, retry?.reach, "mask \(mask) gone \(gone) \(origin)")
+                        compared += 1
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(compared, 512 * 3 * 3 * 2)
     }
 
     /// Round 2: when a USER pick cannot move (nothing qualifies in its
@@ -362,27 +427,34 @@ final class HeartbeatPolicyTests: XCTestCase {
         }
     }
 
-    /// The quiet rebuild and the move: disconnect-first behind the teardown
-    /// gate, never the user's own connect (so neither refills the MR-2212
-    /// retry nor clears the breaker on a single-hop session), and Home says
-    /// what is under way. Neither is between `retryOnAnotherRelay` and
-    /// `legacyRebuild`, whose log lines RelayRetryTests counts.
-    func testTheRebuildAndTheMoveAreDisconnectFirstAndSayWhatTheyDo() throws {
+    /// MR-2525: the quiet rebuild and the move go IN PLACE first. Nothing in
+    /// either stops the session before the attempt's directive: the flag
+    /// that holds every other beat, dial and rebuild off is raised in the
+    /// same main-actor step as the outcome, and only `.disconnectFirst`
+    /// reaches the old stop-wait-dial path.
+    func testTheRebuildAndTheMoveGoInPlaceFirst() throws {
         let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
         let rebuild = slice(vm, from: "private func rebuildAfterReap() {", to: "\n    }\n")
         let move = slice(vm, from: "private func moveOffDrainedServer() {", to: "\n    }\n")
-        for path in [rebuild, move] {
-            XCTAssertTrue(path.contains("isTearingDownForRedial = true"))
-            XCTAssertTrue(path.contains("await self?.awaitTeardown()"))
-            XCTAssertTrue(path.contains("guard generation == self.relayRetryGeneration else { return }"))
-            XCTAssertTrue(path.contains("self.connect(userInitiated: false)"))
-            XCTAssertFalse(path.contains("releaseServerSlot()"), "the key is already gone: nothing to DELETE")
+        for (name, path) in [("rebuild", rebuild), ("move", move)] {
+            let raised = try XCTUnwrap(path.range(of: "isRebuildingLive = true"), name)
+            let task = try XCTUnwrap(path.range(of: "Task { [weak self] in"), name)
+            XCTAssertLessThan(raised.lowerBound, task.lowerBound, "\(name): the flag goes up after a suspension")
+            let attempt = try XCTUnwrap(path.range(of: "await self.redialInPlace("), name)
+            let gate = try XCTUnwrap(path.range(of: "guard case .disconnectFirst = directive else { return }"), name)
+            XCTAssertLessThan(attempt.lowerBound, gate.lowerBound, name)
+            XCTAssertFalse(path.contains("vpnManager.disconnect()"), "\(name): stops the session before the attempt")
+            XCTAssertFalse(path.contains("isTearingDownForRedial = true"), name)
+            XCTAssertFalse(path.contains("releaseServerSlot()"), "\(name): the key is already gone: nothing to DELETE")
         }
         XCTAssertTrue(rebuild.contains("relayRecovery = .reconnecting"))
-        XCTAssertTrue(rebuild.contains("self.connectMultiHop(entry: pair.entry, exit: pair.exit)"))
+        XCTAssertTrue(rebuild.contains("self.rebuildDisconnectFirst(pair: pair, server: server, origin: origin, generation: generation)"))
         XCTAssertTrue(move.contains("relayRecovery = .tryingAnotherServer"))
         XCTAssertTrue(move.contains("HeartbeatPolicy.moveTarget(from: goneId, in: self.servers, cached: cached,"))
-        XCTAssertTrue(move.contains("self.error = HeartbeatEnding.serverOffline.message"))
+        XCTAssertTrue(move.contains("await self.redialInPlace(.single(next.server), generation: generation)"))
+        XCTAssertTrue(move.contains("self.moveDisconnectFirst(to: next.server, origin: origin, generation: generation)"))
+        // Nothing qualifies: the session ends as any server stop does, and says so.
+        XCTAssertTrue(move.contains("self.endSessionForServer(.serverOffline)"))
         // Round 2: the stop carries #648's one tap for a user pick, chosen
         // only from a fresh list (never the list already held).
         XCTAssertTrue(move.contains("fresh.flatMap { HeartbeatPolicy.offer(from: goneId, in: $0, origin: origin) }"),
@@ -395,6 +467,159 @@ final class HeartbeatPolicyTests: XCTestCase {
         let reset = slice(vm, from: "private func resetSessionState() {", to: "\n    }\n")
         XCTAssertTrue(reset.contains("quotaGrace = nil"))
         XCTAssertTrue(reset.contains("lastHeartbeatOkAt = nil"))
+    }
+
+    /// The fallback, only after the in-place attempt kept no new peer: the
+    /// pre-MR-2525 path, disconnect-first behind the teardown gate, never the
+    /// user's own connect (so neither refills the MR-2212 retry nor clears the
+    /// breaker on a single-hop session). A user who acted meanwhile wins.
+    func testTheFallbackIsTheOldDisconnectFirstPath() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        let rebuild = slice(vm, from: "private func rebuildDisconnectFirst(", to: "\n    }\n")
+        let move = slice(vm, from: "private func moveDisconnectFirst(", to: "\n    }\n")
+        for (name, path) in [("rebuild", rebuild), ("move", move)] {
+            let fence = try XCTUnwrap(path.range(of: "guard generation == relayRetryGeneration else { return }"), name)
+            let stop = try XCTUnwrap(path.range(of: "vpnManager.disconnect()"), name)
+            XCTAssertLessThan(fence.lowerBound, stop.lowerBound, "\(name): a user who acted is overridden")
+            XCTAssertTrue(path.contains("isTearingDownForRedial = true"), name)
+            XCTAssertTrue(path.contains("await self?.awaitTeardown()"), name)
+            XCTAssertTrue(path.contains("guard generation == self.relayRetryGeneration else { return }"), name)
+            XCTAssertTrue(path.contains("self.connect(userInitiated: false)"), name)
+            XCTAssertFalse(path.contains("releaseServerSlot()"), "\(name): the key is already gone: nothing to DELETE")
+        }
+        XCTAssertTrue(rebuild.contains("relayRecovery = .reconnecting"))
+        XCTAssertTrue(rebuild.contains("self.connectMultiHop(entry: pair.entry, exit: pair.exit)"))
+        XCTAssertTrue(move.contains("relayRecovery = .tryingAnotherServer"))
+    }
+
+    /// MR-2525: the attempt itself. A plain mint (the server has removed the
+    /// key, so there is nothing to defer), capped; the new peer onto the
+    /// RUNNING session; never a stop, never a change to the kill switch;
+    /// the directive from the one table; the flag lowered and an unkept key
+    /// released on every exit; the attempt's PQ pair ended.
+    func testTheInPlaceAttemptNeverStopsTheSession() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        let attempt = slice(vm, from: "private func attemptRedialInPlace(", to: "\n    }\n")
+        let redial = slice(vm, from: "private func redialInPlace(", to: "\n    }\n")
+        let commit = slice(vm, from: "private func commitRedial(", to: "\n    }\n")
+        for (name, body) in [("attempt", attempt), ("redial", redial), ("commit", commit)] {
+            for forbidden in ["vpnManager.disconnect()", "applyKillSwitchFlag", "failOpenAndStop", "rebuildOf",
+                              "releaseServerSlot()", "disconnect()"] {
+                XCTAssertFalse(body.contains(forbidden), "\(name) contains \(forbidden)")
+            }
+        }
+        XCTAssertTrue(attempt.contains("guard isConnected, !isConnecting else { return RedialAttempt(step: .sessionNotUp) }"))
+        XCTAssertTrue(attempt.contains("try await vpnManager.swapConfig(config: config)"))
+        XCTAssertTrue(attempt.contains("MultiHopRouteCheck.validate("))
+        XCTAssertTrue(attempt.contains("await awaitNewPeerHandshake()"))
+        XCTAssertTrue(attempt.contains("api.getConnectConfig(serverId: ids.first)"))
+        XCTAssertTrue(attempt.contains("api.getMultiHopConfig(entryId: ids.first, exitId: exitId)"))
+        XCTAssertTrue(attempt.contains("try? await Task.sleep(for: HeartbeatRedial.mintCap)"))
+        XCTAssertTrue(attempt.contains("work.cancel()"))
+        XCTAssertTrue(attempt.contains("defer { BirdoPQManager.shared.discardHandOff(publicKey: config.pqUploadedKey) }"))
+        // An answered request is recorded as every dial records it, and only then
+        // is it the outcome; an unanswered one goes to the disconnect-first path.
+        let answered = try XCTUnwrap(attempt.range(of: "HeartbeatRedial.serverAnswered(error)"))
+        let hold = try XCTUnwrap(attempt.range(of: "holdAutomaticDials(after: error)"))
+        let refused = try XCTUnwrap(attempt.range(of: "return RedialAttempt(step: .mintRefused)"))
+        XCTAssertLessThan(answered.lowerBound, hold.lowerBound)
+        XCTAssertLessThan(hold.lowerBound, refused.lowerBound)
+        XCTAssertTrue(attempt.contains("return RedialAttempt(step: .mintFailed)"))
+        XCTAssertTrue(redial.contains("let directive = HeartbeatRedial.directive(after: attempt.step)"))
+        XCTAssertTrue(redial.contains("isRebuildingLive = false"))
+        XCTAssertTrue(redial.contains("release(keyId: newId)"))
+        // The one stop: a refused request, through its own helper, nowhere else.
+        XCTAssertTrue(redial.contains("case .stopAfterRefusal:\n            stopAfterRefusedRedial()"))
+        XCTAssertEqual(vm.components(separatedBy: "stopAfterRefusedRedial()").count - 1, 2,
+                       "its declaration and its one call")
+        let stop = slice(vm, from: "private func stopAfterRefusedRedial() {", to: "\n    }\n")
+        XCTAssertTrue(stop.contains("setActiveKeyId(nil)"), "the gone key's handle is dropped, never DELETEd")
+        XCTAssertFalse(stop.contains("releaseServerSlot()"))
+        XCTAssertTrue(commit.contains("clearCircuitBreaker()"))
+        XCTAssertTrue(commit.contains("lastHeartbeatOkAt = Date()"))
+    }
+
+    /// Review of #662 (F2): a sign-out and an account deletion stop an attempt
+    /// that is out, as a user disconnect does. Both used to leave the
+    /// generation alone until `resetForLogout()`'s `disconnect()` ran after the
+    /// DELETE, so for up to ~31 s the attempt could still install its key in
+    /// the shared keychain over the teardown, or dial again. And the attempt
+    /// installs nothing once the session is gone.
+    func testASignOutOrADeletionStopsTheInPlaceAttempt() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        for start in ["func disconnectForSignOut() async {", "func tearDownForAccountDeletion() -> Bool {"] {
+            let body = slice(vm, from: start, to: "\n    }\n")
+            let bump = try XCTUnwrap(body.range(of: "relayRetryGeneration &+= 1"), start)
+            let stop = try XCTUnwrap(body.range(of: "vpnManager.disconnect()"), start)
+            XCTAssertLessThan(bump.lowerBound, stop.lowerBound, start)
+        }
+        let attempt = slice(vm, from: "private func attemptRedialInPlace(", to: "\n    }\n")
+        let guarded = try XCTUnwrap(attempt.range(of:
+            "guard isConnected else { return ended(.sessionGoneBeforeSwap, route: route) }"))
+        let install = try XCTUnwrap(attempt.range(of: "setActiveKeyId(config.keyId)"))
+        XCTAssertLessThan(guarded.lowerBound, install.lowerBound)
+    }
+
+    // MARK: - MR-2525: the in-place table (HeartbeatRedial)
+
+    /// Only a new peer that delivered bytes is kept.
+    func testOnlyAProvenNewPeerIsKept() {
+        for step in HeartbeatRedialStep.allCases {
+            XCTAssertEqual(HeartbeatRedial.directive(after: step) == .commit, step == .newPeerHandshaked, "\(step)")
+        }
+    }
+
+    /// A key minted for an attempt that is not kept is always released, so it
+    /// never holds the account's slot; with nothing minted there is nothing to
+    /// release. Every attempt not kept and not overtaken by the user ends on
+    /// the disconnect-first path: never worse than before MR-2525.
+    func testAnUnkeptAttemptReleasesItsKeyAndFallsBack() {
+        let afterTheMint: [HeartbeatRedialStep] = [.routeNotConfirmed, .sessionGoneBeforeSwap, .swapFailed, .newPeerSilent]
+        for step in afterTheMint {
+            XCTAssertEqual(HeartbeatRedial.directive(after: step), .disconnectFirst(releaseNewKey: true), "\(step)")
+        }
+        for step in [HeartbeatRedialStep.sessionNotUp, .mintFailed] {
+            XCTAssertEqual(HeartbeatRedial.directive(after: step), .disconnectFirst(releaseNewKey: false), "\(step)")
+        }
+        XCTAssertEqual(Set(HeartbeatRedialStep.allCases.map { "\($0)" }),
+                       Set((afterTheMint + [.sessionNotUp, .mintFailed, .mintRefused, .userActed, .newPeerHandshaked])
+                           .map { "\($0)" }),
+                       "a new step must be placed in this table on purpose")
+    }
+
+    /// A server that ANSWERED the in-place request with a refusal or an error
+    /// has given the outcome, as it would to the disconnect-first path's own
+    /// dial: the session ends with its words and nothing is asked again. Only
+    /// an unanswered request (a transport failure, the cap) earns that second
+    /// dial, outside the old path.
+    func testAnAnsweredRefusalEndsTheSessionAndOnlyNoAnswerDialsAgain() {
+        XCTAssertEqual(HeartbeatRedial.directive(after: .mintRefused), .stopAfterRefusal)
+        for step in HeartbeatRedialStep.allCases where step != .mintRefused {
+            XCTAssertNotEqual(HeartbeatRedial.directive(after: step), .stopAfterRefusal, "\(step)")
+        }
+        struct Refused: Error {}
+        XCTAssertTrue(HeartbeatRedial.serverAnswered(Refused()))
+        XCTAssertTrue(HeartbeatRedial.serverAnswered(NSError(domain: "HTTP", code: 503)))
+        XCTAssertFalse(HeartbeatRedial.serverAnswered(URLError(.timedOut)))
+        XCTAssertFalse(HeartbeatRedial.serverAnswered(URLError(.networkConnectionLost)))
+        XCTAssertFalse(HeartbeatRedial.serverAnswered(URLError(.cancelled)), "a failed TLS pin check is no answer")
+        XCTAssertFalse(HeartbeatRedial.serverAnswered(CancellationError()), "the cap is no answer")
+    }
+
+    /// The user acting meanwhile (a disconnect, a sign-out) wins: the attempt
+    /// releases what it minted and changes nothing else; nothing is dialled.
+    func testTheUserActingMeanwhileWins() {
+        XCTAssertEqual(HeartbeatRedial.directive(after: .userActed), .standDown(releaseNewKey: true))
+        for step in HeartbeatRedialStep.allCases where step != .userActed {
+            if case .standDown = HeartbeatRedial.directive(after: step) { XCTFail("\(step) stands down") }
+        }
+    }
+
+    /// The blocked wait is bounded: the capped mint plus the new peer's probe
+    /// window stays inside 30 s before the fallback runs.
+    func testTheInPlaceAttemptIsBounded() {
+        XCTAssertEqual(HeartbeatRedial.mintCap, .seconds(8))
+        XCTAssertLessThanOrEqual(HeartbeatRedial.mintCap + .milliseconds(LiveRebuildProbe.windowMs), .seconds(30))
     }
 
     func testTheQuietRebuildSaysReconnecting() {
