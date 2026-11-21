@@ -17,6 +17,7 @@ import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
 import app.birdo.vpn.data.network.AroundTunnel
+import app.birdo.vpn.data.network.DohResolver
 import app.birdo.vpn.shared.model.LoginResult
 import app.birdo.vpn.shared.model.PlanGates
 import kotlinx.coroutines.CancellationException
@@ -839,6 +840,9 @@ class BirdoRepository @Inject constructor(
         }
         invalidateServerCache()
         invalidateSubscriptionCache()
+        // MR-953 F5: the API answers kept for Stealth go with an explicit
+        // sign-out, not with a dead session (TokenManager.clearAll).
+        DohResolver.forgetRememberedAnswers()
         // PRIVACY: the per-install ML-KEM public key would otherwise be sent
         // unchanged by the NEXT account signed in on this handset, linking the
         // two (audit D-15). Best effort — sign-out must complete regardless.
@@ -978,6 +982,8 @@ class BirdoRepository @Inject constructor(
         }
         invalidateServerCache()
         invalidateSubscriptionCache()
+        // MR-953 F5: the API answers kept for Stealth go with the account.
+        DohResolver.forgetRememberedAnswers()
         // PRIVACY: the deviceId would otherwise survive the deletion and
         // link the NEXT account registered on this handset to the one just
         // erased. Mint a fresh random identity so the erased account's

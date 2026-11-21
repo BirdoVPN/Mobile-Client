@@ -1557,4 +1557,239 @@ class BirdoVpnServiceLifecycleTest {
         assertFalse(BirdoVpnService.stealthActive)
         waitFor("the probe verdict") { BirdoVpnService.currentState == VpnState.Connected }
     }
+
+    // ── MR-953 F5 (review of #622): every way out of Stealth ends it ─────
+    //
+    // The Stealth flag outlived failed and abandoned setups: only stopTunnel
+    // and switchTeardown reset it. A Stealth connect that timed out on a
+    // network blocking DoH left it true with no Xray running, and DohResolver
+    // then failed closed for the life of the process, sign-in included. Each
+    // test below starts from a running Stealth session and takes one exit.
+
+    private fun stealthFlag(): kotlinx.coroutines.flow.MutableStateFlow<Boolean> {
+        val f = BirdoVpnService::class.java.getDeclaredField("_stealthActiveFlow")
+        f.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        return f.get(null) as kotlinx.coroutines.flow.MutableStateFlow<Boolean>
+    }
+
+    private fun invokePrivate(name: String, types: Array<Class<*>>, vararg args: Any?): Any? =
+        BirdoVpnService::class.java.getDeclaredMethod(name, *types).apply { isAccessible = true }.invoke(service, *args)
+
+    private fun publish(state: VpnState) {
+        BirdoVpnService.Companion::class.java.getDeclaredMethod("updateState", VpnState::class.java)
+            .apply { isAccessible = true }
+            .invoke(BirdoVpnService.Companion, state)
+    }
+
+    private fun currentGen(): Long = (field("transitionGen") as AtomicLong).get()
+
+    /** Xray is up and Stealth is on when [exit] runs; Stealth must be over after it. */
+    private fun assertExitEndsStealth(exit: String, run: () -> Unit) {
+        mockkObject(XrayManager)
+        every { XrayManager.stop() } just Runs
+        stealthFlag().value = true
+        run()
+        waitFor("$exit to end Stealth") { !BirdoVpnService.stealthActive }
+        verify(atLeast = 1) { XrayManager.stop() }
+    }
+
+    @Test
+    fun `a stealth connect that times out ends stealth`() {
+        assertExitEndsStealth("the connect timeout") {
+            publish(VpnState.StealthConnecting)
+            invokePrivate("onConnectTimeout", emptyArray())
+        }
+    }
+
+    @Test
+    fun `a failed stealth setup ends stealth`() {
+        assertExitEndsStealth("failSetup") {
+            invokePrivate(
+                "failSetup",
+                arrayOf(Long::class.javaPrimitiveType!!, String::class.java, FailureKind::class.java),
+                currentGen(),
+                SessionCopy.STEALTH_FAILED,
+                FailureKind.STEALTH_FAILED,
+            )
+        }
+    }
+
+    @Test
+    fun `a stealth setup a newer transition superseded ends stealth`() {
+        assertExitEndsStealth("supersededAt") {
+            val stale = currentGen()
+            (field("transitionGen") as AtomicLong).incrementAndGet()
+            val abandoned = invokePrivate(
+                "supersededAt",
+                arrayOf(Long::class.javaPrimitiveType!!, String::class.java),
+                stale,
+                "test",
+            )
+            assertEquals(true, abandoned)
+        }
+    }
+
+    @Test
+    fun `xray exiting on its own ends stealth`() {
+        assertExitEndsStealth("onXrayExited") {
+            setField("tunnelHandle", 7)
+            invokePrivate("onXrayExited", arrayOf(Long::class.javaPrimitiveType!!), currentGen())
+        }
+    }
+
+    @Test
+    fun `releasing a give-up's block ends stealth`() {
+        assertExitEndsStealth("handleReleaseBlock") {
+            invokePrivate("handleReleaseBlock", emptyArray())
+        }
+    }
+
+    @Test
+    fun `onDestroy ends stealth`() {
+        assertExitEndsStealth("onDestroy") { service.onDestroy() }
+    }
+
+    @Test
+    fun `a stop ends stealth`() {
+        assertExitEndsStealth("stopTunnel") {
+            invokePrivate(
+                "stopTunnel",
+                arrayOf(VpnState.Error::class.java, Boolean::class.javaPrimitiveType!!),
+                null,
+                false,
+            )
+        }
+    }
+
+    @Test
+    fun `a switch teardown ends stealth`() {
+        assertExitEndsStealth("switchTeardown") {
+            invokePrivate("switchTeardown", arrayOf(Intent::class.java), intentWith(BirdoVpnService.ACTION_SWITCH_TEARDOWN))
+        }
+    }
+
+    /**
+     * Review of #622, item 2. A server switch or a re-dial is the same
+     * Stealth session the user started, and the re-dial's /connect usually
+     * reuses the bypass client's pooled connection, so it makes no lookup of
+     * its own. The system answer from before Stealth must survive it, or the
+     * next network change leaves every heartbeat without an address: reaped
+     * after five minutes, then a cycle. An error stop keeps it too. Only a
+     * stop the user asked for forgets it.
+     */
+    @Test
+    fun `a switch, a re-dial and an error stop keep the pre-stealth answer, a user stop forgets it`() {
+        val cacheField = app.birdo.vpn.data.network.DohResolver::class.java.getDeclaredField("remembered")
+        cacheField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val live = cacheField.get(app.birdo.vpn.data.network.DohResolver)
+            as MutableMap<String, app.birdo.vpn.data.network.DohResolver.Remembered>
+        val answer = listOf(java.net.InetAddress.getByAddress("api.birdo.app", byteArrayOf(198.toByte(), 51, 100, 7)))
+        var systemCalls = 0
+        // The heartbeat's lookup once the pooled connection is gone: DoH blocked.
+        val beat = {
+            app.birdo.vpn.data.network.DohResolver.resolveWith(
+                "api.birdo.app",
+                { throw java.io.IOException("DoH blocked") },
+                { systemCalls++; answer },
+                { BirdoVpnService.stealthActive },
+                live,
+                { 2_000L },
+            )
+        }
+        val stop = { userInitiated: Boolean ->
+            invokePrivate(
+                "stopTunnel",
+                arrayOf(VpnState.Error::class.java, Boolean::class.javaPrimitiveType!!),
+                null,
+                userInitiated,
+            )
+        }
+        mockkObject(XrayManager)
+        every { XrayManager.stop() } just Runs
+        try {
+            // The connect-time lookup, before Stealth began.
+            live["api.birdo.app"] = app.birdo.vpn.data.network.DohResolver.Remembered(answer, 1_000L, fromSystem = true)
+
+            stealthFlag().value = true
+            invokePrivate("switchTeardown", arrayOf(Intent::class.java), intentWith(BirdoVpnService.ACTION_SWITCH_TEARDOWN))
+            assertFalse(BirdoVpnService.stealthActive)
+            // The re-dial is Stealth again and made no lookup.
+            stealthFlag().value = true
+            assertEquals(answer, beat())
+
+            stop(false)
+            stealthFlag().value = true
+            assertEquals("an error stop forgot the answer", answer, beat())
+
+            stop(true)
+            stealthFlag().value = true
+            try {
+                beat()
+                org.junit.Assert.fail("a user stop must forget the system answer")
+            } catch (_: java.net.UnknownHostException) {
+            }
+            assertEquals("a NEW system-resolver query was made during Stealth", 0, systemCalls)
+        } finally {
+            live.clear()
+        }
+    }
+
+    /**
+     * Review of #622: the Stealth flag is written only by setStealthActive,
+     * which sets the persisted crash-report hold BEFORE the flag. A direct
+     * write anywhere else would start a Stealth session the hold does not
+     * cover. Every use of `_stealthActiveFlow` is accounted for by name: its
+     * declaration, the public getter, and the function each other use is in.
+     */
+    @Test
+    fun `the stealth flag is written only inside setStealthActive`() {
+        var dir = java.io.File("").absoluteFile
+        while (!java.io.File(dir, "settings.gradle.kts").isFile) dir = dir.parentFile ?: error("repo root not found")
+        // Code only: KDoc and comment lines are dropped, so a comment naming
+        // the flow is not taken for a use.
+        val code = java.io.File(dir, "app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt").readText()
+            .replace("\r\n", "\n")
+            .lines()
+            .filterNot { line -> line.trimStart().let { it.startsWith("//") || it.startsWith("/*") || it.startsWith("*") } }
+            .joinToString("\n")
+        val uses = Regex("""\b_stealthActiveFlow\b""").findAll(code).map { m ->
+            val lineStart = code.lastIndexOf('\n', m.range.first) + 1
+            val lineEnd = code.indexOf('\n', m.range.first).let { if (it < 0) code.length else it }
+            when (code.substring(lineStart, lineEnd).trim()) {
+                "private val _stealthActiveFlow = MutableStateFlow(false)" -> "declaration"
+                "val stealthActive: Boolean get() = _stealthActiveFlow.value" -> "getter"
+                else -> "inside " + (
+                    Regex("""\bfun\s+(\w+)\s*\(""").findAll(code.substring(0, m.range.first)).lastOrNull()
+                        ?.groupValues?.get(1) ?: "?"
+                    )
+            }
+        }.toList()
+        assertEquals(listOf("declaration", "getter", "inside setStealthActive"), uses)
+    }
+
+    /**
+     * The rest of the exits (the transport probe's no-handshake failure, an
+     * interrupted setup) reach the reset the same way: Xray is stopped in
+     * exactly one function, and that function ends Stealth. A second Xray
+     * stop somewhere else would be a way out that skips the reset.
+     */
+    @Test
+    fun `stopping xray ends stealth, and xray is stopped nowhere else`() {
+        assertExitEndsStealth("cleanupStealthAndQuantum") {
+            invokePrivate("cleanupStealthAndQuantum", emptyArray())
+        }
+        var dir = java.io.File("").absoluteFile
+        while (!java.io.File(dir, "settings.gradle.kts").isFile) dir = dir.parentFile ?: error("repo root not found")
+        val main = java.io.File(dir, "app/src/main/java")
+        val stops = main.walkTopDown().filter { it.isFile && it.extension == "kt" }.flatMap { file ->
+            val text = file.readText().replace("\r\n", "\n")
+            Regex("""XrayManager\.stop\(""").findAll(text).map { m ->
+                val fn = text.substring(0, m.range.first).substringAfterLast("private fun ").substringBefore("(")
+                "${file.name}:$fn"
+            }
+        }.toList()
+        assertEquals(listOf("BirdoVpnService.kt:cleanupStealthAndQuantum"), stops)
+    }
 }

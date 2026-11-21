@@ -37,7 +37,16 @@ internal object TunnelAppRules {
      * carved one would otherwise loop into the tunnel it is carrying. KNOWN
      * DEGRADATION, documented in README.md: during a Stealth session the app's
      * own API traffic still leaves outside the tunnel (it uses the bypass path,
-     * with DoH, as before the overhaul).
+     * with DoH, as before the overhaul). MR-953 F5 bounds it: that DoH never
+     * falls back to the network's resolver while Stealth runs
+     * (DohResolver.resolveWith), and opted-in crash reports are held on the
+     * device, across a crash, until the app is inside a tunnel without Stealth
+     * or the user ends the session (CrashReporting.StealthHoldTransportGate).
+     * That covers the app's own API lookups and crash reports only: in the
+     * Play build, Google's logging uploader that Play Billing brings
+     * (transport-runtime) still resolves its own host with the network's
+     * resolver during Stealth (a follow-up).
+     * Running Xray in-process with a protect callback remains the full fix.
      *
      * A persisted split-tunnel list can still name this app (the picker hides
      * it now, an older build did not); it is dropped here, so that list can

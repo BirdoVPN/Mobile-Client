@@ -161,6 +161,36 @@ class TokenManagerTest {
         assertFalse(tokenManager.isLoggedIn())
     }
 
+    /**
+     * MR-953 F5 (review of #622). A dead session also ends in clearAll, and on
+     * a 401 a Stealth tunnel stays up. The API address DohResolver keeps for
+     * Stealth must survive it, or the sign-in that follows has none on a
+     * network that blocks DoH. An explicit logout and an erasure forget it
+     * (BirdoRepositoryTest). Fails on the build that forgot it here.
+     */
+    @Test
+    fun `clearAll leaves the API answers DohResolver keeps for Stealth`() {
+        val field = app.birdo.vpn.data.network.DohResolver::class.java.getDeclaredField("remembered")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val live = field.get(app.birdo.vpn.data.network.DohResolver)
+            as MutableMap<String, app.birdo.vpn.data.network.DohResolver.Remembered>
+        val kept = app.birdo.vpn.data.network.DohResolver.Remembered(
+            listOf(java.net.InetAddress.getByAddress("api.birdo.app", byteArrayOf(198.toByte(), 51, 100, 7))),
+            1_000L,
+            fromSystem = true,
+        )
+        live["api.birdo.app"] = kept
+        try {
+            tokenManager.setTokens("a", "r")
+            tokenManager.clearAll()
+            assertNull(tokenManager.getRefreshToken())
+            assertTrue("clearAll forgot the API answer kept for Stealth", live["api.birdo.app"] === kept)
+        } finally {
+            live.clear()
+        }
+    }
+
     // ── Commit discipline ────────────────────────────────────────
 
     @Test

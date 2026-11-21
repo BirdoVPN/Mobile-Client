@@ -242,6 +242,11 @@ class TokenManager @VisibleForTesting internal constructor(
     // ── Clear All ────────────────────────────────────────────────
 
     fun clearAll() {
+        // MR-953 F5: NOT DohResolver's remembered answers. A dead session
+        // also ends here, and on a 401 a Stealth tunnel stays up: wiping them
+        // then left the sign-in that follows with no address on a network
+        // that blocks DoH (review of #622). An address is not account data;
+        // BirdoRepository forgets them on an explicit logout and an erasure.
         store.clear()
     }
 

@@ -26,6 +26,7 @@ import androidx.core.os.HandlerCompat
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.network.BypassSockets
+import app.birdo.vpn.data.network.DohResolver
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.utils.FaultReporter
@@ -776,7 +777,10 @@ class BirdoVpnService : VpnService() {
         }
     }
 
-    private val connectTimeoutRunnable = Runnable {
+    private val connectTimeoutRunnable = Runnable { onConnectTimeout() }
+
+    /** The connect watchdog fired: no verified tunnel within [CONNECT_TIMEOUT_MS]. */
+    private fun onConnectTimeout() {
         val gen = transitionGen.get()
         serial {
             if (!isCurrent(gen) || !currentState.isConnectingPhase) return@serial
@@ -2012,7 +2016,7 @@ class BirdoVpnService : VpnService() {
                 if (xrayStarted) {
                     val xrayPort = XrayManager.getLocalPort()
                     stealthEndpointOverride = "127.0.0.1:$xrayPort"
-                    _stealthActiveFlow.value = true
+                    setStealthActive(true)
                     Log.i(TAG, "Xray Reality active — WireGuard will connect via 127.0.0.1:$xrayPort")
                 } else {
                     // XrayManager reports WHY it failed; this counts the users
@@ -2022,12 +2026,12 @@ class BirdoVpnService : VpnService() {
                         "connect_refused_stealth_start_failed",
                         "Refused to connect: the Xray stealth tunnel failed to start and a direct fallback would downgrade protection",
                     )
-                    _stealthActiveFlow.value = false
+                    setStealthActive(false)
                     failSetup(gen, SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED)
                     return
                 }
             } else {
-                _stealthActiveFlow.value = false
+                setStealthActive(false)
             }
 
             // ── Phase 2: Quantum Protection (BirdoPQ v1) ──────
@@ -2997,6 +3001,26 @@ class BirdoVpnService : VpnService() {
     }
 
     /**
+     * The one writer of [stealthActive] (MR-953 F5, review of #622).
+     *
+     * A Stealth session's START sets the persisted crash-report hold
+     * ([AppPreferences.crashReportsHeldForStealth]), synchronously, before
+     * the flag: a crash during the session ends Stealth, and its report must
+     * not go at the next start, from the real IP, before any tunnel exists.
+     * Only a tunnel the app's own traffic rides ([publishConnected]) or a stop
+     * the user asked for ([stopTunnel]) releases it.
+     *
+     * Its end leaves the system-resolver answer DohResolver kept from before
+     * Stealth began: a switch or a re-dial is the same session the user
+     * started, and its /connect usually reuses a pooled connection with no
+     * lookup of its own. A stop the user asked for forgets it ([stopTunnel]).
+     */
+    private fun setStealthActive(active: Boolean) {
+        if (active) appPrefs.crashReportsHeldForStealth = true
+        _stealthActiveFlow.value = active
+    }
+
+    /**
      * Publish the verified-connected state. Called only after a WireGuard
      * handshake has been observed on [handle] (or on a build that cannot be
      * probed at all), so every "Protected" surface it lights up is backed by a
@@ -3008,6 +3032,10 @@ class BirdoVpnService : VpnService() {
         clearKillSwitchWarning()
         _connectedSinceFlow.value = System.currentTimeMillis()
         updateState(VpnState.Connected)
+        // MR-953 F5: without Stealth the app's own traffic rides this tunnel,
+        // so crash reports held for an earlier Stealth session can go through
+        // it. With Stealth the hold stays: it is this session's.
+        if (!stealthActive && appPrefs.crashReportsHeldForStealth) appPrefs.crashReportsHeldForStealth = false
         updateWidgetState(true, connectedServer)
         mainHandler.removeCallbacks(connectTimeoutRunnable)
         mainHandler.post {
@@ -3074,7 +3102,16 @@ class BirdoVpnService : VpnService() {
         _connectedServerFlow.value = null
         _connectedSinceFlow.value = 0L
         _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
-        _stealthActiveFlow.value = false; _quantumActiveFlow.value = false
+        setStealthActive(false); _quantumActiveFlow.value = false
+        // MR-953 F5: the user ended the session, so the device is off-VPN by
+        // their choice, as whenever they are disconnected; crash reports held
+        // for a Stealth session may go. Any other end (a crash, Xray exiting,
+        // a re-dial, an error stop) keeps them held (setStealthActive).
+        if (userInitiated && appPrefs.crashReportsHeldForStealth) appPrefs.crashReportsHeldForStealth = false
+        // MR-953 F5 (review of #622, item 2): the system-resolver answer kept
+        // for Stealth ends with the session the user ends. A switch, a
+        // re-dial or an error stop keeps it for the session that follows.
+        if (userInitiated) DohResolver.forgetSystemAnswers()
         updateWidgetState(false, null)
         if (reason == null && shouldPostDisconnectedNotice(userInitiated, appPrefs.notificationsEnabled)) {
             notifManager.postDisconnectedNotification()
@@ -3170,7 +3207,7 @@ class BirdoVpnService : VpnService() {
         _connectedServerFlow.value = null
         _connectedSinceFlow.value = 0L
         _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
-        _stealthActiveFlow.value = false; _quantumActiveFlow.value = false
+        setStealthActive(false); _quantumActiveFlow.value = false
         // Report Disconnected so VpnManager's bounded wait proceeds to the /connect
         // + ACTION_START rebuild. The blocking interface (killSwitchActive) stays up.
         updateState(VpnState.Disconnected)
@@ -3257,9 +3294,23 @@ class BirdoVpnService : VpnService() {
         } catch (_: Exception) { /* already unregistered */ }
     }
 
-    /** Stop Xray Reality and BirdoPQ, zeroing all PQ key material. */
+    /**
+     * Stop Xray Reality and BirdoPQ, zeroing all PQ key material, and end
+     * Stealth.
+     *
+     * MR-953 F5 (review of #622): this is the one place Xray is stopped, and
+     * every teardown and every failed or abandoned setup comes through it
+     * (stopTunnel, switchTeardown, failSetup, supersededAt, the connect
+     * timeout, onXrayExited, the transport probe's failure, an interrupted
+     * setup, handleReleaseBlock, onDestroy). The flag used to be reset only
+     * by the first two, so a Stealth connect that timed out left it true with
+     * no Xray running, and DohResolver failed closed for the life of the
+     * process: sign-in and a plain connect included, on a network that
+     * blocks DoH.
+     */
     private fun cleanupStealthAndQuantum() {
         try { XrayManager.stop() } catch (e: Exception) { Log.w(TAG, "Error stopping Xray", e) }
+        setStealthActive(false)
         // Names THIS session's pair only: a stale generation's teardown must not
         // wipe the pair a newer dial uploaded (MR-703).
         try { BirdoPqManager.stop(sessionPqKey) } catch (e: Exception) { Log.w(TAG, "Error stopping BirdoPQ", e) }
