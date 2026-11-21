@@ -20,6 +20,7 @@ import app.birdo.vpn.utils.PkceGenerator
 import app.birdo.vpn.utils.is2faCodeComplete
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
+import app.birdo.vpn.data.repository.HoldOrigin
 import app.birdo.vpn.data.repository.PendingDeletion
 import app.birdo.vpn.data.repository.StringLookup
 import app.birdo.vpn.utils.InputValidator
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import javax.inject.Inject
 
@@ -38,6 +40,9 @@ enum class DeleteAccountField { PASSWORD, CODE, ACCOUNT_NUMBER, EMAIL_CODE }
 /** MR-179: an anonymous account number is 24 digits; the e-mailed deletion code is 6. */
 internal const val ACCOUNT_NUMBER_LENGTH = 24
 internal const val EMAIL_CODE_LENGTH = 6
+
+/** MR-2378: how the sign-out confirmation's "Cancel deletion" ended. */
+enum class HoldCancelNote { CANCELLED, ALREADY_GONE }
 
 data class AuthUiState(
     val isLoading: Boolean = false,
@@ -94,9 +99,52 @@ data class AuthUiState(
      * deleted: Profile shows when it will be, with Cancel. Null for none.
      */
     val pendingDeletion: PendingDeletion? = null,
+    /**
+     * The id of the hold THIS session filed (TokenManager keeps it across a
+     * cold start), or null. See [pendingDeletionFiledHere].
+     */
+    val deletionHoldFiledHereId: String? = null,
     val isCancellingPendingDeletion: Boolean = false,
     /** A cancel that failed, shown on the banner. Never a deletion error. */
     val pendingDeletionError: String? = null,
+    /**
+     * MR-2378: the last pending-changes read failed or ran past its cap, and
+     * no hold is known. The sign-out confirmation then makes no promise
+     * either way about a deletion that may be scheduled.
+     */
+    val pendingDeletionUnknown: Boolean = false,
+    /**
+     * MR-2378: a sign-out had to cancel this session's own hold first and the
+     * cancel failed, so the user is still signed in. The confirmation shows
+     * this with Retry and "Sign out anyway". Null otherwise.
+     */
+    val signOutHoldCancelError: String? = null,
+    /** MR-2378: the hold is being read for the sign-out confirmation (at most 3 s): it says "Checking…". */
+    val isCheckingBeforeSignOut: Boolean = false,
+    /**
+     * MR-2378 (iOS #624): what the confirmation's own "Cancel deletion" did,
+     * shown under it until the confirmation closes. Null for nothing.
+     */
+    val holdCancelNote: HoldCancelNote? = null,
+    /**
+     * MR-2378: bumped when a sign-out stopped after its cancel-first went
+     * through but the list read after it did not answer "nothing waits": the
+     * confirmation stays, showing what is known now, and nobody is signed out.
+     */
+    val signOutReconsidered: Int = 0,
+    /**
+     * MR-2378: a sign-out has started: its cancel-first, the read after it,
+     * or the sign-out itself. A second tap is ignored meanwhile, and the
+     * confirmation cannot be dismissed (iOS #624). Cleared when the
+     * cancel-first failed or the read after it stopped the sign-out.
+     */
+    val isSigningOut: Boolean = false,
+    /**
+     * MR-2378: a pending-changes read has answered in this session, so "no
+     * hold" is known rather than assumed. The deletion dialog's hold step
+     * says "signing out cancels the deletion" only then.
+     */
+    val pendingDeletionListAnswered: Boolean = false,
     /**
      * One-shot: a hold request was just answered with a hold. The deletion
      * dialog closes; Profile's banner says when. Acknowledged by
@@ -140,6 +188,15 @@ data class AuthUiState(
      */
     val sessionExpired: Boolean = false,
 ) {
+    /**
+     * The hold on screen was filed by this session, so signing out cancels it
+     * (the server voids a hold when the session that filed it ends). A hold
+     * filed on the website or by another device survives a sign-out here,
+     * and the sign-out confirmation must not say otherwise.
+     */
+    val pendingDeletionFiledHere: Boolean
+        get() = pendingDeletion != null && pendingDeletion.id == deletionHoldFiledHereId
+
     /**
      * Leaves out [pendingAnonymousId] (an account's only credential) and
      * [challengeToken] (a live 2FA challenge), and every message, which can
@@ -188,6 +245,19 @@ class AuthViewModel @Inject constructor(
          *  way back. Internal, but not private — [AuthViewModelSsoProviderTest]
          *  asserts the contents. */
         internal val SSO_PROVIDERS = setOf("google", "github", "apple")
+
+        /**
+         * MR-2378: the cap on one pending-changes read. Past it the hold is
+         * unknown and the sign-out confirmation says only what is certain.
+         */
+        internal const val PENDING_DELETION_READ_TIMEOUT_MS = 3_000L
+
+        /**
+         * MR-2378 (iOS #624 residual R2): the cap on one hold cancel, a token
+         * refresh inside it included. Past it the cancel failed, and a
+         * sign-out waiting on it stops with Try again / Sign out anyway.
+         */
+        internal const val HOLD_CANCEL_TIMEOUT_MS = 10_000L
 
         /** The failures that count toward the client-side sign-in throttle. */
         private val CREDENTIAL_REJECTIONS = setOf(
@@ -264,9 +334,29 @@ class AuthViewModel @Inject constructor(
             isLoading = false,
             isLoggedIn = initiallyLoggedIn,
             pendingAnonymousId = unacknowledgedAnonymousId,
+            // The session that filed a hold may be this one, resumed.
+            deletionHoldFiledHereId = if (initiallyLoggedIn) tokenManager.getDeletionHoldFiledHere() else null,
         )
     )
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
+
+    /**
+     * Holds this app cancelled (MR-2378). A 202 or a list read that arrives
+     * after the cancel names one of these; it is late, and is not adopted.
+     * Declared before init: the cold-start read runs from init, at once
+     * on Main.immediate, and reads it.
+     */
+    private val cancelledHoldIds = mutableSetOf<String>()
+
+    /** The hold read in flight. Declared before init, like [cancelledHoldIds]: init starts one. */
+    private var pendingDeletionJob: Job? = null
+
+    /**
+     * Bumped whenever this app itself changes the hold (filed, cancelled):
+     * a list read that started before then is stale and must not put an old
+     * hold back on screen (review of #616).
+     */
+    private var pendingDeletionEpoch = 0
 
     init {
         // Not before the CURRENT consent is accepted (audit D-12, A2-028): GET
@@ -300,6 +390,10 @@ class AuthViewModel @Inject constructor(
                     if (result.code == 401) onSessionExpired()
                 }
             }
+            // MR-2367: read the deletion on hold once per session, so Home's
+            // sign-out warns that it cancels the deletion without Profile
+            // having been opened first. A no-op after the 401 above.
+            refreshPendingDeletion()
         }
     }
 
@@ -524,6 +618,9 @@ class AuthViewModel @Inject constructor(
     }
 
     private suspend fun fetchProfileAfterLogin() {
+        // A new session has filed nothing (a sign-out normally cleared this
+        // already, with the tokens).
+        tokenManager.clearDeletionHoldFiledHere()
         when (val profile = repository.getProfile()) {
             is ApiResult.Success -> {
                 _uiState.value = AuthUiState(
@@ -537,6 +634,9 @@ class AuthViewModel @Inject constructor(
                 )
             }
         }
+        // MR-2367: a hold filed earlier (another device, the website) is
+        // known from the start of this session, for Home's sign-out warning.
+        refreshPendingDeletion()
     }
 
     /**
@@ -553,6 +653,14 @@ class AuthViewModel @Inject constructor(
         // whose session died. So this is always the plain expiry: the block
         // stays, nothing is wiped, no identity is rotated. Only the wording
         // admits the possibility.
+        //
+        // MR-2367 item 2, ACCEPTED trade-off (same on iOS): a deletion that
+        // the hold DID complete therefore also ends here, as a plain expiry,
+        // and this device keeps its device id (BirdoRepository.clearAfterErasure,
+        // which rotates it, runs only on a confirmed erasure). Rotating on a
+        // guess would wipe the identity of an account that may still exist.
+        // The cost: the next account signed in on this device presents the
+        // same (random, not recomputable) device id as the erased one.
         val held = _uiState.value.pendingDeletion
         val holdRanOut = held != null && !Instant.now().isBefore(held.applyAfter)
         _uiState.value = _uiState.value.copy(
@@ -566,6 +674,9 @@ class AuthViewModel @Inject constructor(
     }
 
     fun logout() {
+        // The session that filed a hold is ending; its marker goes with it
+        // (the repository's clear wipes it too, with the tokens).
+        tokenManager.clearDeletionHoldFiledHere()
         viewModelScope.launch {
             repository.logout()
             _uiState.value = AuthUiState(isLoggedIn = false)
@@ -805,9 +916,15 @@ class AuthViewModel @Inject constructor(
                             else -> null
                         },
                     )
-                    // MR-179: the server held this deletion instead (202). It
-                    // is not a deletion; the banner shows the hold.
-                    if (result.code == BirdoRepository.HTTP_ACCEPTED) refreshPendingDeletion()
+                    // MR-179: the server held this deletion instead (202), or
+                    // one was already waiting (409). Neither is a deletion; the
+                    // banner shows the hold. Neither is claimed as "filed
+                    // here": the plain route's answer is not read for the
+                    // hold's id, so, as on iOS (filedHere: false), only a hold
+                    // request's own readable 202 is (review of #623).
+                    when (result.code) {
+                        BirdoRepository.HTTP_ACCEPTED, BirdoRepository.HTTP_CONFLICT -> refreshPendingDeletion()
+                    }
                 }
             }
         }
@@ -850,9 +967,25 @@ class AuthViewModel @Inject constructor(
                 is ApiResult.Success -> {
                     // A newer list read must not put back an older state.
                     pendingDeletionEpoch++
+                    val held = result.data
+                    // MR-2378: a 202 that arrives after this app already
+                    // cancelled that very hold is late, not a new hold: the
+                    // list decides, and nothing is claimed.
+                    if (held.pending.id in cancelledHoldIds) {
+                        _uiState.value = _uiState.value.copy(isDeletingAccount = false)
+                        refreshPendingDeletion()
+                        return@launch
+                    }
+                    // Review of #616: a 202 is the hold THIS session filed, and
+                    // signing out cancels exactly that one. A 409 for a hold
+                    // already waiting may be the website's or another device's,
+                    // which a sign-out here leaves in place: it keeps whatever
+                    // marker this session already had.
+                    val filedHereId = keepMarker(HoldOrigin.markerAfterHoldAnswer(_uiState.value.deletionHoldFiledHereId, held))
                     _uiState.value = _uiState.value.copy(
                         isDeletingAccount = false,
-                        pendingDeletion = result.data.pending,
+                        pendingDeletion = held.pending,
+                        deletionHoldFiledHereId = filedHereId,
                         pendingDeletionError = null,
                         deletionHoldFiled = true,
                     )
@@ -882,6 +1015,9 @@ class AuthViewModel @Inject constructor(
                     // A hold may exist even so (a 202 we could not read, a
                     // 409 for one already waiting, an answer lost on the
                     // way): the banner tells.
+                    // Never claimed, a 202 that could not be read included (iOS
+                    // #624: filedHere false): "signing out cancels it" is said
+                    // only of a hold whose 202 named it.
                     if (result.code == BirdoRepository.HTTP_ACCEPTED || result.code == 409 ||
                         result.reason == FailureReason.UNEXPECTED || result.reason == FailureReason.UNREACHABLE
                     ) {
@@ -897,14 +1033,6 @@ class AuthViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(deletionHoldFiled = false)
     }
 
-    private var pendingDeletionJob: Job? = null
-
-    /**
-     * Bumped whenever this app itself changes the hold (filed, cancelled):
-     * a list read that started before then is stale and must not put an old
-     * hold back on screen (review of #616).
-     */
-    private var pendingDeletionEpoch = 0
 
     /**
      * MR-179: re-read the account's deletion on hold (`GET auth/pending-changes`).
@@ -913,52 +1041,233 @@ class AuthViewModel @Inject constructor(
      * password or 2FA change) or swept simply leaves the list: no error. A
      * failure keeps what is shown; a definitive 401 is the session dying, the
      * plain expiry ([onSessionExpired]), never a deletion. Skipped while a
-     * cancel is in flight, whose own answer decides.
+     * cancel is in flight, whose own read decides. A list read never makes a
+     * hold "filed here": only this session's own readable 202 does (iOS #624).
      */
     fun refreshPendingDeletion() {
         if (!_uiState.value.isLoggedIn || _uiState.value.isCancellingPendingDeletion) return
         pendingDeletionJob?.cancel()
         val epoch = pendingDeletionEpoch
-        pendingDeletionJob = viewModelScope.launch {
-            when (val result = repository.pendingDeletion()) {
-                is ApiResult.Success -> {
-                    if (_uiState.value.isLoggedIn && epoch == pendingDeletionEpoch &&
-                        !_uiState.value.isCancellingPendingDeletion
-                    ) {
-                        _uiState.value = _uiState.value.copy(pendingDeletion = result.data)
-                    }
-                }
-                is ApiResult.Error -> {
-                    if (result.code == 401) onSessionExpired()
-                }
+        pendingDeletionJob = viewModelScope.launch { applyRead(readPendingDeletion(), epoch) }
+    }
+
+    /** One pending-changes read, capped (MR-2378): null when it did not answer in time. */
+    private suspend fun readPendingDeletion(): ApiResult<PendingDeletion?>? =
+        withTimeoutOrNull(PENDING_DELETION_READ_TIMEOUT_MS) { repository.pendingDeletion() }
+
+    /**
+     * Applies one read. A read that started before a cancel still applies
+     * while that cancel is out: the epoch moves only when a cancel SUCCEEDS
+     * (iOS #624 residual R3), so a failed cancel leaves this answer standing.
+     * True when the list answered and its answer was applied.
+     */
+    private fun applyRead(result: ApiResult<PendingDeletion?>?, epoch: Int): Boolean {
+        if (result is ApiResult.Error && result.code == 401) {
+            onSessionExpired()
+            return false
+        }
+        if (!_uiState.value.isLoggedIn || epoch != pendingDeletionEpoch) return false
+        return if (result is ApiResult.Success) {
+            applyListed(result.data)
+            true
+        } else {
+            markPendingDeletionUnknown()
+            false
+        }
+    }
+
+    /** A list answer: a late one for a hold this app already cancelled is no hold (MR-2378). */
+    private fun applyListed(data: PendingDeletion?) {
+        val listed = data?.takeUnless { it.id in cancelledHoldIds }
+        _uiState.value = _uiState.value.copy(
+            pendingDeletion = listed,
+            deletionHoldFiledHereId = keepMarker(HoldOrigin.markerAfterRead(_uiState.value.deletionHoldFiledHereId, listed)),
+            pendingDeletionUnknown = false,
+            pendingDeletionListAnswered = true,
+        )
+    }
+
+    /** A failed or timed-out read: a hold already on screen stays; none known is "unknown". */
+    private fun markPendingDeletionUnknown() {
+        if (_uiState.value.isLoggedIn && _uiState.value.pendingDeletion == null) {
+            _uiState.value = _uiState.value.copy(pendingDeletionUnknown = true)
+        }
+    }
+
+    /** Writes the marker [next] through to the session store when it changed; returns it. */
+    private fun keepMarker(next: String?): String? {
+        if (next != _uiState.value.deletionHoldFiledHereId) {
+            if (next == null) tokenManager.clearDeletionHoldFiledHere() else tokenManager.setDeletionHoldFiledHere(next)
+        }
+        return next
+    }
+
+    /**
+     * MR-179: cancel the deletion on hold (the banner's Cancel, and the
+     * sign-out confirmation's). A 404 means it is already gone (cancelled
+     * elsewhere, or applied): the list is read again, and the cancel counts
+     * as in flight until it answers, so Sign out stays disabled meanwhile.
+     * A failure keeps the banner, with the reason.
+     */
+    fun cancelPendingDeletion() {
+        // A cold start that could not read the list still knows the hold this
+        // session filed, and the confirmation offers to cancel it (iOS #624).
+        val id = _uiState.value.pendingDeletion?.id ?: _uiState.value.deletionHoldFiledHereId ?: return
+        cancelHold(id, thenSignOut = null)
+    }
+
+    /**
+     * MR-2378: Sign out, from Home or Profile. When this session filed a
+     * hold (its id is kept, [AuthUiState.deletionHoldFiledHereId]), that hold
+     * is cancelled FIRST, by id, and [proceed] (the teardown and the
+     * sign-out) runs only once the server confirms: a sign-out whose server
+     * half fails would leave the session, and so the hold, alive. That holds
+     * even when the list could not be read (a cold start offline): the kept
+     * id is enough. A failed cancel keeps the user signed in, with Try again
+     * or "Sign out anyway" ([signOutAnyway]). With no hold of this session's,
+     * it signs out at once; the confirmation has already said that signing
+     * out may not cancel a deletion.
+     *
+     * One sign-out at a time ([AuthUiState.isSigningOut]): a second tap
+     * while the cancel-first, or the read after it, is out is ignored, and
+     * the confirmation cannot be dismissed meanwhile (iOS #624: dismissing
+     * there would let the cancel land unseen while the user stayed signed
+     * in, believing the deletion still scheduled). Both are bounded: 10 s
+     * for the cancel, 3 s for the read.
+     */
+    fun signOut(proceed: () -> Unit) {
+        val state = _uiState.value
+        if (state.isSigningOut || state.isCancellingPendingDeletion || !state.isLoggedIn) return
+        _uiState.value = state.copy(isSigningOut = true, signOutHoldCancelError = null)
+        val ownId = state.deletionHoldFiledHereId ?: return proceed()
+        cancelHold(ownId, thenSignOut = proceed)
+    }
+
+    /** MR-2378: the user chose to sign out although this session's hold could not be cancelled. */
+    fun signOutAnyway(proceed: () -> Unit) {
+        val state = _uiState.value
+        if (state.isSigningOut || !state.isLoggedIn) return
+        _uiState.value = state.copy(isSigningOut = true, signOutHoldCancelError = null)
+        proceed()
+    }
+
+    /**
+     * MR-2378: the sign-out confirmation opened. With no hold known, the list
+     * is read (at most 3 s) and the confirmation says "Checking…" meanwhile.
+     * The check runs its OWN read: a cold-start or on-resume re-read that
+     * starts meanwhile cancels only its own kind, never this one (iOS #624),
+     * so "Checking…" ends only when this read answered or ran out of time.
+     * A failed or late read leaves the hold unknown, and the dialog says so.
+     */
+    fun checkBeforeSignOut() {
+        // What an earlier confirmation or the banner said does not carry over.
+        _uiState.value = _uiState.value.copy(signOutHoldCancelError = null, holdCancelNote = null, pendingDeletionError = null)
+        val state = _uiState.value
+        if (state.isCheckingBeforeSignOut || state.pendingDeletion != null || !state.isLoggedIn) return
+        _uiState.value = state.copy(isCheckingBeforeSignOut = true)
+        val epoch = pendingDeletionEpoch
+        viewModelScope.launch {
+            try {
+                applyRead(readPendingDeletion(), epoch)
+            } finally {
+                _uiState.value = _uiState.value.copy(isCheckingBeforeSignOut = false)
             }
         }
     }
 
+    /** The sign-out confirmation closed: a failed cancel's message and a cancel's note go with it. */
+    fun dismissSignOutHoldError() {
+        if (_uiState.value.signOutHoldCancelError != null || _uiState.value.holdCancelNote != null) {
+            _uiState.value = _uiState.value.copy(signOutHoldCancelError = null, holdCancelNote = null)
+        }
+    }
+
     /**
-     * MR-179: cancel the deletion on hold. A 404 means it is already gone
-     * (cancelled elsewhere, or applied): the list is read again. A failure
-     * keeps the banner, with the reason. A list read already in flight is
-     * dropped first, so it cannot bring the cancelled hold back.
+     * Why a cancel failed, in the sentences iOS #624 uses for the same
+     * outcome, so the two apps' confirmations read the same: no answer at
+     * all, or any other refusal.
      */
-    fun cancelPendingDeletion() {
-        val held = _uiState.value.pendingDeletion ?: return
+    private fun cancelFailedReason(result: ApiResult.Error): String = strings.get(
+        if (result.reason == FailureReason.UNREACHABLE) R.string.hold_cancel_unreachable else R.string.hold_cancel_failed,
+    )
+
+    /**
+     * After a sign-out's cancel-first and the read after it (iOS #624,
+     * SignOutHold.prepareSignOut): the sign-out goes on when the list
+     * answered that nothing waits. iOS residual R1, for a 200 only: the hold
+     * this session filed IS cancelled, so a slow or failed read is no reason
+     * to stop or to ask for a second tap, and the dialog keeps saying "The
+     * deletion is cancelled." rather than the caution. Anything else (another
+     * hold listed; a 404 whose read did not answer) stops it: nobody is
+     * signed out, and the confirmation shows what is known now.
+     */
+    private fun afterCancelFirst(cancelled: Boolean, answered: Boolean, proceed: () -> Unit) {
+        val state = _uiState.value
+        if (!state.isLoggedIn) return
+        when {
+            answered && state.pendingDeletion == null -> proceed()
+            cancelled && !answered -> {
+                _uiState.value = state.copy(pendingDeletionUnknown = false)
+                proceed()
+            }
+            else -> _uiState.value = state.copy(isSigningOut = false, signOutReconsidered = state.signOutReconsidered + 1)
+        }
+    }
+
+    private fun cancelHold(holdId: String, thenSignOut: (() -> Unit)?) {
         if (_uiState.value.isCancellingPendingDeletion) return
-        pendingDeletionJob?.cancel()
-        pendingDeletionEpoch++
-        _uiState.value = _uiState.value.copy(isCancellingPendingDeletion = true, pendingDeletionError = null)
+        // Not here: the read-order epoch, and any read in flight. They move
+        // only when the cancel SUCCEEDS (iOS #624 residual R3).
+        _uiState.value = _uiState.value.copy(
+            isCancellingPendingDeletion = true,
+            pendingDeletionError = null,
+            signOutHoldCancelError = null,
+            holdCancelNote = null,
+        )
         viewModelScope.launch {
-            when (val result = repository.cancelPendingChange(held.id)) {
+            // iOS #624 residual R2: capped, a token refresh inside included.
+            val result = withTimeoutOrNull(HOLD_CANCEL_TIMEOUT_MS) { repository.cancelPendingChange(holdId) }
+                ?: ApiResult.Error(strings.get(R.string.hold_cancel_unreachable), 0, FailureReason.UNREACHABLE)
+            when (result) {
                 is ApiResult.Success -> {
+                    val cancelled = result.data
+                    pendingDeletionJob?.cancel()
                     pendingDeletionEpoch++
-                    _uiState.value = _uiState.value.copy(isCancellingPendingDeletion = false, pendingDeletion = null)
-                    if (!result.data) refreshPendingDeletion()
+                    cancelledHoldIds += holdId
+                    _uiState.value = _uiState.value.copy(
+                        pendingDeletion = null,
+                        pendingDeletionUnknown = false,
+                        // Cancelled (or already gone): no hold of this session's is left.
+                        deletionHoldFiledHereId = keepMarker(null),
+                        // Said in the dialog that is still open: dismissing it
+                        // is blocked while the cancel is out.
+                        holdCancelNote = if (cancelled) HoldCancelNote.CANCELLED else HoldCancelNote.ALREADY_GONE,
+                    )
+                    if (cancelled && thenSignOut == null) {
+                        _uiState.value = _uiState.value.copy(isCancellingPendingDeletion = false)
+                        return@launch
+                    }
+                    // A 404, or a sign-out: read the list again, in this
+                    // cancel's own job (no other read cancels it), with the
+                    // cancel still counted as in flight until it answers.
+                    val answered = applyRead(readPendingDeletion(), pendingDeletionEpoch)
+                    _uiState.value = _uiState.value.copy(isCancellingPendingDeletion = false)
+                    if (thenSignOut != null) afterCancelFirst(cancelled, answered, thenSignOut)
                 }
                 is ApiResult.Error -> {
-                    _uiState.value = _uiState.value.copy(
-                        isCancellingPendingDeletion = false,
-                        pendingDeletionError = result.message,
-                    )
+                    val reason = cancelFailedReason(result)
+                    _uiState.value = if (thenSignOut != null) {
+                        _uiState.value.copy(
+                            isCancellingPendingDeletion = false,
+                            isSigningOut = false,
+                            signOutHoldCancelError = reason,
+                        )
+                    } else {
+                        _uiState.value.copy(
+                            isCancellingPendingDeletion = false,
+                            pendingDeletionError = reason,
+                        )
+                    }
                     if (result.code == 401) onSessionExpired()
                 }
             }

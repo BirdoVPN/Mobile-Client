@@ -244,11 +244,9 @@ fun BirdoNavGraph(
     LaunchedEffect(authState.isLoggedIn) {
         if (authState.isLoggedIn) vpnViewModel.onSignedIn()
     }
-    // Deletion tears the tunnel down only once the server has CONFIRMED it
-    // (A2-005): a mistyped password used to disconnect the VPN and then fail.
-    LaunchedEffect(authState.accountDeleted) {
-        if (authState.accountDeleted) vpnViewModel.onAccountDeleted()
-    }
+    // A deletion's teardown is not here (MR-2338): VpnManager runs it when
+    // the repository confirms the erasure (A2-005: never before the server
+    // has), so it does not wait for this graph to be composed and started.
 
     // Handle VPN permission requests. The ViewModel replays the exact dial
     // that asked (A1-007), including when no prompt is needed after all.
@@ -583,6 +581,23 @@ fun BirdoNavGraph(
                         accountLabel = accountLabel(authState.user),
                         isAnonymousAccount = isAnonymousUser(authState.user),
                         pendingDeletion = authState.pendingDeletion,
+                        pendingDeletionFiledHere = authState.pendingDeletionFiledHere,
+                        isCancellingPendingDeletion = authState.isCancellingPendingDeletion,
+                        pendingDeletionError = authState.pendingDeletionError,
+                        onCancelPendingDeletion = { authViewModel.cancelPendingDeletion() },
+                        pendingDeletionUnknown = authState.pendingDeletionUnknown,
+                        signOutBlockedReason = authState.signOutHoldCancelError,
+                        onSignOutAnyway = {
+                            authViewModel.signOutAnyway { vpnViewModel.disconnectForSignOut { authViewModel.logout() } }
+                        },
+                        onSignOutOpened = { authViewModel.checkBeforeSignOut() },
+                        onSignOutDismissed = { authViewModel.dismissSignOutHoldError() },
+                        isCheckingBeforeSignOut = authState.isCheckingBeforeSignOut,
+                        pendingDeletionCancellable = authState.pendingDeletion != null ||
+                            authState.deletionHoldFiledHereId != null,
+                        holdCancelNote = authState.holdCancelNote,
+                        signOutReconsidered = authState.signOutReconsidered,
+                        isSigningOut = authState.isSigningOut,
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
                         multiHop = vpnViewModel.multiHop.collectAsState().value,
@@ -604,8 +619,10 @@ fun BirdoNavGraph(
                                 restoreState = true
                             }
                         },
+                        // MR-2378: this session's own hold is cancelled
+                        // first; the teardown and sign-out follow it.
                         onLogout = {
-                            vpnViewModel.disconnectForSignOut { authViewModel.logout() }
+                            authViewModel.signOut { vpnViewModel.disconnectForSignOut { authViewModel.logout() } }
                         },
                         onOpenSettings = {
                             navController.navigate(Screen.Settings.route) {
@@ -672,8 +689,10 @@ fun BirdoNavGraph(
                                 settingsViewModel.openUrl("https://dashboard.birdo.app/")
                             }
                         },
+                        // MR-2378: this session's own hold is cancelled
+                        // first; the teardown and sign-out follow it.
                         onLogout = {
-                            vpnViewModel.disconnectForSignOut { authViewModel.logout() }
+                            authViewModel.signOut { vpnViewModel.disconnectForSignOut { authViewModel.logout() } }
                         },
                         onOpenUrl = { settingsViewModel.openUrl(it) },
                         onDeleteAccount = { password, code, number, mailed ->
@@ -703,10 +722,25 @@ fun BirdoNavGraph(
                         deletionHoldFiled = authState.deletionHoldFiled,
                         onDeletionHoldShown = { authViewModel.onDeletionHoldShown() },
                         pendingDeletion = authState.pendingDeletion,
+                        pendingDeletionFiledHere = authState.pendingDeletionFiledHere,
                         isCancellingPendingDeletion = authState.isCancellingPendingDeletion,
                         pendingDeletionError = authState.pendingDeletionError,
                         onCancelPendingDeletion = { authViewModel.cancelPendingDeletion() },
                         onRefreshPendingDeletion = { authViewModel.refreshPendingDeletion() },
+                        pendingDeletionUnknown = authState.pendingDeletionUnknown,
+                        signOutBlockedReason = authState.signOutHoldCancelError,
+                        onSignOutAnyway = {
+                            authViewModel.signOutAnyway { vpnViewModel.disconnectForSignOut { authViewModel.logout() } }
+                        },
+                        onSignOutOpened = { authViewModel.checkBeforeSignOut() },
+                        onSignOutDismissed = { authViewModel.dismissSignOutHoldError() },
+                        isCheckingBeforeSignOut = authState.isCheckingBeforeSignOut,
+                        pendingDeletionCancellable = authState.pendingDeletion != null ||
+                            authState.deletionHoldFiledHereId != null,
+                        holdCancelNote = authState.holdCancelNote,
+                        signOutReconsidered = authState.signOutReconsidered,
+                        isSigningOut = authState.isSigningOut,
+                        pendingDeletionListAnswered = authState.pendingDeletionListAnswered,
                     )
                 }
             }

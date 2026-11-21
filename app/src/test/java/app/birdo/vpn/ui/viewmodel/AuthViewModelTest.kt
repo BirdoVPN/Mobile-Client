@@ -62,6 +62,9 @@ class AuthViewModelTest {
         io.mockk.every { tokenManager.getPendingAnonymousId() } returns null
         // Default: no existing session
         coEvery { repository.getProfile() } returns ApiResult.Error("Unauthorized", 401)
+        // Default: no deletion on hold (read at session start, MR-2367).
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(null)
+        io.mockk.every { tokenManager.getDeletionHoldFiledHere() } returns null
     }
 
     @After
@@ -1347,7 +1350,8 @@ class AuthViewModelTest {
      * REVIEW-AND2-002: a deletion's success reply now arrives while connected
      * (it goes around the tunnel the server revokes). What it carries must
      * reach the screen: the store subscription that keeps billing, and the
-     * signed-out state the graph tears the VPN down on (onAccountDeleted).
+     * signed-out state. (The tunnel comes down from the repository's confirmed
+     * erasure, VpnManager.onAccountDeleted, MR-2338; not from this state.)
      */
     @Test
     fun `a deletion's success signs out and carries the store subscription that keeps billing`() = runTest {

@@ -148,16 +148,29 @@ class TokenManagerTest {
         assertNull(tokenManager.getPendingAnonymousId())
     }
 
+    /** MR-2378: the hold this session filed survives a cold start, and is dropped on its own. */
+    @Test
+    fun `the deletion hold filed here round-trips and clears`() {
+        tokenManager.setDeletionHoldFiledHere("p1")
+        assertEquals("p1", tokenManager.getDeletionHoldFiledHere())
+
+        tokenManager.clearDeletionHoldFiledHere()
+        assertNull(tokenManager.getDeletionHoldFiledHere())
+    }
+
     @Test
     fun `clearAll wipes every value`() {
         tokenManager.setTokens("a", "r")
         tokenManager.setLastKeyId("k")
         tokenManager.setPendingAnonymousId("id")
+        tokenManager.setDeletionHoldFiledHere("p1")
         tokenManager.clearAll()
         assertNull(tokenManager.getAccessToken())
         assertNull(tokenManager.getRefreshToken())
         assertNull(tokenManager.getLastKeyId())
         assertNull(tokenManager.getPendingAnonymousId())
+        // MR-2378: the marker ends with the session it describes.
+        assertNull(tokenManager.getDeletionHoldFiledHere())
         assertFalse(tokenManager.isLoggedIn())
     }
 

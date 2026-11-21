@@ -75,6 +75,7 @@ class TokenManager @VisibleForTesting internal constructor(
         internal const val LEGACY_KEY_WG_PRIVATE_KEY = "wireguard_private_key"
         private const val KEY_LAST_KEY_ID = "last_key_id"
         private const val KEY_PENDING_ANON_ID = "pending_anonymous_id"
+        private const val KEY_HOLD_FILED_HERE = "deletion_hold_filed_here"
         /** Maximum sane token length — prevents storage of garbage data */
         private const val MAX_TOKEN_LENGTH = 4096
     }
@@ -237,6 +238,26 @@ class TokenManager @VisibleForTesting internal constructor(
     /** Called once the user has confirmed they saved the ID. */
     fun clearPendingAnonymousId() {
         store.remove(KEY_PENDING_ANON_ID, commit = true)
+    }
+
+    // ── The deletion hold this session filed (MR-179, review of #616) ──
+    //
+    // The server voids a held deletion when the session that FILED it ends,
+    // and only then: a hold filed on the website (no session) or by another
+    // device survives a sign-out here. So "signing out cancels it" is true
+    // only for the hold whose id is kept here. It lives beside the tokens
+    // because it belongs to them: [clearAll] (sign-out, a dead refresh, an
+    // erasure) drops it with the session it describes.
+
+    /** The pending-change id of the deletion hold this session filed, or null. */
+    fun getDeletionHoldFiledHere(): String? = store.get(KEY_HOLD_FILED_HERE)
+
+    fun setDeletionHoldFiledHere(pendingChangeId: String) {
+        store.put(KEY_HOLD_FILED_HERE, pendingChangeId, commit = true)
+    }
+
+    fun clearDeletionHoldFiledHere() {
+        store.remove(KEY_HOLD_FILED_HERE, commit = true)
     }
 
     // ── Clear All ────────────────────────────────────────────────

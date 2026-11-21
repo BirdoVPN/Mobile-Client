@@ -103,8 +103,34 @@ fun HomeScreen(
     onDismissDeviceNotice: () -> Unit = {},
     /** Anonymous accounts are reminded, before signing out, that the account number is the only way back in. */
     isAnonymousAccount: Boolean = false,
-    /** MR-179: the deletion on hold, if any; signing out cancels it, so the confirmation says so. */
+    /**
+     * MR-179: the deletion on hold, if any. The sign-out confirmation says
+     * whether signing out cancels it: only when this session filed it
+     * ([pendingDeletionFiledHere], review of #616). It offers Cancel too.
+     */
     pendingDeletion: app.birdo.vpn.data.repository.PendingDeletion? = null,
+    pendingDeletionFiledHere: Boolean = false,
+    isCancellingPendingDeletion: Boolean = false,
+    pendingDeletionError: String? = null,
+    onCancelPendingDeletion: () -> Unit = {},
+    /** MR-2378: the hold could not be read (failed, or past its 3 s cap). */
+    pendingDeletionUnknown: Boolean = false,
+    /** MR-2378: this session's hold could not be cancelled before signing out; the reason. */
+    signOutBlockedReason: String? = null,
+    onSignOutAnyway: () -> Unit = {},
+    /** The sign-out confirmation is asked for (the hold is read first) and closed. */
+    onSignOutOpened: () -> Unit = {},
+    onSignOutDismissed: () -> Unit = {},
+    /** MR-2378: the hold is being read (at most 3 s); the confirmation says "Checking…". */
+    isCheckingBeforeSignOut: Boolean = false,
+    /** MR-2378: a hold to cancel exists (listed, or this session's kept id). */
+    pendingDeletionCancellable: Boolean = pendingDeletion != null,
+    /** MR-2378: what the confirmation's "Cancel deletion" did. */
+    holdCancelNote: app.birdo.vpn.ui.viewmodel.HoldCancelNote? = null,
+    /** MR-2378: a sign-out stopped after its cancel-first; the confirmation stays. */
+    signOutReconsidered: Int = 0,
+    /** MR-2378: a sign-out has started; the confirmation cannot be dismissed meanwhile. */
+    isSigningOut: Boolean = false,
 ) {
     val palette = BirdoColors.current
     // What the screen says and offers is decided by the pure functions in
@@ -262,7 +288,10 @@ fun HomeScreen(
                 // Confirmed first (A2-006): one stray tap here dropped the
                 // tunnel and signed the user out, and an anonymous account whose
                 // number was never saved was lost with it.
-                onLogout = { showSignOutConfirm = true },
+                onLogout = {
+                    showSignOutConfirm = true
+                    onSignOutOpened()
+                },
             )
 
             // Status pill floats just below the top bar.
@@ -588,8 +617,25 @@ fun HomeScreen(
             isConnected = isConnected,
             isAnonymousAccount = isAnonymousAccount,
             onConfirm = onLogout,
-            onDismiss = { showSignOutConfirm = false },
+            onDismiss = {
+                showSignOutConfirm = false
+                onSignOutDismissed()
+            },
             pendingDeletionAt = pendingDeletion?.let { pendingDeletionWhen(it.applyAfter) },
+            pendingDeletionFiledHere = pendingDeletionFiledHere,
+            pendingDeletionUnknown = pendingDeletionUnknown,
+            isCancellingPendingDeletion = isCancellingPendingDeletion,
+            pendingDeletionError = pendingDeletionError,
+            onCancelPendingDeletion = onCancelPendingDeletion,
+            signOutBlockedReason = signOutBlockedReason,
+            onSignOutAnyway = onSignOutAnyway,
+            // MR-2378: it says "Checking…" until the hold was read (at most
+            // 3 s), so it never asks to confirm with no word about a deletion.
+            isChecking = isCheckingBeforeSignOut,
+            pendingDeletionCancellable = pendingDeletionCancellable,
+            holdCancelNote = holdCancelNote,
+            signOutReconsidered = signOutReconsidered,
+            isSigningOut = isSigningOut,
         )
     }
 

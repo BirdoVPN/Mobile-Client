@@ -80,6 +80,9 @@ class VpnManagerTest {
     /** The service's count of finished stops, per test for the same reason. */
     private val stopsCompleted = MutableStateFlow(0L)
 
+    /** The repository's count of confirmed account erasures (MR-2338). */
+    private val accountErasures = MutableStateFlow(0L)
+
     /** Home-screen widget re-renders VpnManager asked for (REVIEW-AND-012). */
     private var widgetRefreshes = 0
     private val stringExtras = mutableMapOf<String, String?>()
@@ -129,6 +132,7 @@ class VpnManagerTest {
         // the key is still live, so the drop is re-dialled as before.
         coEvery { repository.sendHeartbeat(any(), true) } returns
             ApiResult.Success(app.birdo.vpn.data.model.HeartbeatResponse())
+        every { repository.accountErasures } returns accountErasures
 
         // Mock BirdoVpnService static companion members
         mockkObject(BirdoVpnService.Companion)
@@ -3891,6 +3895,151 @@ class VpnManagerTest {
         assertNull(app.birdo.vpn.ui.navigation.loginVpnStripText(vpnManager.state.value, blocking = false))
         // The server removed the peer with the account: nothing to release.
         coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+    }
+
+    // ── MR-2338: after a deletion the app showed the VPN as connected ────
+
+    /**
+     * MR-2338: the teardown follows the server's CONFIRMED erasure itself,
+     * not a screen. It used to run from a nav-graph effect, which waits for
+     * the activity to be started and composed: a deletion answered while the
+     * app was in the background, or whose activity was gone, left the tunnel
+     * up behind a signed-out app ("Your VPN is still connected." on Login).
+     */
+    @Test
+    fun `a confirmed erasure ends the session with no screen involved`() = runTest {
+        connectAndEstablish()
+
+        accountErasures.value++
+        runCurrent()
+
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        assertEquals(VpnState.Disconnecting, vpnManager.state.value)
+        verify { prefs.sessionShouldBeUp = false }
+        serviceEmits(VpnState.Disconnected)
+        stopsCompleted.value++
+        runCurrent()
+        advanceTimeBy(30 * 60_000L)
+
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+        coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+    }
+
+    /** The count a manager starts with is no erasure: only a new one ends a session. */
+    @Test
+    fun `a manager built after an erasure does not stop anything for it`() = runTest {
+        accountErasures.value = 1
+        dispatchedActions.clear()
+
+        val later = VpnManager(context, repository, prefs, networkMonitor)
+        runCurrent()
+
+        assertFalse(BirdoVpnService.ACTION_STOP in dispatchedActions)
+        assertEquals(VpnState.Disconnected, later.state.value)
+    }
+
+    /**
+     * MR-2338, the connected case end to end: the service runs the STOP
+     * (Connected → Disconnecting → Disconnected), and the app ends where a
+     * sign-out ends: Disconnected, no "still connected" strip on Login, no
+     * release for a peer the server already removed, no re-dial.
+     */
+    @Test
+    fun `deleting the account while connected ends Disconnected, and Login shows no still-connected strip`() = runTest {
+        connectAndEstablish()
+        val extras = recordBooleanExtras()
+
+        vpnManager.onAccountDeleted()
+        runCurrent()
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        // The same user-initiated STOP as a sign-out: it releases the kill switch.
+        assertEquals(true, extras[BirdoVpnService.EXTRA_USER_INITIATED])
+        assertEquals(VpnState.Disconnecting, vpnManager.state.value)
+
+        serviceEmits(VpnState.Disconnecting)
+        serviceEmits(VpnState.Disconnected)
+        stopsCompleted.value++
+        runCurrent()
+        advanceTimeBy(30 * 60_000L)
+
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+        assertNull(app.birdo.vpn.ui.navigation.loginVpnStripText(vpnManager.state.value, blocking = false))
+        coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        verify { prefs.sessionShouldBeUp = false }
+    }
+
+    /**
+     * MR-2338: a device that was only blocking (kill switch up, no tunnel)
+     * gets the sign-out's STOP too, which takes the block down: the account
+     * that owned the session is gone.
+     */
+    @Test
+    fun `deleting the account while the kill switch blocks takes the block down like a sign-out`() = runTest {
+        every { BirdoVpnService.killSwitchActive } returns true
+        serviceEmits(VpnState.KillSwitchActive)
+        runCurrent()
+        val extras = recordBooleanExtras()
+
+        vpnManager.onAccountDeleted()
+        runCurrent()
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        assertEquals(true, extras[BirdoVpnService.EXTRA_USER_INITIATED])
+
+        // stopTunnel → deactivateKillSwitch, then Disconnected.
+        every { BirdoVpnService.killSwitchActive } returns false
+        serviceEmits(VpnState.Disconnected)
+        stopsCompleted.value++
+        runCurrent()
+
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+        assertNull(app.birdo.vpn.ui.navigation.loginVpnStripText(vpnManager.state.value, vpnManager.isKillSwitchActive))
+    }
+
+    /**
+     * MR-2338: a deletion clears what a Disconnect clears. The deleted
+     * account's Home notices (a device conflict, Stealth not in the plan) and
+     * the kill-switch warning outlived it into the next account on this
+     * device, and a kept Stealth notice also changes how that account's
+     * first switch is rebuilt (liveRebuildEligible).
+     */
+    @Test
+    fun `a deletion clears the session's notices and the kill-switch warning, like a Disconnect`() = runTest {
+        every { prefs.stealthModeEnabled } returns true
+        coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            ApiResult.Success(
+                makeConnectResponse().copy(
+                    stealthEnabled = false,
+                    stealthUnavailableReason = "entitlement",
+                    deviceNotice = app.birdo.vpn.data.model.DeviceNotice(
+                        "device_limit_conflict", "Other devices kept taking this connection.", "/dashboard/devices",
+                    ),
+                ),
+            )
+        vpnManager.connect("srv-1")
+        serviceEmits(VpnState.Connected)
+        runCurrent()
+        assertEquals(SessionCopy.STEALTH_NOT_IN_PLAN, vpnManager.stealthNotice.value)
+        assertNotNull(vpnManager.deviceNotice.value)
+        val field = BirdoVpnService::class.java.getDeclaredField("_killSwitchNotArmedFlow")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val notArmed = field.get(null) as MutableStateFlow<String?>
+        notArmed.value = SessionCopy.KILL_SWITCH_NOT_ARMED
+        try {
+            vpnManager.onAccountDeleted()
+            runCurrent()
+
+            assertNull(vpnManager.stealthNotice.value)
+            assertNull(vpnManager.deviceNotice.value)
+            assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+        } finally {
+            notArmed.value = null
+        }
+        serviceEmits(VpnState.Disconnected)
+        stopsCompleted.value++
+        runCurrent()
     }
 
     @Test

@@ -26,6 +26,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -234,6 +238,16 @@ class BirdoRepository @Inject constructor(
      */
     private val sessionGeneration = AtomicLong(0)
 
+    private val _accountErasures = MutableStateFlow(0L)
+
+    /**
+     * Counts the account erasures this server CONFIRMED (a plain deletion's
+     * 2xx, [clearAfterErasure]); never a hold, a refusal or an inference.
+     * VpnManager ends the session on each new value (MR-2338), so the tunnel
+     * comes down with the account even when no screen is there to see it.
+     */
+    val accountErasures: StateFlow<Long> = _accountErasures.asStateFlow()
+
     /**
      * Store the pair a sign-in returned, under [sessionLock] like every other
      * token write and clear. A refresh's fence is "check the generation and the
@@ -289,6 +303,9 @@ class BirdoRepository @Inject constructor(
 
         /** The status [deleteAccount] reports when the server held the deletion instead (MR-179). */
         internal const val HTTP_ACCEPTED = 202
+
+        /** The status [deleteAccount] reports for a hold that was already waiting (409 change_already_pending). */
+        internal const val HTTP_CONFLICT = 409
         private const val HTTP_OK = 200
 
         /** `algorithm` of the only proof-of-work the server issues. */
@@ -869,8 +886,12 @@ class BirdoRepository @Inject constructor(
             is DeletionAnswer.Refused -> answer.error
             is DeletionAnswer.Deleted -> ApiResult.Success(answer.response)
             // MR-179: a 202 hold is never a deletion, whatever asked for it.
-            // Nothing local was cleared; the caller re-reads the holds.
-            is DeletionAnswer.Held -> errors.unexpected().copy(code = HTTP_ACCEPTED)
+            // Nothing local was cleared; the caller re-reads the holds. A
+            // hold that was ALREADY waiting (409 change_already_pending) may
+            // have been filed elsewhere (the website, another device), so it
+            // keeps its 409: only a 202 is a hold this session just filed,
+            // and only that one does signing out cancel (review of #616).
+            is DeletionAnswer.Held -> errors.unexpected().copy(code = HoldOrigin.statusFor(answer.held))
         }
 
     /**
@@ -988,6 +1009,8 @@ class BirdoRepository @Inject constructor(
         deviceInfoProvider.resetDeviceIdentity()
         // Same reasoning for the ML-KEM keypair (audit D-15).
         forgetPostQuantumKeypair()
+        // Last, once the credentials are gone: the session ends now (MR-2338).
+        _accountErasures.update { it + 1 }
     }
 
     /**

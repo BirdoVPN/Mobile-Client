@@ -99,6 +99,8 @@ class DeletionHoldRepositoryTest {
         verify(exactly = 0) { tokenManager.clearAll() }
         verify(exactly = 0) { deviceInfoProvider.resetDeviceIdentity() }
         verify(exactly = 0) { deviceInfoProvider.forgetPostQuantumKeypair() }
+        // …and nothing ends the VPN session (MR-2338: only a confirmed erasure does).
+        assertEquals(0L, repository.accountErasures.value)
     }
 
     // ── 202: a hold, not a deletion ─────────────────────────────
@@ -162,6 +164,25 @@ class DeletionHoldRepositoryTest {
         assertNothingCleared()
     }
 
+    /**
+     * Review of #616: a hold that was ALREADY waiting may have been filed on
+     * the website or another device, and only the session that filed a hold
+     * cancels it by signing out. So a plain deletion's 409 change_already_pending
+     * keeps its 409: only the 202 says "this session just filed it".
+     */
+    @Test
+    fun `a plain deletion answered with a hold already waiting reports 409, not the 202 of its own hold`() = runTest {
+        coEvery { api.deleteAccount(any(), any()) } returns refused(
+            409,
+            """{"statusCode":409,"error":"change_already_pending","message":"x","stepUp":{"methods":["hold"],"pendingChangeId":"p0","applyAfter":"$applyAfter"}}""",
+        )
+
+        val result = repository.deleteAccount("pass123")
+
+        assertEquals(BirdoRepository.HTTP_CONFLICT, (result as ApiResult.Error).code)
+        assertNothingCleared()
+    }
+
     @Test
     fun `a 200 with the hold's markers is still not a deletion`() = runTest {
         coEvery { api.deleteAccount(any(), any()) } returns answered(200, held202)
@@ -194,6 +215,8 @@ class DeletionHoldRepositoryTest {
         coEvery { api.deleteAccount(any(), any()) } returns answered(200, """{"success":true}""")
         assertTrue(repository.deleteAccount("pass123") is ApiResult.Success)
         verify(exactly = 1) { deviceInfoProvider.resetDeviceIdentity() }
+        // MR-2338: the confirmed erasure is what ends the VPN session.
+        assertEquals(1L, repository.accountErasures.value)
     }
 
     /** An expired access token: the refresh runs, and the RETRY is still the hold, with its proof. */
