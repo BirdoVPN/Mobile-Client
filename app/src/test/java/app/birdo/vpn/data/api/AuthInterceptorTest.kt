@@ -113,6 +113,7 @@ class AuthInterceptorTest {
             val request = forwarded(url)
             assertEquals("$url lost its client header", "birdo-android", request.header("X-Desktop-Client"))
             assertNotNull("$url lost its User-Agent", request.header("User-Agent"))
+            assertEquals("$url lost its contract version", CONTRACT_VERSION, request.header("X-Birdo-Contract"))
         }
     }
 }
