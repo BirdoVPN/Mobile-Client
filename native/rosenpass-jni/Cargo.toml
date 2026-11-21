@@ -19,7 +19,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # JNI surface
-jni = { version = "0.21", default-features = false }
+jni = { version = "0.22", default-features = false }
 
 # Logging into Android logcat from Rust
 log = "0.4"
