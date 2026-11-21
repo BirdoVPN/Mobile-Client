@@ -240,7 +240,7 @@ struct HomeView: View {
                             .birdoFont(13, weight: .semibold)
                             .foregroundStyle(BirdoTheme.accent)
                             .padding(.horizontal, 14)
-                            .frame(height: 34)
+                            .frame(minHeight: 34)
                             .background(Capsule().fill(BirdoTheme.accentA(0.16)))
                             .overlay(Capsule().strokeBorder(BirdoTheme.accentA(0.45), lineWidth: 1))
                     }
@@ -254,7 +254,7 @@ struct HomeView: View {
                         showLogoutConfirm = true
                     } label: {
                         Image(systemName: "rectangle.portrait.and.arrow.right")
-                            .birdoFont(17, weight: .medium)
+                            .birdoFont(17, weight: .medium, max: 24)
                             .foregroundStyle(BirdoTheme.onSurfaceMuted)
                             .frame(width: 40, height: 40)
                             .background(Circle().fill(BirdoTheme.white05))
@@ -307,7 +307,7 @@ struct HomeView: View {
         return Button(action: handleMultiHopTap) {
             ZStack(alignment: .bottomTrailing) {
                 Image(systemName: "arrow.triangle.branch")
-                    .birdoFont(18, weight: .semibold)
+                    .birdoFont(18, weight: .semibold, max: 24)
                     .foregroundStyle(unlocked ? BirdoTheme.accent : BirdoTheme.white40)
                     .frame(width: 40, height: 40)
                     .background(
@@ -329,7 +329,7 @@ struct HomeView: View {
                     ZStack {
                         Circle().fill(Color.black.opacity(0.6))
                         Image(systemName: "lock.fill")
-                            .font(.system(size: 8, weight: .bold))
+                            .birdoFont(8, weight: .bold, max: 9)
                             .foregroundStyle(.white)
                     }
                     .frame(width: 14, height: 14)
@@ -838,7 +838,7 @@ struct HomeView: View {
                             .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
                         Text(vpnVM.activeMultiHop?.entry.flag
                             ?? vpnVM.selectedServer?.flag ?? "🌐")
-                            .birdoFont(22)
+                            .birdoFont(22, max: 28)
                     }
                     .frame(width: 44, height: 44)
 

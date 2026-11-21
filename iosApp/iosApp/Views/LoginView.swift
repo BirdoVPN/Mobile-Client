@@ -46,6 +46,9 @@ struct LoginView: View {
 
     @FocusState private var focusedField: Field?
     @Environment(\.openURL) private var openURL
+    /// The 2FA field's prompt: 14pt at the default size, scaled (a prompt
+    /// must stay a `Text`, so it takes a font value, not `birdoFont`).
+    @BirdoScaledFontValue(14) private var promptFont: Font
 
     private enum Field: Hashable {
         case email, password, anonymousId, anonymousPassword, twoFactorCode
@@ -119,7 +122,7 @@ struct LoginView: View {
                         authVM.dismissSignIn()
                     } label: {
                         Text("Not now")
-                            .font(.system(size: 14, weight: .medium))
+                            .birdoFont(14, weight: .medium)
                             .foregroundStyle(BirdoTheme.white60)
                             .frame(minWidth: BirdoTheme.Spacing.minTouch,
                                    minHeight: BirdoTheme.Spacing.minTouch)
@@ -217,7 +220,7 @@ struct LoginView: View {
         HStack(spacing: 10) {
             BirdoLogo.badge
             Text("Secure Connection")
-                .font(.system(size: 13, weight: .medium))
+                .birdoFont(13, weight: .medium)
                 .foregroundStyle(BirdoTheme.white80)
         }
         .padding(.leading, 8)
@@ -441,7 +444,7 @@ struct LoginView: View {
                     authVM.createAnonymousAccount()
                 } label: {
                     Text("Try again")
-                        .font(.system(size: 13, weight: .medium))
+                        .birdoFont(13, weight: .medium)
                         .underline()
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity, minHeight: 44)
@@ -503,9 +506,14 @@ struct LoginView: View {
         HStack(spacing: 12) {
             Rectangle().fill(BirdoTheme.hairlineSoft).frame(height: 1)
             Text("or use an existing account number")
-                .font(.system(size: 12))
+                .birdoFont(12)
                 .foregroundStyle(BirdoTheme.white40)
-                .fixedSize()
+                // One line while it fits; wraps (centred) at the large text
+                // sizes instead of running off both edges. The priority gives
+                // it the width first, so the rules shrink before it wraps.
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
             Rectangle().fill(BirdoTheme.hairlineSoft).frame(height: 1)
         }
         .accessibilityHidden(true)
@@ -563,7 +571,7 @@ struct LoginView: View {
     private func ssoButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 13, weight: .medium))
+                .birdoFont(13, weight: .medium)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, minHeight: 48)
                 .background(
@@ -585,7 +593,7 @@ struct LoginView: View {
     private var signUpRow: some View {
         HStack(spacing: 0) {
             Text("Don't have an account? ")
-                .font(.system(size: 13))
+                .birdoFont(13)
                 .foregroundStyle(BirdoTheme.white40)
             Button {
                 // In-app account creation only — no external-purchase steering
@@ -596,7 +604,7 @@ struct LoginView: View {
                 authVM.selectedTab = .anonymous
             } label: {
                 Text("Sign up")
-                    .font(.system(size: 13, weight: .medium))
+                    .birdoFont(13, weight: .medium)
                     .underline()
                     .foregroundStyle(.white)
                     .frame(minHeight: 44) // touch target
@@ -617,14 +625,14 @@ struct LoginView: View {
                     .fill(BirdoTheme.white05)
                     .frame(width: 48, height: 48)
                 Image(systemName: "shield.fill")
-                    .font(.system(size: 24))
+                    .birdoFont(24, max: 30)
                     .foregroundStyle(BirdoTheme.white60)
             }
             .accessibilityHidden(true)
             .padding(.bottom, 16)
 
             Text("Verification Code")
-                .font(.system(size: 13, weight: .medium))
+                .birdoFont(13, weight: .medium)
                 .foregroundStyle(BirdoTheme.white60)
                 .padding(.bottom, 6)
 
@@ -651,7 +659,7 @@ struct LoginView: View {
                 authVM.cancelTwoFactor()
             } label: {
                 Text("Back to login")
-                    .font(.system(size: 13))
+                    .birdoFont(13)
                     .underline()
                     .foregroundStyle(BirdoTheme.white40)
                     .frame(maxWidth: .infinity, minHeight: 44) // touch target
@@ -669,9 +677,9 @@ struct LoginView: View {
     private var twoFactorCodeField: some View {
         TextField("", text: $authVM.twoFactorCode,
                   prompt: Text("000000 or backup code")
-                      .font(.system(size: 14))
+                      .font(promptFont)
                       .foregroundStyle(BirdoTheme.white40))
-            .font(.system(size: 24, weight: .medium, design: .monospaced))
+            .birdoFont(24, weight: .medium, design: .monospaced)
             .multilineTextAlignment(.center)
             .foregroundStyle(.white)
             .tint(BirdoTheme.accentSoft)
@@ -719,7 +727,7 @@ struct LoginView: View {
                         .fill(BirdoTheme.white05)
                         .frame(width: 48, height: 48)
                     Image(systemName: "key.fill")
-                        .font(.system(size: 22))
+                        .birdoFont(22, max: 30)
                         .foregroundStyle(BirdoTheme.green)
                 }
                 .accessibilityHidden(true)
@@ -727,7 +735,7 @@ struct LoginView: View {
                 (Text("Your anonymous account is ready. This account number is the ")
                     + Text("only").fontWeight(.semibold).foregroundStyle(.white)
                     + Text(" way back in."))
-                    .font(.system(size: 14))
+                    .birdoFont(14)
                     .foregroundStyle(BirdoTheme.white60)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -738,7 +746,7 @@ struct LoginView: View {
             } label: {
                 HStack(spacing: 12) {
                     Text(id)
-                        .font(.system(size: 14, design: .monospaced))
+                        .birdoFont(14, design: .monospaced)
                         .tracking(1)
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.leading)
@@ -746,7 +754,7 @@ struct LoginView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accountNumberSnapshotCover()
                     Image(systemName: copiedId ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 16))
+                        .birdoFont(16)
                         .foregroundStyle(copiedId ? BirdoTheme.green : BirdoTheme.white60)
                 }
                 .padding(.horizontal, 16)
@@ -776,7 +784,7 @@ struct LoginView: View {
 
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "exclamationmark.shield.fill")
-                    .font(.system(size: 14))
+                    .birdoFont(14)
                     .foregroundStyle(BirdoTheme.yellow)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 6) {

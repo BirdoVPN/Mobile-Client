@@ -60,7 +60,7 @@ struct BirdoTextField: View {
         VStack(alignment: .leading, spacing: 0) {
             if let label {
                 Text(label)
-                    .font(.system(size: 13, weight: .medium))
+                    .birdoFont(13, weight: .medium)
                     .foregroundStyle(BirdoTheme.white60)
                     .padding(.leading, 4)
                     .padding(.bottom, 6)
@@ -93,7 +93,7 @@ struct BirdoTextField: View {
                         focused = true
                     } label: {
                         Image(systemName: revealed ? "eye.slash" : "eye")
-                            .font(.system(size: 16))
+                            .birdoFont(16)
                             .foregroundStyle(BirdoTheme.white40)
                     }
                     .accessibilityLabel(revealed ? "Hide password" : "Show password")

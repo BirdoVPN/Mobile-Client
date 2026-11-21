@@ -19,6 +19,9 @@ struct ServerListView: View {
     @EnvironmentObject var authVM: AuthViewModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The search field's prompt: 14pt at the default size like the field,
+    /// scaled (a prompt must stay a `Text`, so it takes a font value).
+    @BirdoScaledFontValue(14) private var promptFont: Font
 
     @State private var searchQuery = ""
     @State private var activeFilter: ServerFilter = .all
@@ -201,7 +204,7 @@ struct ServerListView: View {
             HStack(spacing: BirdoTheme.Spacing.sm) {
                 Button(action: { dismiss() }) {
                     Image(systemName: "chevron.left")
-                        .birdoFont(18, weight: .semibold)
+                        .birdoFont(18, weight: .semibold, max: 24)
                         .foregroundStyle(.white)
                         .frame(width: 40, height: 40)
                         .background(Circle().fill(BirdoTheme.white05))
@@ -233,7 +236,7 @@ struct ServerListView: View {
                     }
                 }) {
                     Image(systemName: "arrow.clockwise")
-                        .birdoFont(17, weight: .medium)
+                        .birdoFont(17, weight: .medium, max: 24)
                         .foregroundStyle(BirdoTheme.onSurfaceMuted)
                         .frame(width: 40, height: 40)
                         .background(Circle().fill(BirdoTheme.white05))
@@ -268,7 +271,7 @@ struct ServerListView: View {
                 "",
                 text: $searchQuery,
                 prompt: Text(isGuest ? "Search locations…" : "Search servers…")
-                    .font(.system(size: 14))
+                    .font(promptFont)
                     .foregroundStyle(BirdoTheme.white40)
             )
             .birdoFont(14)
@@ -281,7 +284,7 @@ struct ServerListView: View {
             if !searchQuery.isEmpty {
                 Button(action: { searchQuery = "" }) {
                     Image(systemName: "xmark")
-                        .birdoFont(14, weight: .medium)
+                        .birdoFont(14, weight: .medium, max: 20)
                         .foregroundStyle(BirdoTheme.white40)
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
@@ -291,7 +294,7 @@ struct ServerListView: View {
             }
         }
         .padding(.horizontal, 14)
-        .frame(height: 48)
+        .frame(minHeight: 48)
         .background(
             RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
                 .fill(BirdoTheme.glassInput)
@@ -663,7 +666,7 @@ private struct ServerRow: View {
         HStack(spacing: 0) {
             // Flag badge
             Text(server.flag)
-                .birdoFont(20)
+                .birdoFont(20, max: 26)
                 .frame(width: 40, height: 40)
                 .background(
                     RoundedRectangle(cornerRadius: BirdoTheme.Radius.sm, style: .continuous)
@@ -742,7 +745,7 @@ private struct ServerRow: View {
                 onToggleFavorite()
             } label: {
                 Image(systemName: isFavorite ? "star.fill" : "star")
-                    .birdoFont(18)
+                    .birdoFont(18, max: 26)
                     .foregroundStyle(isFavorite ? BirdoTheme.yellowLight : BirdoTheme.onSurfaceFaint)
                     .symbolEffect(.bounce, value: isFavorite)
                     .frame(width: 36, height: 36)
@@ -864,7 +867,7 @@ private struct ServersEmptyState: View {
                     .fill(BirdoTheme.surfaceRaised)
                     .frame(width: 64, height: 64)
                 Image(systemName: "server.rack")
-                    .birdoFont(28)
+                    .birdoFont(28, max: 38)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
             }
             .accessibilityHidden(true)

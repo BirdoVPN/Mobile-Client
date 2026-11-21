@@ -24,7 +24,7 @@ struct StatCard: View {
                   verticalPadding: 8) {
             HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
+                    .birdoFont(14, weight: .medium)
                     .foregroundStyle(iconColor)
                 Text(value)
                     .font(BirdoTheme.Fonts.statValue)

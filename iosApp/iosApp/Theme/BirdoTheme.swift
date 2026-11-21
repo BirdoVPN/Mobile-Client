@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Birdo VPN design tokens — emerald brand, dark-only, corporate.
 ///
@@ -296,15 +299,32 @@ struct BirdoFontToken: Equatable {
     let weight: Font.Weight
     let design: Font.Design
     let textStyle: Font.TextStyle
+    /// The largest size it may grow to, or nil for no limit. Never below
+    /// `size`, so the default category always renders the size asked for.
+    let maxSize: CGFloat?
 
     init(size: CGFloat,
          weight: Font.Weight = .regular,
          design: Font.Design = .default,
-         relativeTo textStyle: Font.TextStyle? = nil) {
+         relativeTo textStyle: Font.TextStyle? = nil,
+         maxSize: CGFloat? = nil) {
         self.size = size
         self.weight = weight
         self.design = design
         self.textStyle = textStyle ?? Self.nearestTextStyle(for: size)
+        self.maxSize = maxSize.map { Swift.max($0, size) }
+    }
+
+    /// A Dynamic Type size for this token, held to `maxSize`.
+    func clamped(_ scaled: CGFloat) -> CGFloat {
+        maxSize.map { Swift.min(scaled, $0) } ?? scaled
+    }
+
+    /// The ONE place a scaled point size becomes a SwiftUI `Font`
+    /// (ScaledFontGuardTests exempts exactly this line).
+    func font(scaled: CGFloat) -> Font {
+        let scaledSize = clamped(scaled)
+        return .system(size: scaledSize, weight: weight, design: design)
     }
 
     /// The system text style whose default (`.large`) size is nearest.
@@ -338,10 +358,31 @@ struct BirdoScaledFont: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        content.font(.system(size: scaledSize,
-                             weight: token.weight,
-                             design: token.design))
+        content.font(token.font(scaled: scaledSize))
     }
+}
+
+/// A scaled `Font` VALUE, for a `Text` that has to stay a `Text` (a
+/// TextField's `prompt:`), where the `birdoFont` modifier cannot go:
+/// `@BirdoScaledFontValue(14) private var promptFont`, then
+/// `Text("...").font(promptFont)`. Same token, same curve, same builder.
+@propertyWrapper
+struct BirdoScaledFontValue: DynamicProperty {
+    private let token: BirdoFontToken
+    @ScaledMetric private var scaledSize: CGFloat
+
+    init(_ size: CGFloat,
+         weight: Font.Weight = .regular,
+         design: Font.Design = .default,
+         relativeTo textStyle: Font.TextStyle? = nil,
+         max maxSize: CGFloat? = nil) {
+        let token = BirdoFontToken(size: size, weight: weight, design: design,
+                                   relativeTo: textStyle, maxSize: maxSize)
+        self.token = token
+        _scaledSize = ScaledMetric(wrappedValue: token.size, relativeTo: token.textStyle)
+    }
+
+    var wrappedValue: Font { token.font(scaled: scaledSize) }
 }
 
 extension View {
@@ -352,12 +393,54 @@ extension View {
     }
 
     /// Scaled font for a one-off size (the size at the default category).
+    ///
+    /// `max`: the largest size it may grow to. Give it to every glyph that
+    /// sits in a FIXED box (an icon tile, a round button, a fixed-width icon
+    /// column): the box does not grow with the text, so an uncapped symbol
+    /// spills out of it at the accessibility sizes. The cap is the size that
+    /// still fits the box. Text that can wrap gets no cap.
     func birdoFont(_ size: CGFloat,
                    weight: Font.Weight = .regular,
-                   design: Font.Design = .default) -> some View {
-        modifier(BirdoScaledFont(BirdoFontToken(size: size, weight: weight, design: design)))
+                   design: Font.Design = .default,
+                   relativeTo textStyle: Font.TextStyle? = nil,
+                   max maxSize: CGFloat? = nil) -> some View {
+        modifier(BirdoScaledFont(BirdoFontToken(size: size, weight: weight, design: design,
+                                                relativeTo: textStyle, maxSize: maxSize)))
     }
 }
+
+#if canImport(UIKit)
+extension BirdoTheme {
+    /// UIKit twin of `.birdoFont(_:weight:max:)` for chrome that only takes
+    /// a `UIFont` (the tab bar's `UITabBarAppearance`). `size` is the size at
+    /// the default `.large` category; `UIFontMetrics` scales it along
+    /// `textStyle`'s curve for the text size in `traits` (the current one when
+    /// nil), never past `maximumPointSize`. UIKit chrome has a fixed height,
+    /// so the cap is required here.
+    static func scaledUIFont(_ size: CGFloat,
+                             weight: UIFont.Weight = .regular,
+                             relativeTo textStyle: UIFont.TextStyle,
+                             maximumPointSize: CGFloat,
+                             compatibleWith traits: UITraitCollection? = nil) -> UIFont {
+        UIFontMetrics(forTextStyle: textStyle)
+            .scaledFont(for: .systemFont(ofSize: size, weight: weight),
+                        maximumPointSize: Swift.max(maximumPointSize, size),
+                        compatibleWith: traits)
+    }
+
+    /// The tab bar's label: 11pt at the default size (Android bottom bar),
+    /// SemiBold selected / Medium unselected, growing to at most 14pt so it
+    /// stays inside the bar. Above that, UITabBar's own Large Content Viewer
+    /// shows the item large on a long press at the accessibility sizes.
+    static let tabBarLabelMaxPointSize: CGFloat = 14
+
+    static func tabBarLabelFont(selected: Bool,
+                                compatibleWith traits: UITraitCollection? = nil) -> UIFont {
+        scaledUIFont(11, weight: selected ? .semibold : .medium, relativeTo: .caption2,
+                     maximumPointSize: tabBarLabelMaxPointSize, compatibleWith: traits)
+    }
+}
+#endif
 
 extension Color {
     init(hex: UInt, alpha: Double = 1.0) {

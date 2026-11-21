@@ -27,7 +27,7 @@ struct MaskedAccountNumberRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("ACCOUNT NUMBER")
-                .font(.system(size: 10, weight: .semibold))
+                .birdoFont(10, weight: .semibold)
                 .foregroundStyle(BirdoTheme.onSurfaceFaint)
             Text(AnonNumberMask.display(lastDigits: lastDigits))
                 .font(BirdoTheme.Fonts.mono)

@@ -28,11 +28,14 @@ struct StatusBadgePill: View {
                 PulsingDot(color: fg)
             } else if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 12, weight: .medium))
+                    .birdoFont(12, weight: .medium)
             }
             Text(text)
-                .font(.system(size: 12, weight: .medium))
-                .lineLimit(1)
+                .birdoFont(12, weight: .medium)
+                // Two lines, not one: at accessibility text sizes a one-line pill
+                // truncates the state ("Reconnecting...") it exists to show.
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
         }
         .foregroundStyle(fg)
         .padding(.horizontal, 12)

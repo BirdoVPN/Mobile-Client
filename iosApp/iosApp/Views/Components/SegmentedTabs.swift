@@ -19,6 +19,9 @@ struct SegmentedTabs: View {
     let items: [String]
     @Binding var selection: Int
     var style: Style
+    /// MR-1796: the segments stack at the accessibility sizes, where a third
+    /// (or half) of the row is too narrow for a word such as "Anonymous".
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(items: [String], selection: Binding<Int>, style: Style = .neutral) {
         self.items = items
@@ -27,7 +30,10 @@ struct SegmentedTabs: View {
     }
 
     var body: some View {
-        HStack(spacing: 4) {
+        let row = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 4))
+        row {
             ForEach(items.indices, id: \.self) { index in
                 segment(index)
             }
@@ -49,9 +55,13 @@ struct SegmentedTabs: View {
             selection = index
         } label: {
             Text(items[index])
-                .font(.system(size: 13, weight: selected && style == .accent ? .semibold : .medium))
+                .birdoFont(13, weight: selected && style == .accent ? .semibold : .medium)
                 .foregroundStyle(segmentText(selected))
-                .lineLimit(1)
+                // Wraps to a second line before it shrinks (the Yearly label
+                // with its saving, from XL), then shrinks a little rather than cut.
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+                .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity, minHeight: 40)
                 .background(
                     RoundedRectangle(cornerRadius: 9, style: .continuous)

@@ -116,7 +116,7 @@ struct VpnSettingsView: View {
                             .fill(BirdoTheme.white05)
                             .frame(width: 40, height: 40)
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .semibold))
+                            .birdoFont(17, weight: .semibold, max: 24)
                             .foregroundStyle(BirdoTheme.onSurface)
                     }
                     .frame(width: 48, height: 48)
@@ -126,7 +126,7 @@ struct VpnSettingsView: View {
                 .accessibilityLabel("Back")
 
                 Text("VPN Settings")
-                    .font(.system(size: 17, weight: .semibold))
+                    .birdoFont(17, weight: .semibold)
                     .foregroundStyle(BirdoTheme.onSurface)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)
@@ -154,7 +154,7 @@ struct VpnSettingsView: View {
         BirdoCard(cornerRadius: 14) {
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: "wifi.router")
-                    .font(.system(size: 20))
+                    .birdoFont(20, max: 24)
                     .foregroundStyle(BirdoTheme.green)
                     .frame(width: 24)
                     .accessibilityHidden(true)
@@ -183,7 +183,7 @@ struct VpnSettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 14) {
                     Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 20))
+                        .birdoFont(20, max: 24)
                         .foregroundStyle(BirdoTheme.yellow)
                         .frame(width: 24)
                         .accessibilityHidden(true)
@@ -239,7 +239,7 @@ struct VpnSettingsView: View {
                     .overlay {
                         if isAuto {
                             Image(systemName: "checkmark")
-                                .font(.system(size: 12, weight: .bold))
+                                .birdoFont(12, weight: .bold, max: 14)
                                 .foregroundStyle(.white)
                         }
                     }
@@ -264,7 +264,7 @@ struct VpnSettingsView: View {
     private var infoNote: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "info.circle")
-                .font(.system(size: 16))
+                .birdoFont(16)
                 .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 .accessibilityHidden(true)
             Text("Changes apply when you leave this screen — if you're connected, the VPN reconnects for a moment (still protected) to apply them")
@@ -291,7 +291,7 @@ struct VpnSettingsView: View {
                         .controlSize(.small)
                         .tint(BirdoTheme.onSurface)
                     Text("Applying settings — reconnecting…")
-                        .font(.system(size: 13, weight: .medium))
+                        .birdoFont(13, weight: .medium)
                         .foregroundStyle(BirdoTheme.onSurface)
                 }
                 .padding(.horizontal, 16)
@@ -384,7 +384,7 @@ private struct VpnToggleRow: View {
             BirdoCard(cornerRadius: 14, horizontalPadding: 16, verticalPadding: 14) {
                 HStack(spacing: 14) {
                     Image(systemName: icon)
-                        .font(.system(size: 20))
+                        .birdoFont(20, max: 24)
                         .foregroundStyle(iconColor)
                         .frame(width: 24)
                     VpnRowText(title: title, description: description)

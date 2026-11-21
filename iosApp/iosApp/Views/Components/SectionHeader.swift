@@ -29,7 +29,7 @@ struct SectionHeader: View {
             if let actionLabel, let action {
                 Button(action: action) {
                     Text(actionLabel)
-                        .font(.system(size: 12, weight: .medium))
+                        .birdoFont(12, weight: .medium)
                         .foregroundStyle(BirdoTheme.accentSoft)
                 }
             }

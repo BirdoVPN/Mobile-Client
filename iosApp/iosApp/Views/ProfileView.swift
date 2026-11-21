@@ -206,7 +206,7 @@ struct ProfileView: View {
                     ZStack {
                         Circle().fill(BirdoTheme.accentA(0.14)).frame(width: 44, height: 44)
                         Image(systemName: "person.crop.circle")
-                            .birdoFont(22)
+                            .birdoFont(22, max: 26)
                             .foregroundStyle(BirdoTheme.accent)
                     }
                     .accessibilityHidden(true)
@@ -304,11 +304,12 @@ struct ProfileView: View {
                         Text("ACCOUNT NUMBER")
                             .birdoFont(10, weight: .semibold)
                             .foregroundStyle(BirdoTheme.onSurfaceFaint)
-                        // Two lines, not a cut: the user copies it out by hand.
+                        // Every digit, on as many lines as it takes: the user
+                        // copies it out by hand (two lines cut it at AX3+).
                         Text(shownAccountNumber(number))
                             .font(BirdoTheme.Fonts.mono)
                             .foregroundStyle(BirdoTheme.onBackground)
-                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                             .accountNumberSnapshotCover()
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -402,7 +403,7 @@ struct ProfileView: View {
                         .frame(width: 48, height: 48)
                         .overlay(
                             Image(systemName: "star")
-                                .birdoFont(22, weight: .medium)
+                                .birdoFont(22, weight: .medium, max: 30)
                                 .foregroundStyle(.white)
                         )
                     VStack(alignment: .leading, spacing: 2) {
@@ -1026,7 +1027,7 @@ private struct ProfileActionRow: View {
                         )
                         .overlay(
                             Image(systemName: icon)
-                                .birdoFont(18)
+                                .birdoFont(18, max: 26)
                                 .foregroundStyle(destructive ? BirdoTheme.red : BirdoTheme.accent)
                         )
                     VStack(alignment: .leading, spacing: 2) {

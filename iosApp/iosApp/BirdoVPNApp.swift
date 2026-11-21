@@ -19,6 +19,9 @@ struct BirdoVPNApp: App {
     @StateObject private var storeVM = StoreKitService.shared
 
     init() {
+        // No UIApplication exists yet when the App is initialised, so this
+        // styles the bar with the default traits; `.onAppear` below restyles
+        // it for the text size the application reports (MR-1796).
         Self.styleTabBar()
     }
 
@@ -33,6 +36,14 @@ struct BirdoVPNApp: App {
                     .environmentObject(settingsVM)
                     .environmentObject(storeVM)
                     .preferredColorScheme(.dark)
+                    #if os(iOS)
+                    // MR-1796: the tab bar's labels are sized for the text size
+                    // the app runs at, and follow a change made while it runs.
+                    .onAppear { Self.restyleTabBarForTextSize() }
+                    .onReceive(NotificationCenter.default.publisher(for: UIContentSizeCategory.didChangeNotification)) { _ in
+                        Self.restyleTabBarForTextSize()
+                    }
+                    #endif
                     // macOS 1.4.23 was rejected under guideline 4 for "windows
                     // laid out and partially hidden under menu bar".
                     //
@@ -128,9 +139,13 @@ struct BirdoVPNApp: App {
 
     /// Android bottom-bar chrome (spec-home-servers-consent §2): surface fill,
     /// hairlineSoft top divider, selected = accent, unselected =
-    /// onSurfaceMuted, 11pt labels (SemiBold selected / Medium unselected).
+    /// onSurfaceMuted, 11pt labels (SemiBold selected / Medium unselected)
+    /// at the default text size, growing with Dynamic Type to at most 14pt so
+    /// they stay inside the bar (MR-1796; `BirdoTheme.tabBarLabelFont`).
     /// SwiftUI's TabView takes its chrome from UITabBarAppearance, so this is
-    /// configured once at launch.
+    /// configured at launch, then again for the application's own text size
+    /// once the scene is up and whenever that size changes
+    /// (`restyleTabBarForTextSize`).
     @MainActor
     private static func styleTabBar() {
         // iOS only: UITabBarAppearance does not exist on macOS, where
@@ -139,6 +154,24 @@ struct BirdoVPNApp: App {
         // appearance proxy. There is nothing to configure, so this is a
         // no-op there rather than an approximation.
         #if os(iOS)
+        applyTabBarAppearance(traits: nil, includingLiveBars: false)
+        #endif
+    }
+
+    #if os(iOS)
+    /// Restyle for `UIApplication.preferredContentSizeCategory`, the text size
+    /// the app runs at, rather than whatever trait collection is current. The
+    /// appearance proxy only styles tab bars created after it is set, so bars
+    /// already on screen get the new appearance directly.
+    @MainActor
+    private static func restyleTabBarForTextSize() {
+        let category = UIApplication.shared.preferredContentSizeCategory
+        applyTabBarAppearance(traits: UITraitCollection(preferredContentSizeCategory: category),
+                              includingLiveBars: true)
+    }
+
+    @MainActor
+    private static func applyTabBarAppearance(traits: UITraitCollection?, includingLiveBars: Bool) {
         let appearance = UITabBarAppearance()
         appearance.configureWithOpaqueBackground()
         // BirdoTheme.surface #0B0B10
@@ -156,17 +189,34 @@ struct BirdoVPNApp: App {
             item.selected.iconColor = accent
             item.selected.titleTextAttributes = [
                 .foregroundColor: accent,
-                .font: UIFont.systemFont(ofSize: 11, weight: .semibold),
+                .font: BirdoTheme.tabBarLabelFont(selected: true, compatibleWith: traits),
             ]
             item.normal.iconColor = muted
             item.normal.titleTextAttributes = [
                 .foregroundColor: muted,
-                .font: UIFont.systemFont(ofSize: 11, weight: .medium),
+                .font: BirdoTheme.tabBarLabelFont(selected: false, compatibleWith: traits),
             ]
         }
 
         UITabBar.appearance().standardAppearance = appearance
         UITabBar.appearance().scrollEdgeAppearance = appearance
-        #endif
+
+        guard includingLiveBars else { return }
+        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+            for window in scene.windows {
+                for bar in tabBars(in: window) {
+                    bar.standardAppearance = appearance
+                    bar.scrollEdgeAppearance = appearance
+                }
+            }
+        }
     }
+
+    /// Every UITabBar under `view` (SwiftUI's TabView hosts one).
+    @MainActor
+    private static func tabBars(in view: UIView) -> [UITabBar] {
+        if let bar = view as? UITabBar { return [bar] }
+        return view.subviews.flatMap { tabBars(in: $0) }
+    }
+    #endif
 }

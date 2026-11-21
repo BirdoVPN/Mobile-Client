@@ -566,7 +566,7 @@ private struct SettingsIconChip: View {
 
     var body: some View {
         Image(systemName: icon)
-            .birdoFont(16)
+            .birdoFont(16, max: 24)
             .foregroundStyle(color)
             .frame(width: 36, height: 36)
             .background(
