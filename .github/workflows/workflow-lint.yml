@@ -61,3 +61,9 @@ jobs:
       # own test must stay green: it builds throwaway git repos, needs no history.
       - name: Release gate script test
         run: bash .github/scripts/require-tag-on-main-test.sh
+
+      # github-latest-from-play.yml moves GitHub Latest (and sets back any full
+      # Android release ahead of Play's 100% build, MR-2418); its script is tested
+      # against a stub gh that keeps release state in files, no network.
+      - name: Latest-follows-Play script test
+        run: bash .github/scripts/latest-follows-play-test.sh
