@@ -1141,7 +1141,8 @@ final class AuthViewModel: ObservableObject {
             let stored = SessionPersistence.saveWithRetry {
                 keychain.save(accessToken: tokens.accessToken,
                               refreshToken: tokens.refreshToken,
-                              email: nil)
+                              email: nil,
+                              replacing: .anotherSession)
             }
             unstoredTokens = nil
             createdIdNotStored = false
@@ -1670,7 +1671,8 @@ final class AuthViewModel: ObservableObject {
         guard SessionPersistence.saveWithRetry({
             keychain.save(accessToken: tokens.accessToken,
                           refreshToken: tokens.refreshToken,
-                          email: knownEmail)
+                          email: knownEmail,
+                          replacing: .anotherSession)
         }) else {
             error = "Could not securely store your session. Please try again."
             return false

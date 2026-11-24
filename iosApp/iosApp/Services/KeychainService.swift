@@ -89,19 +89,14 @@ final class KeychainService: @unchecked Sendable {
     /// delete it if there was none) and report failure — the keychain is left
     /// in the same consistent state it had before the call.
     @discardableResult
-    func save(accessToken: String, refreshToken: String, email: String?) -> Bool {
-        let priorAccess = read(.accessToken)
-        guard write(.accessToken, value: accessToken) else { return false }
-        guard write(.refreshToken, value: refreshToken) else {
-            // Refresh write failed — undo the access write so no half-session
-            // survives. Restore the prior access token if there was one.
-            if let priorAccess {
-                write(.accessToken, value: priorAccess)
-            } else {
-                delete(.accessToken)
-            }
-            return false
-        }
+    func save(accessToken: String,
+              refreshToken: String,
+              email: String?,
+              replacing: TokenPairWrite.Replaced) -> Bool {
+        guard TokenPairWrite.save(accessToken: Data(accessToken.utf8),
+                                  refreshToken: Data(refreshToken.utf8),
+                                  replacing: replacing,
+                                  in: self) else { return false }
         if let email {
             write(.userEmail, value: email)
         } else {
@@ -219,6 +214,20 @@ final class KeychainService: @unchecked Sendable {
     @discardableResult
     func setHostData(_ data: Data, for item: HostKeychainItem) -> Bool {
         HostOnlyKeychain.write(data, item, placement: hostPlacement, store: self)
+    }
+
+    /// MR-2580: `setHostData` in one step (`HostOnlyKeychain.replace`): a failed
+    /// write leaves the item as it was. Only the session tokens are written
+    /// this way (`TokenPairWrite`).
+    @discardableResult
+    func replaceHostData(_ data: Data, for item: HostKeychainItem) -> Bool {
+        HostOnlyKeychain.replace(data, item, placement: hostPlacement, store: self)
+    }
+
+    /// MR-2580: `hostData`, telling an item that is not there from one that
+    /// could not be read.
+    func hostLookup(_ item: HostKeychainItem) -> KeychainLookup {
+        HostOnlyKeychain.lookup(item, placement: hostPlacement, store: self)
     }
 
     /// Delete a host-only item, every copy of it.
@@ -385,6 +394,9 @@ extension KeychainService: InstallIdentityStore {
     func clearSession() { clear() }
 }
 
+/// MR-2580: the store `TokenPairWrite` writes the session's pair through.
+extension KeychainService: TokenPairStore {}
+
 /// MR-1729: the live keychain behind `HostOnlyKeychain`. `group == nil` sends no
 /// `kSecAttrAccessGroup`, exactly as every host-only query here did before; the
 /// attributes are the ones those queries always used.
@@ -412,29 +424,17 @@ extension KeychainService: KeychainGroupStore {
         }
     }
 
+    /// The queries and their attributes are `KeychainItemQuery`'s (MR-2580),
+    /// pinned by TokenPairWriteTests.
     func store(_ data: Data, service: String, account: String, group: String?) -> Bool {
-        remove(service: service, account: account, group: group)
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
-            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
-        ]
-        if let group { query[kSecAttrAccessGroup as String] = group }
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        KeychainItemQuery.store(data, service: service, account: account, group: group)
+    }
+
+    func replace(_ data: Data, service: String, account: String, group: String?) -> Bool {
+        KeychainItemQuery.replace(data, service: service, account: account, group: group)
     }
 
     func remove(service: String, account: String, group: String?) {
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
-        ]
-        if let group { query[kSecAttrAccessGroup as String] = group }
-        SecItemDelete(query as CFDictionary)
+        KeychainItemQuery.remove(service: service, account: account, group: group)
     }
 }

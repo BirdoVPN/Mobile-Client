@@ -12,8 +12,11 @@ import SwiftUI
 extension KeychainService: RotationCommitStore {
     @discardableResult
     func saveRotationSession(accessToken: String, refreshToken: String) -> Bool {
-        // An anonymous account has no e-mail; the keychain's own is kept.
-        save(accessToken: accessToken, refreshToken: refreshToken, email: userEmail)
+        // An anonymous account has no e-mail; the keychain's own is kept. The
+        // server ended the old session itself (its epoch), and spent none of
+        // its tokens: a failed write puts the old pair back (MR-2580).
+        save(accessToken: accessToken, refreshToken: refreshToken, email: userEmail,
+             replacing: .anotherSession)
     }
 }
 

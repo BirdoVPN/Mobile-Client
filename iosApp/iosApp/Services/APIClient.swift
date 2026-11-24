@@ -1076,9 +1076,12 @@ final class APIClient: @unchecked Sendable {
         // token, so proceeding on a half-written/unwritten pair would strand the
         // client on a token it can never replay. Surface it so the retry does
         // NOT run against a stale/blank Authorization header.
+        // MR-2580: answering with this pair spent `refresh` on the server, so
+        // it is never put back (`TokenPairWrite.Replaced.consumedRefreshToken`).
         guard keychain.save(accessToken: tokens.accessToken,
                             refreshToken: tokens.refreshToken ?? refresh,
-                            email: keychain.userEmail) else {
+                            email: keychain.userEmail,
+                            replacing: .consumedRefreshToken) else {
             throw APIError.invalidResponse
         }
     }
