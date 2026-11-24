@@ -197,8 +197,12 @@ final class TunnelHeartbeatWiringTests: XCTestCase {
     func testATripForAnEndingSaysTheEnding() throws {
         let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
         let check = slice(vm, from: "func checkCircuitBreaker() {", to: "\n    }\n")
-        let afterStop = slice(check, from: "guard vpnManager.failOpenAndStop() else { return }", to: "releaseServerSlot()")
-        let ending = slice(afterStop, from: "if let ending = takeTunnelHeartbeatEnding() {", to: "return\n        }")
+        guard let stopped = check.range(of: "guard vpnManager.failOpenAndStop() else { return }   // retried next tick"),
+              let said = check.range(of: "if let ending = takeTunnelHeartbeatEnding() {") else {
+            return XCTFail("a trip's fail-open no longer says the extension's ending")
+        }
+        XCTAssertLessThan(stopped.lowerBound, said.lowerBound, "the ending is said before the session is stopped")
+        let ending = slice(check, from: "if let ending = takeTunnelHeartbeatEnding() {", to: "return\n        }")
         for step in ["setActiveKeyId(nil)", "resetSessionState()", "clearCircuitBreaker()",
                      "heartbeatEnding = ending", "error = ending.message"] {
             XCTAssertTrue(ending.contains(step), "the ending is not said as the host says it: \(step)")

@@ -31,6 +31,7 @@ final class TunnelBreakerStore: @unchecked Sendable {
     private static let service = "app.birdo.vpn.shared"
     private static let recordAccount = "breaker_record"
     private static let onDemandAccount = "on_demand_armed"
+    private static let heartbeatHandOffAccount = "heartbeat_handoff"
 
     /// Serialises the read-modify-write in `recordFailure`. The extension calls
     /// it from the heartbeat Task; the host reads from the main actor.
@@ -94,6 +95,36 @@ final class TunnelBreakerStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         write(account: Self.onDemandAccount, data: Data((armed ? "1" : "0").utf8))
+    }
+
+    // MARK: - Heartbeat hand-off (MR-2524)
+
+    /// What the extension's heartbeat decided and left to the host (a rebuild,
+    /// a move), or stopped and wants said (an ending): see `HeartbeatHandOff`.
+    /// The latest decision wins; the host acts on it for its own session only.
+    ///
+    /// Absent or unreadable reads as nil: nothing handed over, which is how the
+    /// host behaved before the hand-off existed.
+    var heartbeatHandOff: HeartbeatHandOff? {
+        guard let data = read(account: Self.heartbeatHandOffAccount) else { return nil }
+        return try? JSONDecoder().decode(HeartbeatHandOff.self, from: data)
+    }
+
+    func setHeartbeatHandOff(_ handOff: HeartbeatHandOff) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let data = try? JSONEncoder().encode(handOff) {
+            write(account: Self.heartbeatHandOffAccount, data: data)
+        }
+    }
+
+    /// Delete `handOff` once the host has dealt with it, unless the extension
+    /// has written a newer one since it was read: that one is still owed.
+    func clearHeartbeatHandOff(_ handOff: HeartbeatHandOff) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard heartbeatHandOff == handOff else { return }
+        delete(account: Self.heartbeatHandOffAccount)
     }
 
     // MARK: - Keychain primitives

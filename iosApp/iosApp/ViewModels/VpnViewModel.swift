@@ -1282,6 +1282,10 @@ final class VpnViewModel: ObservableObject {
     ///   * every `handleStatusChange`, so a state transition never races ahead
     ///     of the recovery.
     ///
+    /// MR-2524: the same four places carry out what the extension's own
+    /// heartbeat handed over (`actOnTunnelHeartbeat`, first), and a trip that
+    /// is the extension stopping an ENDED session says that ending.
+    ///
     /// ### Reset conditions (the complete list)
     /// | Event | Clears? |
     /// |---|---|
@@ -1293,6 +1297,7 @@ final class VpnViewModel: ObservableObject {
     /// | App foreground | NO — foreground is the trigger to ACT on a trip, not to forget it |
     /// | Network / interface change | NO — a new SSID does not revive a revoked peer; the cooldown covers the case where it would have helped |
     func checkCircuitBreaker() {
+        actOnTunnelHeartbeat()
         let store = TunnelBreakerStore.shared
         guard let record = store.record else {
             breakerTrip = nil
@@ -1322,6 +1327,21 @@ final class VpnViewModel: ObservableObject {
                  record.kind.rawValue, record.consecutiveFailures)
         guard vpnManager.failOpenAndStop() else { return }   // retried next tick
         failOpenAppliedFor = record
+        // MR-2524: the extension's heartbeat heard the server END this session
+        // (revoked, evicted, the Free allowance, a Multi-Hop node gone) and
+        // stopped it through this trip. Now it ends as when the host's own beat
+        // hears that reply (`endSessionForServer`): the key is already gone, so
+        // the handle is dropped rather than DELETEd; the trip has done its job
+        // and is forgotten; and the user reads that ending's sentence, not the
+        // trip's generic one.
+        if let ending = takeTunnelHeartbeatEnding() {
+            setActiveKeyId(nil)
+            resetSessionState()
+            clearCircuitBreaker()
+            heartbeatEnding = ending
+            error = ending.message
+            return
+        }
         // Best-effort, exactly like every other call site: the DELETE may well
         // fail while the tunnel is still tearing down, and the next connect from
         // this deviceId reclaims the slot server-side anyway.
@@ -1341,6 +1361,79 @@ final class VpnViewModel: ObservableObject {
     /// from `breakerTrip` so a pass that could not act (no manager loaded yet)
     /// retries, while a pass that did act does not re-tear-down every 30 s.
     private var failOpenAppliedFor: TunnelBreakerRecord?
+
+    // MARK: - The extension's heartbeat (MR-2524)
+
+    /// Carry out what the tunnel extension's own heartbeat decided with
+    /// `HeartbeatPolicy` and handed over (`TunnelBreakerStore.heartbeatHandOff`):
+    /// a rebuild or a move, which only the host can mint a key for, or an
+    /// ending whose trip has lapsed. While the app is suspended the extension's
+    /// beat is the only one running, and the host's own beat cannot hear a
+    /// reply through a tunnel whose node has dropped the peer, so without this
+    /// the host's decision was skipped whenever the extension heard first.
+    ///
+    /// Exactly what `sendHeartbeat` does with the same reply, under its gate:
+    /// only for the live session the verdict is about (`keyId`), never while a
+    /// disconnect, a switch or a rebuild owns it, through the same rebuild
+    /// budget and into the same paths. A verdict about another session is
+    /// dropped; one for a session not up yet (a cold start seeds the status a
+    /// moment later) waits for the next pass.
+    ///
+    /// An ending the extension stopped through the breaker is said by the
+    /// breaker's fail-open (`checkCircuitBreaker`), which stops the session
+    /// first. A rebuild or a move goes ahead even past a trip: the extension's
+    /// data-plane check trips on the very key the server released, and a fresh
+    /// key is the recovery that trip waits for (`TunnelFailureKind.revoked`).
+    /// The rebuild budget still bounds it, as it bounds the host's own beat.
+    private func actOnTunnelHeartbeat() {
+        let store = TunnelBreakerStore.shared
+        guard let handOff = store.heartbeatHandOff else { return }
+        guard let keyId = activeKeyId, handOff.keyId == keyId else {
+            store.clearHeartbeatHandOff(handOff)
+            return
+        }
+        guard isConnected, !isRebuildingLive, !isTearingDownForRedial else { return }
+        let now = Date()
+        let tripped = TunnelCircuitBreaker.isTripped(store.record, now: now)
+        if tripped && !handOff.verdict.isLeftToHost { return }
+        store.clearHeartbeatHandOff(handOff)
+        if tripped { clearCircuitBreaker() }
+        let outcome = heartbeatRebuildBudget.admit(
+            handOff.verdict.hostOutcome(multiHop: activeMultiHop != nil), now: now)
+        let step: String
+        switch outcome {
+        case .keep: step = "keep"
+        case .rebuild: step = "rebuild"
+        case .moveServer: step = "move"
+        case .end: step = "end"
+        }
+        // Counts only, as Console shows it for the device check: the verdict,
+        // what the app did, and how long the verdict waited for the app.
+        debugLog("[VpnViewModel] extension heartbeat: %@ -> %@ after %.0f s",
+                 handOff.verdict.rawValue, step, max(0, now.timeIntervalSince1970 - handOff.decidedAt))
+        switch outcome {
+        case .keep:
+            break
+        case .rebuild:
+            rebuildAfterReap()
+        case .moveServer:
+            moveOffDrainedServer()
+        case .end(let ending):
+            endSessionForServer(ending)
+        }
+    }
+
+    /// The ending the extension's heartbeat stopped this session for, taken
+    /// once; nil when the trip is not one (the data-plane check's own).
+    private func takeTunnelHeartbeatEnding() -> HeartbeatEnding? {
+        let store = TunnelBreakerStore.shared
+        guard let handOff = store.heartbeatHandOff, let keyId = activeKeyId, handOff.keyId == keyId,
+              case .end(let ending) = handOff.verdict.hostOutcome(multiHop: activeMultiHop != nil) else {
+            return nil
+        }
+        store.clearHeartbeatHandOff(handOff)
+        return ending
+    }
 
     // MARK: - Port Forwarding
 

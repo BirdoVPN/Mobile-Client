@@ -241,6 +241,9 @@ final class VPNManager: @unchecked Sendable {
         if let keyId = config.keyId, !keyId.isEmpty {
             providerConfig["hb-key-id"] = keyId
         }
+        // MR-2524: the extension's heartbeat decides as this app does, and a
+        // drained server ends a Multi-Hop session where it moves a single hop.
+        providerConfig[TunnelHeartbeatPolicy.multiHopKey] = config.multiHop != nil ? "1" : "0"
         // The bearer token goes into the shared keychain; the profile only
         // names it (D-13). No token = no extension heartbeat, never a failed
         // connect.
@@ -396,6 +399,8 @@ final class VPNManager: @unchecked Sendable {
         if let keyId = config.keyId, !keyId.isEmpty {
             providerConfiguration["hb-key-id"] = keyId
         }
+        // MR-2524, as in connect(): persisted, and carried by the reconfigure.
+        providerConfiguration[TunnelHeartbeatPolicy.multiHopKey] = config.multiHop != nil ? "1" : "0"
         for (key, value) in parkHeartbeatToken() {
             providerConfiguration[key] = value
         }
