@@ -46,6 +46,21 @@ final class KeychainService: @unchecked Sendable {
     /// lock every pair write takes (`SessionTokenVault`).
     private let session = SessionTokenVault(fence: FileSpentRefreshFence.standard())
 
+    /// `UIApplication.protectedDataDidBecomeAvailableNotification`, by name, so
+    /// this file needs no UIKit (macOS never posts it).
+    private static let protectedDataDidBecomeAvailable =
+        Notification.Name("UIApplicationProtectedDataDidBecomeAvailable")
+
+    init() {
+        // #671 review (MR-2580): the first unlock after a boot opens the
+        // keychain; a pair a refresh rotation could only keep in memory goes
+        // in then (also before each refresh and on foreground, APIClient).
+        _ = NotificationCenter.default.addObserver(forName: Self.protectedDataDidBecomeAvailable,
+                                                   object: nil, queue: nil) { [weak self] _ in
+            self?.persistPendingSession()
+        }
+    }
+
     // MARK: - Public Accessors (host app only)
 
     var accessToken: String? { session.accessToken(in: self).flatMap { String(data: $0, encoding: .utf8) } }
@@ -96,9 +111,11 @@ final class KeychainService: @unchecked Sendable {
     /// token first, each in one step (MR-2580): neither a failed write nor a
     /// kill between the two ever leaves the new access token with an older
     /// refresh token, which after a refresh rotation is already spent, and
-    /// which the server treats as theft when it is presented again. On a
-    /// failure the prior pair is put back as it was
-    /// (`TokenPairWrite.Replaced.anotherSession`).
+    /// which the server treats as theft when it is presented again. A sign-in
+    /// removes the prior session's access token, e-mail, sign-in method and
+    /// anonymous number first, so no kill point mixes two accounts, and puts
+    /// them back on a failure, next to the prior refresh token only
+    /// (`SessionTokenVault.save`, under its lock).
     @discardableResult
     func save(accessToken: String, refreshToken: String, email: String?) -> Bool {
         session.save(accessToken: Data(accessToken.utf8),

@@ -975,6 +975,10 @@ final class APIClient: @unchecked Sendable {
     /// sent when no retry is owed. Throws what the refresh throws
     /// (`.unauthorized` only for a 401).
     func retryHeldRefresh() async throws {
+        // #671 review (MR-2580): coming to the foreground, a pair a refresh
+        // rotation could only keep in memory goes to the keychain, if it will
+        // take it now.
+        keychain.persistPendingSession()
         guard await refreshActor.retryIsDue() else { return }
         try await refreshActor.refresh { [weak self] in
             try await self?.refreshTokens()
@@ -982,6 +986,12 @@ final class APIClient: @unchecked Sendable {
     }
 
     private func refreshTokens() async throws {
+        // #671 review (MR-2580): a pair kept in memory goes in first, if the
+        // keychain takes it now. Then the token to present: the pair kept in
+        // memory, or the stored one, never one the fence marks spent
+        // (`SessionTokenVault`). A fenced token with nothing newer reads as
+        // none, so this throws before any request and the caller signs out.
+        keychain.persistPendingSession()
         guard let refresh = keychain.refreshToken else {
             throw APIError.unauthorized
         }
@@ -1060,31 +1070,39 @@ final class APIClient: @unchecked Sendable {
         // refresh belongs to still exists. Two things must hold —
         // (1) no logout invalidated the session while we were in flight
         //     (generation unchanged), and
-        // (2) the refresh token still on file is the SAME one we presented
-        //     (a concurrent clear() nils it; a concurrent successful refresh
-        //     would have rotated it).
+        // (2) the refresh token on file is still the SAME one we presented (a
+        //     concurrent clear() removed it; a sign-in or another rotation
+        //     replaced it). #671 review (MR-2580): this half is checked INSIDE
+        //     the keychain's session lock, with the write, so a sign-out or a
+        //     sign-in can no longer land between the check and the write
+        //     (`KeychainService.saveRotation`, Android's `sessionLock`).
         // If either fails, drop the rotated pair silently — the caller's retry
         // will use whatever token is now current (or fail as .unauthorized).
         let generationNow = await sessionGeneration.current
-        guard generationNow == generationAtStart,
-              keychain.refreshToken == refresh else {
+        guard generationNow == generationAtStart else {
             return
         }
         // The rotated refresh token replaces the old one; if the server omits
-        // it, the presented token remains current. A failed keychain write is a
-        // HARD failure (findings #433/#60): the server has already rotated the
-        // token, so proceeding on a half-written/unwritten pair would strand the
-        // client on a token it can never replay. Surface it so the retry does
-        // NOT run against a stale/blank Authorization header.
-        // MR-2580: answering with this pair spent `refresh` on the server, so
-        // it is never put back (`KeychainService.saveRotation`).
+        // it, the presented token remains current. Answering with this pair
+        // spent `refresh` on the server, so it is never stored again.
         switch keychain.saveRotation(accessToken: tokens.accessToken,
                                      refreshToken: tokens.refreshToken ?? refresh,
                                      expectingRefreshToken: refresh) {
-        case .stored, .superseded:
+        case .stored, .keptInMemory, .superseded:
+            // `.keptInMemory`: the keychain refused the pair. This process
+            // works on it in memory (so its requests do not 401 into another
+            // rotation), the spent token is fenced and never presented, and the
+            // pair is stored as soon as the keychain takes it.
             return
-        case .keptInMemory, .signedOut:
-            throw APIError.invalidResponse
+        case .signedOut:
+            // Nothing durable could fence the spent token, so the session ends
+            // now rather than risk presenting it after a relaunch. The dropped
+            // pair is revoked with ITS OWN access token, never the stored one
+            // (#666's Android M1), through the raw logout: no 401 or refresh
+            // handling.
+            let dropped = tokens.accessToken
+            Task.detached { [weak self] in await self?.logout(bearerToken: dropped) }
+            throw APIError.unauthorized
         }
     }
 

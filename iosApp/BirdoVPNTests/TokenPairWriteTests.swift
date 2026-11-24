@@ -157,7 +157,9 @@ final class TokenPairWriteTests: XCTestCase {
             (item == .accessToken && earlier == 1) || (item == .refreshToken && earlier > 0)
         }
         XCTAssertFalse(save(stuck, .anotherSession))
-        XCTAssertEqual(stuck.pair, .init(access: priorAccess, refresh: nil))
+        // #671 review, delta 7: the prior access token goes back only together
+        // with the prior refresh token. Its put-back failed, so neither is left.
+        XCTAssertEqual(stuck.pair, .init(access: nil, refresh: nil))
     }
 
     /// A refresh rotation reads nothing first: a lookup that fails cannot stop
