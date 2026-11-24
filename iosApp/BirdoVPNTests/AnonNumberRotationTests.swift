@@ -303,4 +303,43 @@ final class AnonNumberRotationTests: XCTestCase {
                                                        refreshToken: "r", to: store))
         XCTAssertEqual(store.anonymousId, oldNumber)
     }
+
+    // MARK: - Where it is wired (source pin: ReplaceNumberSheet.swift cannot compile here)
+
+    private func source(_ path: String) throws -> String {
+        // .../iosApp/BirdoVPNTests/AnonNumberRotationTests.swift -> .../iosApp
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let url = root.appendingPathComponent(path)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            XCTFail("\(path) not found under \(root.path): this pin would be vacuous")
+            return ""
+        }
+        return try String(contentsOf: url, encoding: .utf8).replacingOccurrences(of: "\r\n", with: "\n")
+    }
+
+    /// MR-2539 (M-L1 of the #653 delta review): a stored rotation begins a new
+    /// session (`APIClient.beginSession`) right after the new pair is stored
+    /// and before its first request, as an iOS sign-in does and as Android
+    /// (`storeSignInTokens`) and Desktop (`begin_session`) do after a
+    /// rotation. A pair the keychain refused, a refused or unanswered confirm
+    /// and a wrong re-type begin none.
+    func testAStoredRotationBeginsANewSessionBeforeItsFirstRequest() throws {
+        let sheet = try source("iosApp/Views/ReplaceNumberSheet.swift")
+        guard let start = sheet.range(of: "func confirm(authVM: AuthViewModel) async {"),
+              let end = sheet.range(of: "\n    }\n", range: start.upperBound..<sheet.endIndex) else {
+            return XCTFail("ReplaceNumberModel.confirm(authVM:) not found")
+        }
+        let confirm = sheet[start.lowerBound..<end.upperBound]
+        guard let commit = confirm.range(of: "AnonNumberRotationCommit.commit("),
+              let begin = confirm.range(of: "if stored { await api.beginSession() }"),
+              let firstRequest = confirm.range(of: "await authVM.refreshProfile()"),
+              let failed = confirm.range(of: "} catch {") else {
+            return XCTFail("a stored rotation does not begin a new session (MR-2539)")
+        }
+        XCTAssertLessThan(commit.lowerBound, begin.lowerBound, "the session began before the new pair was stored")
+        XCTAssertLessThan(begin.lowerBound, firstRequest.lowerBound, "the new pair's first request went out first")
+        XCTAssertLessThan(begin.lowerBound, failed.lowerBound, "a failed confirm begins a session")
+        XCTAssertEqual(sheet.components(separatedBy: "beginSession(").count, 2,
+                       "only a stored rotation begins a session in the sheet")
+    }
 }
