@@ -130,12 +130,27 @@ final class ReplaceNumberModel: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         flow.confirmSent()
+        // MR-2581: the session this confirm is sent from. Read again on the
+        // main actor right where the pair would be stored, with no await in
+        // between, so a sign-out cannot slip between the check and the write.
+        let session = authVM.sessionEpoch
         do {
             let tokens = try await api.rotateNumberConfirm(newNumber: typed)
-            let stored = AnonNumberRotationCommit.commit(newNumber: typed,
-                                                         accessToken: tokens.accessToken,
-                                                         refreshToken: tokens.refreshToken,
-                                                         to: keychain)
+            let outcome = AnonNumberRotationCommit.commit(newNumber: typed,
+                                                          accessToken: tokens.accessToken,
+                                                          refreshToken: tokens.refreshToken,
+                                                          to: keychain,
+                                                          sentFrom: session, current: authVM.sessionEpoch)
+            let stored = outcome == .stored
+            if outcome == .sessionChanged {
+                // Signed out while the confirm was on the wire: nothing was
+                // stored, and the new session must not outlive the sign-out on
+                // the server either. The number is shown again, as for a
+                // refused write: it is the way back in.
+                let api = self.api
+                let access = tokens.accessToken
+                Task.detached { await api.logout(bearerToken: access) }
+            }
             // MR-2539: the stored pair is a new session, as a sign-in's is
             // (`completeAuthentication`), so the refresh wait, backoff step and
             // retry the old token earned go now, before the new pair's first
@@ -196,6 +211,10 @@ struct ReplaceNumberSheet: View {
             .padding(20)
         }
         .background(BirdoTheme.background.ignoresSafeArea())
+        // MR-2581: not swiped away while a step is on the wire. A confirm keeps
+        // running after the sheet is gone, so a sign-out from Profile could
+        // land before its answer.
+        .interactiveDismissDisabled(model.isBusy)
         .onDisappear { model.clear() }
     }
 
@@ -269,8 +288,11 @@ struct ReplaceNumberSheet: View {
                           isEnabled: model.canConfirm) {
                 Task { await model.confirm(authVM: authVM) }
             }
-            PrimaryButton("Show the number again", variant: .secondary) { model.backToShowNew() }
-            PrimaryButton("Cancel", variant: .ghost) { dismiss() }
+            PrimaryButton("Show the number again", variant: .secondary, isEnabled: !model.isBusy) {
+                model.backToShowNew()
+            }
+            // MR-2581: as the swipe, not while the confirm is on the wire.
+            PrimaryButton("Cancel", variant: .ghost, isEnabled: !model.isBusy) { dismiss() }
         }
     }
 

@@ -72,6 +72,10 @@ final class APIClient: @unchecked Sendable {
     /// lands AFTER sign-out can never resurrect the wiped session (finding #1).
     private let sessionGeneration = SessionGeneration()
 
+    /// MR-2581: the refresh token the server last answered 401 to while it was
+    /// the stored one, so a sign-out for that 401 spares a pair stored after it.
+    private let deadRefreshToken = DeadRefreshToken()
+
     /// Memoised device identity — see `deviceContext()`. Idempotent, so a
     /// concurrent double-COMPUTE simply recomputes the same value — but the
     /// read/write themselves cross concurrency domains, so they go through
@@ -1031,6 +1035,20 @@ final class APIClient: @unchecked Sendable {
             await refreshActor.reset()
         case .dead:
             await refreshActor.reset()
+            // MR-2581 (I5 of the #653 review): a 401 ends only the session it
+            // answered, as on Android. A sign-out may have landed while this
+            // refresh was on the wire, or a newer pair been stored (a sign-in,
+            // a number rotation's commit): then the token that died is not the
+            // stored one, nothing stored has ended, and the caller's retry
+            // uses whatever is stored now. Otherwise the dead token is recorded
+            // so the sign-out this 401 asks for (`logoutIfUnauthorized`) still
+            // spares a pair stored before it runs.
+            let generationAtAnswer = await sessionGeneration.current
+            guard generationAtAnswer == generationAtStart,
+                  keychain.refreshToken == refresh else {
+                return
+            }
+            deadRefreshToken.record(refresh)
             throw APIError.unauthorized
         case .refused:
             // MR-1771: a 403 is not a verdict on the token (an infrastructure
@@ -1081,6 +1099,15 @@ final class APIClient: @unchecked Sendable {
                             email: keychain.userEmail) else {
             throw APIError.invalidResponse
         }
+        // MR-2581: the stored session is alive.
+        deadRefreshToken.forget()
+    }
+
+    /// MR-2581: whether a sign-out for `.unauthorized` may wipe the session now
+    /// on file (`storedRefreshToken`): not when a newer pair was stored after
+    /// the refresh token that got the 401 (`DeadRefreshToken`).
+    func mayEndStoredSession(storedRefreshToken: String?) -> Bool {
+        deadRefreshToken.mayEndSession(stored: storedRefreshToken)
     }
 
     /// Fire `POST /auth/refresh` and return the raw body + response WITHOUT the

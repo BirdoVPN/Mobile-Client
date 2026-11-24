@@ -173,6 +173,8 @@ final class SessionEndFenceTests: XCTestCase {
         XCTAssertTrue(confirm.contains("if outcome == .sessionChanged {"))
         XCTAssertTrue(sheet.contains(".interactiveDismissDisabled(model.isBusy)"),
                       "the sheet can be swiped away while the confirm is on the wire")
+        XCTAssertTrue(sheet.contains("PrimaryButton(\"Cancel\", variant: .ghost, isEnabled: !model.isBusy)"),
+                      "step 3's Cancel closes the sheet while the confirm is on the wire")
 
         // A sign-out and a sign-in each start a new epoch, before anything else.
         let auth = try source("iosApp/ViewModels/AuthViewModel.swift")

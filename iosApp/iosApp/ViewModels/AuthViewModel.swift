@@ -1151,6 +1151,7 @@ final class AuthViewModel: ObservableObject {
                 error = "Your account was created, but this device could not store the session. Sign in with the account number you just saved."
                 return
             }
+            sessionEpoch &+= 1
             AnonymousNumberRecord.recordSignIn(anonymous: true, number: minted, in: keychain)
             keychain.setSignedInWithApple(false)
             isLoggedIn = true
@@ -1317,13 +1318,26 @@ final class AuthViewModel: ObservableObject {
     @discardableResult
     func logoutIfUnauthorized(_ error: Error) -> Bool {
         guard case APIError.unauthorized = error else { return false }
+        // MR-2581 (I5 of the #653 review): only the session that died is
+        // signed out. A pair stored after its 401 (a number rotation's
+        // commit, a sign-in) is a session that 401 said nothing about.
+        guard api.mayEndStoredSession(storedRefreshToken: keychain.refreshToken) else { return true }
         if isLoggedIn || createdAnonymousId != nil {
             completeLocalLogout()
         }
         return true
     }
 
+    /// MR-2581: which session this app is in, counted on the main actor. A
+    /// sign-out and every sign-in start a new one, synchronously, before
+    /// anything else. A number rotation stores its pair only if the session it
+    /// sent its confirm from is still the current one
+    /// (`AnonNumberRotationCommit`). APIClient's own generation cannot fence
+    /// that: a sign-out bumps it later, from a Task.
+    private(set) var sessionEpoch: UInt64 = 0
+
     private func completeLocalLogout() {
+        sessionEpoch &+= 1
         // Keychain keeps `device_id` (stable device identity) — everything else
         // goes, the anonymous account number too, as on Android
         // (`TokenManager.clearAll()`): no signed-out screen reads it, and a
@@ -1675,6 +1689,8 @@ final class AuthViewModel: ObservableObject {
             error = "Could not securely store your session. Please try again."
             return false
         }
+        // MR-2581: a new session, synchronously, before the await below.
+        sessionEpoch &+= 1
         // L1 (review of #653): a refresh wait, backoff or retry the previous
         // session earned is not this one's, with or without a sign-out first.
         await api.beginSession()
