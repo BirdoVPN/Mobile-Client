@@ -71,7 +71,9 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      # gradle-cache-write.sh lists this repository's Actions caches.
+      # gradle-cache-write.sh lists this repository's Actions caches and the
+      # android-ci runs (and their jobs) that saved them; contents: read
+      # covers its compare call.
       actions: read
     outputs:
       android: ${{ steps.classify.outputs.android }}
@@ -126,15 +128,18 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # MR-2554: which of Lint Check, Unit Tests and Build APK save main's
-      # Gradle cache in this run. A push to main saves only when it changed a
-      # Gradle input, or when the month's lineage has no entry for that job
-      # yet (or only one a build that failed early saved); otherwise the job
-      # restores that entry and saves nothing. Before, every main push that
+      # Gradle cache in this run. A push to main saves only when a Gradle
+      # input changed since the commit of the entry the job would restore,
+      # when that entry's run did not succeed for the job, or when the month's
+      # lineage has no usable entry for it yet; otherwise the job restores
+      # that entry and saves nothing. Before, every main push that
       # changed Kotlin saved ~880 MB of new transforms entries (the transforms
       # of that commit's own code, useless to the next one), which kept the
       # repository's Actions cache at its 10 GB cap. Never fails, and errs
       # towards saving; see the script. The jobs it names gate their
-      # setup-gradle step on its outputs (gradle-cache-write-test.sh checks).
+      # setup-gradle step on its outputs, read-only only on an explicit
+      # 'false', so a skipped or dead step saves (gradle-cache-write-test.sh
+      # checks).
       - id: gradle-write
         if: ${{ !cancelled() }}
         env:
@@ -374,13 +379,14 @@ jobs:
       # 'org.jetbrains.kotlin.multiplatform' ...] was not found", 2026-11-19).
       # So an entry only grows; the job's GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX
       # starts a new lineage every month instead (MR-2536, see `changes`).
-      # On main it saves only when `changes` says so (MR-2554): a push that
-      # changed a Gradle input, or no usable entry this month yet.
+      # On main it saves unless `changes` says 'false' (MR-2554): it saves
+      # when a Gradle input changed since its entry's commit, that entry's run
+      # failed, or there is no usable entry this month yet.
       - name: Set up Gradle
         if: ${{ needs.changes.outputs.android != 'false' }}
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' || needs.changes.outputs.gradle_cache_write_lint != 'true' }}
+          cache-read-only: ${{ github.ref != 'refs/heads/main' || needs.changes.outputs.gradle_cache_write_lint == 'false' }}
           cache-cleanup: never
 
       - name: Run Lint
@@ -427,7 +433,7 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' || needs.changes.outputs.gradle_cache_write_test != 'true' }}
+          cache-read-only: ${{ github.ref != 'refs/heads/main' || needs.changes.outputs.gradle_cache_write_test == 'false' }}
           cache-cleanup: never
 
       # :shared:testAndroidHostTest is named explicitly: the root
@@ -729,7 +735,7 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' || needs.changes.outputs.gradle_cache_write_build != 'true' }}
+          cache-read-only: ${{ github.ref != 'refs/heads/main' || needs.changes.outputs.gradle_cache_write_build == 'false' }}
           cache-cleanup: never
 
       # Go module + build caches for the two 32-bit Xray engines built from

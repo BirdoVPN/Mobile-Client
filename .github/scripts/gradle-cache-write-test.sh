@@ -1,27 +1,46 @@
 #!/usr/bin/env bash
 # Self-test for .github/scripts/gradle-cache-write.sh (MR-2554), run by Lint
 # Check, and for its wiring into every workflow that runs setup-gradle.
-# Builds throwaway git repositories; gh and timeout are stubs, so no case
-# needs a token or the network.
+# Builds throwaway git repositories; gh and timeout are stubs (the comparison
+# is answered from the case's own repository), so no case needs a token or
+# the network.
 #
 #   not main / dispatch   pull request: no job saves; a dispatch on main: all
-#   push, code only       a Kotlin change, healthy month entries: no job saves
-#                         (the ~880 MB of transforms entries per push)
+#   push, code only       a Kotlin change, healthy month entries whose runs
+#                         succeeded: no job saves (the ~880 MB of transforms
+#                         entries per push); one comparison and one run
+#                         listing for the commit the entries share
 #   push, Gradle input    build scripts, gradle/, gradle.properties, gradlew,
 #                         the workflow, the cache scripts: every job saves
 #   push, not diffable    several commits, a new branch, no HEAD^1: all save
 #   lineage               no entry for a job this month: it saves; its newest
 #                         is below the floor (the 0.9 MB #656 merge-run home):
 #                         it saves; the others do not
-#   errors                the cache list fails or answers nonsense, no
-#                         repository, no month prefix: the job saves, exit 0
-#   reads                 every gh call is bounded by `timeout -k 10 30` and
-#                         asks for this month's key, on main, newest first
+#   since the entry       a Gradle input changed after the entry's commit but
+#                         not in this push (the cancelled 9.9.0 wrapper bump
+#                         d8ca194, then the cargo-only 592faca), also as a
+#                         rename: it saves; Kotlin-only commits since: it does
+#                         not; entries of different commits are judged apart;
+#                         a commit not behind HEAD, 300+ files, a key with no
+#                         commit: it saves
+#   the entry's run       the job failed in any attempt (#656's Build APK
+#                         failed, then passed on re-run), was cancelled, has
+#                         not finished, failed in a second run at that commit,
+#                         or no run is found: it saves; another job's failure
+#                         does not count
+#   errors                the cache list, the comparison, the run list or the
+#                         job list fails or answers nonsense, no repository,
+#                         no month prefix: the job saves, exit 0
+#   reads                 every gh call is bounded by `timeout -k 10 30`; the
+#                         cache list asks for this month's key, on main, newest
+#                         first; the job list asks for every attempt
 #   wiring                every setup-gradle step in every workflow is
 #                         cache-disabled, cache-read-only: true, or gated on
-#                         needs.changes.outputs.gradle_cache_write_<its job>;
-#                         `changes` publishes each gate from this script,
-#                         which is run for exactly the gated jobs
+#                         needs.changes.outputs.gradle_cache_write_<its job>
+#                         == 'false' (so an empty answer saves); `changes`
+#                         publishes each gate from this script, which is run
+#                         for exactly the gated jobs; the script's check names
+#                         are those jobs' names
 set -euo pipefail
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,41 +61,89 @@ check() { # check <description> <command...>
 }
 
 # -- stubs ---------------------------------------------------------------------
-# gh api: answers the cache list from the case's fixture cache.<job>; logs
-# every call. Anything but the expected list call is an error (exit 97).
+# gh api -X GET <endpoint> [-f k=v]... --jq <filter>: answers from the case's
+# fixtures (the comparison from the case's repository, the script's working
+# directory); logs every call. Any other call, or an endpoint asked with other
+# fields, is an error (exit 97).
 stubs="$work/bin"
 mkdir -p "$stubs"
 cat >"$stubs/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GCW_CASE/calls.log"
-[ "${1:-}" = api ] && [ "${2:-}" = -X ] && [ "${3:-}" = GET ] &&
-  [ "${4:-}" = "repos/o/r/actions/caches" ] || { echo "gh stub: unexpected call: $*" >&2; exit 97; }
+[ "${1:-}" = api ] && [ "${2:-}" = -X ] && [ "${3:-}" = GET ] || { echo "gh stub: unexpected call: $*" >&2; exit 97; }
+endpoint="${4:-}"
 shift 4
-key="" ref="" sort="" dir="" per="" filter=""
+declare -A f=()
+filter=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -f) case "$2" in
-          key=*) key="${2#key=}" ;; ref=*) ref="${2#ref=}" ;; sort=*) sort="${2#sort=}" ;;
-          direction=*) dir="${2#direction=}" ;; per_page=*) per="${2#per_page=}" ;;
-          *) echo "gh stub: unexpected field $2" >&2; exit 97 ;;
-        esac; shift 2 ;;
+    -f) f["${2%%=*}"]="${2#*=}"; shift 2 ;;
     --jq) filter="$2"; shift 2 ;;
     *) echo "gh stub: unexpected argument $1" >&2; exit 97 ;;
   esac
 done
-[ "$ref" = refs/heads/main ] && [ "$sort" = created_at ] && [ "$dir" = desc ] && [ "$per" = 1 ] ||
-  { echo "gh stub: not main's newest entry: ref=$ref sort=$sort direction=$dir per_page=$per" >&2; exit 97; }
-case "$key" in
-  "${GCW_PREFIX}gradle-home-v2|Linux-X64|"*"[") job="${key#"${GCW_PREFIX}gradle-home-v2|Linux-X64|"}"; job="${job%[}" ;;
-  *) echo "gh stub: unexpected key $key" >&2; exit 97 ;;
+[ -n "$filter" ] || { echo "gh stub: no --jq" >&2; exit 97; }
+fields() { # exactly these -f fields
+  local got want
+  got=$(for k in "${!f[@]}"; do echo "$k"; done | sort | tr '\n' ' ')
+  want=$(printf '%s\n' "$@" | sed '/^$/d' | sort | tr '\n' ' ')
+  [ "$got" = "$want" ] || { echo "gh stub: $endpoint asked with fields '$got', expected '$want'" >&2; exit 97; }
+}
+answer() { jq -r "$filter" "$1"; }
+case "$endpoint" in
+  repos/o/r/actions/caches)
+    fields key ref sort direction per_page
+    [ "${f[ref]}" = refs/heads/main ] && [ "${f[sort]}" = created_at ] && [ "${f[direction]}" = desc ] && [ "${f[per_page]}" = 1 ] ||
+      { echo "gh stub: not main's newest entry: ref=${f[ref]} sort=${f[sort]} direction=${f[direction]} per_page=${f[per_page]}" >&2; exit 97; }
+    key="${f[key]}"
+    case "$key" in
+      "${GCW_PREFIX}gradle-home-v2|Linux-X64|"*"[") job="${key#"${GCW_PREFIX}gradle-home-v2|Linux-X64|"}"; job="${job%[}" ;;
+      *) echo "gh stub: unexpected key $key" >&2; exit 97 ;;
+    esac
+    fixture="$GCW_CASE/cache.$job"
+    [ -f "$fixture" ] || { echo "gh stub: no fixture for $job" >&2; exit 97; }
+    case "$(cat "$fixture")" in
+      FAIL) echo "gh: HTTP 502" >&2; exit 1 ;;
+    esac
+    answer "$fixture" ;;
+  repos/o/r/compare/*...*)
+    fields
+    if [ -f "$GCW_CASE/compare.fail" ]; then echo "gh: HTTP 502" >&2; exit 1; fi
+    if [ -f "$GCW_CASE/compare.json" ]; then answer "$GCW_CASE/compare.json"; exit 0; fi
+    spec="${endpoint#repos/o/r/compare/}"
+    base="${spec%%...*}"
+    head="${spec#*...}"
+    if ! git cat-file -e "$base^{commit}" 2>/dev/null || ! git cat-file -e "$head^{commit}" 2>/dev/null; then
+      echo "gh: Not Found (HTTP 404)" >&2; exit 1
+    fi
+    if [ "$base" = "$head" ]; then status=identical
+    elif git merge-base --is-ancestor "$base" "$head"; then status=ahead
+    elif git merge-base --is-ancestor "$head" "$base"; then status=behind
+    else status=diverged; fi
+    # Like GitHub: the files from the merge base to head, renames detected.
+    git diff -M --name-status "$(git merge-base "$base" "$head")" "$head" |
+      jq -R -s --arg s "$status" '{status: $s, files: [split("\n")[] | select(length > 0) | split("\t")
+        | if (.[0] | startswith("R")) then {status: "renamed", previous_filename: .[1], filename: .[2]}
+          else {status: .[0], filename: .[1]} end]}' >"$GCW_CASE/compare.answer"
+    answer "$GCW_CASE/compare.answer" ;;
+  repos/o/r/actions/workflows/android-ci.yml/runs)
+    fields head_sha branch per_page
+    [ "${f[branch]}" = main ] || { echo "gh stub: runs not on main: ${f[branch]}" >&2; exit 97; }
+    if [ -f "$GCW_CASE/runs.fail" ]; then echo "gh: HTTP 502" >&2; exit 1; fi
+    fixture="$GCW_CASE/runs.${f[head_sha]}"
+    [ -f "$fixture" ] || { fixture="$GCW_CASE/runs.none"; echo '{"total_count": 0, "workflow_runs": []}' >"$fixture"; }
+    answer "$fixture" ;;
+  repos/o/r/actions/runs/*/jobs)
+    fields filter per_page
+    [ "${f[filter]}" = all ] || { echo "gh stub: jobs of one attempt only (filter=${f[filter]})" >&2; exit 97; }
+    if [ -f "$GCW_CASE/jobs.fail" ]; then echo "gh: HTTP 502" >&2; exit 1; fi
+    id="${endpoint#repos/o/r/actions/runs/}"
+    id="${id%/jobs}"
+    [ -f "$GCW_CASE/jobs.$id" ] || { echo "gh stub: no jobs fixture for run $id" >&2; exit 97; }
+    answer "$GCW_CASE/jobs.$id" ;;
+  *) echo "gh stub: unexpected endpoint $endpoint" >&2; exit 97 ;;
 esac
-fixture="$GCW_CASE/cache.$job"
-[ -f "$fixture" ] || { echo "gh stub: no fixture for $job" >&2; exit 97; }
-case "$(cat "$fixture")" in
-  FAIL) echo "gh: HTTP 502" >&2; exit 1 ;;
-esac
-jq -r "$filter" "$fixture"
 STUB
 # timeout -k <s> <s> <command...>: logs the bound, then runs the command.
 cat >"$stubs/timeout" <<'STUB'
@@ -96,11 +163,30 @@ chmod +x "$stubs/gh" "$stubs/timeout"
 
 # -- fixtures ------------------------------------------------------------------
 prefix=2026-11-
-entry() { # <job> <size>: the newest home entry of <job> in the month's lineage
-  jq -n --arg k "${prefix}gradle-home-v2|Linux-X64|$1[5df42585ae8f8da228c604b8b4e8707c]-0123abcd" \
+entry_sha=""
+entry() { # <job> <size> [<commit>]: the newest home entry of <job> in the month's lineage, saved from <commit>
+  jq -n --arg k "${prefix}gradle-home-v2|Linux-X64|$1[5df42585ae8f8da228c604b8b4e8707c]-${3:-$entry_sha}" \
     --argjson s "$2" '{total_count: 1, actions_caches: [{key: $k, size_in_bytes: $s}]}'
 }
 no_entry() { echo '{"total_count": 0, "actions_caches": []}'; }
+runs_at() { # <commit> <run id>...: the android-ci runs on main at <commit>
+  local sha="$1"
+  shift
+  printf '%s\n' "$@" | jq -R -s '[split("\n")[] | select(length > 0) | {id: tonumber}]
+    | {total_count: length, workflow_runs: .}' >"$case_dir/runs.$sha"
+}
+jobs_of() { # <run id> "<conclusion>|<check name>"...: its jobs over all attempts; conclusion null = unfinished
+  local id="$1"
+  shift
+  printf '%s\n' "$@" | jq -R -s '[split("\n")[] | select(length > 0) | split("|")
+    | {name: .[1], status: (if .[0] == "null" then "in_progress" else "completed" end),
+       conclusion: (if .[0] == "null" then null else .[0] end)}] | {total_count: length, jobs: .}' >"$case_dir/jobs.$id"
+}
+good_run() { # <commit> <run id>: a run at <commit> in which the three jobs succeeded (another job failed)
+  runs_at "$1" "$2"
+  jobs_of "$2" "success|Detect changes" "success|Lint Check" "success|Unit Tests" "success|Build APK" \
+    "failure|Instrumented Tests"
+}
 
 git_() { git -c core.autocrlf=false -c core.safecrlf=false -c core.longpaths=true "$@"; }
 commit() { # <repo> <message>
@@ -111,7 +197,8 @@ commit() { # <repo> <message>
 case_dir=""
 repo=""
 before=""
-new_case() { # <name> <path changed by the pushed commit>...: a repo, base + that commit
+new_case() { # <name> <path changed by the pushed commit>...: a repo, base + that commit; month
+  # entries for every job saved from base, by a run in which they succeeded
   case_dir="$work/case-$1"
   shift
   repo="$case_dir/repo"
@@ -127,10 +214,18 @@ new_case() { # <name> <path changed by the pushed commit>...: a repo, base + tha
   done
   commit "$repo" base
   before=$(git_ -C "$repo" rev-parse HEAD)
+  entry_sha="$before"
   local p
   for p in "$@"; do mkdir -p "$(dirname "$repo/$p")"; echo change >>"$repo/$p"; done
   commit "$repo" change
   for j in lint test build; do entry "$j" 10000000 >"$case_dir/cache.$j"; done
+  good_run "$entry_sha" 101
+}
+then_push() { # <path>...: one more commit on top; it is the push, the old HEAD is `before`
+  before=$(git_ -C "$repo" rev-parse HEAD)
+  local p
+  for p in "$@"; do mkdir -p "$(dirname "$repo/$p")"; echo "change $RANDOM" >>"$repo/$p"; done
+  commit "$repo" "push"
 }
 rc=0
 out=""
@@ -146,9 +241,12 @@ writes() { # <lint> <test> <build>: exit 0 and exactly these values
   [ "$rc" -eq 0 ] &&
     [ "$(cat "$case_dir/output")" = "$(printf 'lint=%s\ntest=%s\nbuild=%s' "$1" "$2" "$3")" ]
 }
-gh_calls() { if [ -f "$case_dir/calls.log" ]; then wc -l <"$case_dir/calls.log"; else echo 0; fi; }
+gh_calls() { # [<endpoint pattern>]: how many gh calls (matching it)
+  if [ -f "$case_dir/calls.log" ]; then grep -c -- "${1:-}" "$case_dir/calls.log" || true; else echo 0; fi
+}
 no_gh() { [ "$(gh_calls)" -eq 0 ]; }
 warned() { grep -q '^::warning::' <<<"$out"; }
+said() { grep -qF -- "$1" "$case_dir/summary"; }
 all_reads_bounded() {
   local calls bounded
   calls=$(gh_calls)
@@ -171,10 +269,14 @@ check "dispatch on main: no cache list read" no_gh
 new_case code-only app/src/main/kotlin/A.kt docs/gradle/notes.md .github/workflows/apple-ci.yml
 decide push refs/heads/main
 check "push, code only, healthy month entries: no job saves" writes false false false
-check "push, code only: one cache list read per job" eval '[ "$(gh_calls)" -eq 3 ]'
+check "push, code only: one cache list read per job" eval '[ "$(gh_calls /actions/caches)" -eq 3 ]'
+check "push, code only: the three entries' shared commit is compared once, with HEAD" \
+  eval '[ "$(gh_calls "/compare/$entry_sha\.\.\.$(git_ -C "$repo" rev-parse HEAD)")" -eq 1 ] && [ "$(gh_calls /compare/)" -eq 1 ]'
+check "push, code only: its runs and their jobs are listed once" \
+  eval '[ "$(gh_calls /workflows/android-ci.yml/runs)" -eq 1 ] && [ "$(gh_calls /actions/runs/101/jobs)" -eq 1 ]'
 check "push, code only: every read is bounded by \`timeout -k 10 30\`" all_reads_bounded
 check "push, code only: the summary names the entry each job restores" \
-  grep -qF "read-only (no Gradle input changed; it restores ${prefix}gradle-home-v2|Linux-X64|build[" "$case_dir/summary"
+  said "it restores ${prefix}gradle-home-v2|Linux-X64|build["
 
 # -- a push that changes a Gradle input ----------------------------------------------
 n=0
@@ -218,6 +320,78 @@ entry test 3999999 >"$case_dir/cache.test"
 decide push refs/heads/main
 check "push, code only, entries at and just below the 4000000-byte floor: below saves" writes false true false
 
+# -- what changed since the entry's commit (M1: not only HEAD^1..HEAD) --------------------
+# 2026-11-17: d8ca194 (gradle-wrapper 9.8.2 -> 9.9.0) was a pending run cancelled
+# when 592faca (a cargo bump) queued; 592faca's own diff touches no Gradle input.
+new_case superseded gradle/wrapper/gradle-wrapper.properties
+then_push native/rosenpass-jni/Cargo.toml
+decide push refs/heads/main
+check "a Gradle-input commit whose run saved nothing, then a cargo-only push: every job saves" writes true true true
+check "the cancelled wrapper bump: the summary names the input and the entry's commit" \
+  said "a Gradle input changed since its commit ${entry_sha:0:8}: gradle/wrapper/gradle-wrapper.properties"
+new_case renamed
+git_ -C "$repo" mv gradle/verification-metadata.xml docs/verification-metadata.xml
+commit "$repo" rename
+then_push app/src/main/kotlin/A.kt
+decide push refs/heads/main
+check "a Gradle input renamed away since the entry's commit (GitHub lists it as renamed): every job saves" writes true true true
+new_case kotlin-since app/src/main/kotlin/A.kt
+then_push app/src/main/kotlin/A.kt docs/gradle/notes.md
+decide push refs/heads/main
+check "two Kotlin-only commits since the entries' commit: no job saves" writes false false false
+new_case apart gradle.properties
+mid=$(git_ -C "$repo" rev-parse HEAD)
+then_push app/src/main/kotlin/A.kt
+entry test 10000000 "$mid" >"$case_dir/cache.test"
+entry build 10000000 "$mid" >"$case_dir/cache.build"
+good_run "$mid" 102
+decide push refs/heads/main
+check "gradle.properties changed after Lint Check's entry but before the others': only Lint Check saves" writes true false false
+check "entries of two commits: two comparisons" eval '[ "$(gh_calls /compare/)" -eq 2 ]'
+new_case diverged app/src/main/kotlin/A.kt
+side=$(git_ -C "$repo" -c user.name=selftest -c user.email=selftest@example.invalid \
+  commit-tree "$entry_sha^{tree}" -p "$entry_sha" -m side)
+for j in lint test build; do entry "$j" 10000000 "$side" >"$case_dir/cache.$j"; done
+good_run "$side" 103
+decide push refs/heads/main
+check "the entries' commit is not behind HEAD (diverged): every job saves" writes true true true
+new_case cap app/src/main/kotlin/A.kt
+jq -n '{status: "ahead", files: [range(300) | {filename: "docs/f\(.).md"}]}' >"$case_dir/compare.json"
+decide push refs/heads/main
+check "300 files changed since the entries' commit (the comparison's limit): every job saves" writes true true true
+new_case below-cap app/src/main/kotlin/A.kt
+jq -n '{status: "ahead", files: [range(299) | {filename: "docs/f\(.).md"}]}' >"$case_dir/compare.json"
+decide push refs/heads/main
+check "299 files, none a Gradle input: no job saves" writes false false false
+new_case short-key app/src/main/kotlin/A.kt
+entry lint 10000000 0123abcd >"$case_dir/cache.lint"
+decide push refs/heads/main
+check "Lint Check's key ends in no full commit: only it saves, with a warning" eval 'writes true false false && warned'
+
+# -- the run that saved the entry (M1: a failed run's entry over the floor) -------------------
+new_case failed-attempt app/src/main/kotlin/A.kt
+jobs_of 101 "success|Lint Check" "success|Unit Tests" "failure|Build APK" "success|Build APK"
+decide push refs/heads/main
+check "Build APK failed at the entries' commit, then passed on re-run (#656's merge run): only it saves" writes false false true
+check "the failed attempt: the summary says why" said "'Build APK' at its commit ${entry_sha:0:8} did not only succeed (failure)"
+new_case cancelled-unfinished app/src/main/kotlin/A.kt
+jobs_of 101 "cancelled|Lint Check" "null|Unit Tests" "success|Build APK"
+decide push refs/heads/main
+check "Lint Check cancelled and Unit Tests unfinished at the entries' commit: they save" writes true true false
+new_case second-run app/src/main/kotlin/A.kt
+runs_at "$entry_sha" 101 104
+jobs_of 104 "failure|Lint Check" "success|Unit Tests" "success|Build APK"
+decide push refs/heads/main
+check "a second run at the entries' commit (a dispatch) failed Lint Check: only it saves" writes true false false
+new_case no-run app/src/main/kotlin/A.kt
+rm -f "$case_dir/runs.$entry_sha"
+decide push refs/heads/main
+check "no android-ci run on main at the entries' commit: every job saves" writes true true true
+new_case job-missing app/src/main/kotlin/A.kt
+jobs_of 101 "success|Lint Check" "success|Unit Tests"
+decide push refs/heads/main
+check "no Build APK job in the run at the entries' commit: only it saves" writes false false true
+
 # -- errors: the job saves, the step never fails -----------------------------------------
 new_case list-fails app/src/main/kotlin/A.kt
 echo FAIL >"$case_dir/cache.lint"
@@ -228,6 +402,20 @@ new_case list-nonsense app/src/main/kotlin/A.kt
 echo '{"total_count": 1, "actions_caches": [{"key": "k", "size_in_bytes": "big"}]}' >"$case_dir/cache.build"
 decide push refs/heads/main
 check "the cache list answers nonsense for Build APK: it saves" writes false false true
+for what in compare runs jobs; do
+  new_case "$what-fails" app/src/main/kotlin/A.kt
+  : >"$case_dir/$what.fail"
+  decide push refs/heads/main
+  check "the $what read fails: every job saves, with a warning, exit 0" eval 'writes true true true && warned'
+done
+new_case runs-nonsense app/src/main/kotlin/A.kt
+echo '{"total_count": 1, "workflow_runs": [{"id": "x1"}]}' >"$case_dir/runs.$entry_sha"
+decide push refs/heads/main
+check "the run list answers nonsense: every job saves" writes true true true
+new_case jobs-truncated app/src/main/kotlin/A.kt
+jq '.total_count = 150' "$case_dir/jobs.101" >"$case_dir/jobs.tmp" && mv "$case_dir/jobs.tmp" "$case_dir/jobs.101"
+decide push refs/heads/main
+check "the run has more jobs than one page lists: every job saves" writes true true true
 new_case no-prefix app/src/main/kotlin/A.kt
 decide push refs/heads/main "$before" ""
 check "no month prefix: every job saves, with a warning" eval 'writes true true true && warned'
@@ -245,7 +433,7 @@ check "no repository: every job saves, exit 0" writes true true true
 # Steps as the other self-tests read them: jobs at 2 spaces, steps as `      - `
 # at 6, their inputs at 10. An independent count of every setup-gradle line
 # must match, so a step this parser cannot read fails instead of passing.
-gate_re='^\$\{\{ github\.ref != '"'"'refs/heads/main'"'"' \|\| needs\.changes\.outputs\.gradle_cache_write_([A-Za-z0-9_-]+) != '"'"'true'"'"' \}\}$'
+gate_re='^\$\{\{ github\.ref != '"'"'refs/heads/main'"'"' \|\| needs\.changes\.outputs\.gradle_cache_write_([A-Za-z0-9_-]+) (==|!=) '"'"'([a-z]*)'"'"' \}\}$'
 declare -a files=()
 for f in "$workflows"/*.yml "$workflows"/*.yaml; do [ -f "$f" ] && files+=("$f"); done
 steps=$(awk '
@@ -269,7 +457,7 @@ steps=$(awk '
   END { flush_step() }' "${files[@]}")
 grepped=$(grep -h -v '^[[:space:]]*#' "${files[@]}" | grep -cE "uses:[[:space:]]*[\"']?gradle/actions/setup-gradle@" || true)
 parsed=$(grep -c '^step ' <<<"$steps" || true)
-gated="" ungated="" wrong=""
+gated="" ungated="" wrong="" sense=""
 while read -r _ file job ro dis needs; do
   ro="${ro//$'\001'/ }"
   if [ "$dis" = true ] || [ "$ro" = true ]; then continue; fi
@@ -279,6 +467,11 @@ while read -r _ file job ro dis needs; do
     else
       wrong="$wrong $file:$job(gate ${BASH_REMATCH[1]})"
     fi
+    # Read-only only on an explicit 'false': an empty output (the step was
+    # skipped or died before emit) must save, as the script promises.
+    if [ "${BASH_REMATCH[2]} '${BASH_REMATCH[3]}'" != "== 'false'" ]; then
+      sense="$sense $job(${BASH_REMATCH[2]} '${BASH_REMATCH[3]}')"
+    fi
   else
     ungated="$ungated $file:$job"
   fi
@@ -287,11 +480,25 @@ gated="${gated# }"
 check "all workflows: $parsed setup-gradle steps parsed, $grepped found by grep" eval '[ "$parsed" -ge 1 ] && [ "$parsed" = "$grepped" ]'
 check "all workflows: no setup-gradle step saves on every main push${ungated:+ (ungated:$ungated)}" eval '[ -z "$ungated" ]'
 check "all workflows: each gate names its own job, in android-ci.yml, which needs changes${wrong:+ (wrong:$wrong)}" eval '[ -z "$wrong" ]'
+check "android-ci.yml: each gate is read-only only on == 'false', so an empty answer saves${sense:+ (not:$sense)}" \
+  eval '[ -n "$gated" ] && [ -z "$sense" ]'
 check "android-ci.yml: the gated jobs are lint, test and build (got: ${gated:-none})" \
   eval '[ "$(tr " " "\n" <<<"$gated" | sort | tr "\n" " ")" = "build lint test " ]'
 
+# The script judges each gated job's runs by its check name: it must be the
+# job's name: in android-ci.yml.
+names_ok() {
+  local j want got
+  for j in $gated; do
+    want=$(awk -v j="  $j:" '$0 == j { inj = 1; next } inj && /^  [^ ]/ { inj = 0 } inj && /^    name: / { sub(/^    name: /, ""); print; exit }' "$workflow")
+    got=$(sed -nE "s/^ +$j\) echo \"([^\"]+)\" ;;\$/\1/p" "$script")
+    [ -n "$want" ] && [ "$want" = "$got" ] || { echo "  $j: android-ci.yml '$want', script '$got'"; return 1; }
+  done
+}
+check "the script's check name of each gated job is its name in android-ci.yml" names_ok
+
 # `changes` publishes each gate from the script's step, runs the script for
-# exactly the gated jobs, and may read the cache list.
+# exactly the gated jobs, and may read the caches, the comparison and the runs.
 changes_job=$(awk '
   /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { inc = ($1 == "changes:"); next }
   inc' "$workflow")
@@ -308,10 +515,11 @@ runs_for_gated() {
 }
 check "android-ci.yml: \`changes\` publishes gradle_cache_write_<job> for each gated job" published_ok
 check "android-ci.yml: \`changes\` runs gradle-cache-write.sh for exactly the gated jobs" runs_for_gated
-check "android-ci.yml: the step is id gradle-write, reads the lineage, and \`changes\` has actions: read" eval '
+check "android-ci.yml: the step is id gradle-write, reads the lineage, and \`changes\` has contents: read and actions: read" eval '
   grep -qE "^      - id: gradle-write\$" <<<"$changes_job" &&
   grep -qF "PREFIX: \${{ steps.gradle-cache.outputs.gradle_cache_prefix }}" <<<"$changes_job" &&
   grep -qF "BEFORE: \${{ github.event.before }}" <<<"$changes_job" &&
+  grep -qE "^      contents: read\$" <<<"$changes_job" &&
   grep -qE "^      actions: read\$" <<<"$changes_job"'
 
 if [ "$fail" -ne 0 ]; then
