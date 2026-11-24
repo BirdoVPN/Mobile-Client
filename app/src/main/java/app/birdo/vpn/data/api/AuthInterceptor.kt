@@ -9,6 +9,15 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * MR-2532 (review of #666, M1): a request carrying this header goes out with
+ * NO Authorization, whatever session is stored when it is sent, and the
+ * header itself is stripped. The refresh-token sign-out uses it: a bearer
+ * there names whatever session is stored at send time, which after a
+ * re-sign-in is the NEW one, and the server's access-token path would end it.
+ */
+const val NO_BEARER_HEADER = "X-Birdo-No-Bearer"
+
+/**
  * OkHttp interceptor that adds auth headers to every request.
  * - User-Agent: Birdo-Android/<version> (Android)
  * - X-Desktop-Client: birdo-android (on POST requests)
@@ -36,7 +45,12 @@ class AuthInterceptor @Inject constructor(
         // for it merely because it shares an OkHttp client — the blast radius
         // of a future misrouted or redirected request should not include the
         // session. Every authenticated endpoint is on API_BASE_URL.
-        val token = if (original.url.host == API_HOST) tokenManager.getAccessToken() else null
+        val noBearer = original.header(NO_BEARER_HEADER) != null
+        if (noBearer) {
+            builder.removeHeader(NO_BEARER_HEADER)
+            builder.removeHeader("Authorization")
+        }
+        val token = if (original.url.host == API_HOST && !noBearer) tokenManager.getAccessToken() else null
         if (token != null) {
             builder.header("Authorization", "Bearer $token")
         }

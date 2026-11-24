@@ -59,6 +59,9 @@ class TokenManager @VisibleForTesting internal constructor(
 
     companion object {
         private const val TAG = "TokenManager"
+
+        /** MR-2532: an access token this close to its `exp` is not presented at sign-out. */
+        const val ACCESS_TOKEN_SKEW_SECONDS = 30L
         internal const val PREFS_NAME_V2 = "birdo_vpn_secure_v2"
         internal const val KEY_ALIAS_V2 = "birdo_secure_store_v2"
         internal const val LEGACY_PREFS_NAME = "birdo_vpn_secure_prefs"
@@ -254,18 +257,28 @@ class TokenManager @VisibleForTesting internal constructor(
     }
 
     /**
+     * MR-2532: whether the stored access token can still be presented: there
+     * is one, and its `exp` is more than [skewSeconds] away. A sign-out sends
+     * the refresh token instead when it cannot (BirdoRepository.logout).
+     */
+    fun hasUsableAccessToken(skewSeconds: Long = ACCESS_TOKEN_SKEW_SECONDS): Boolean {
+        val token = getAccessToken() ?: return false
+        return !isTokenExpired(token, skewSeconds)
+    }
+
+    /**
      * Check whether a JWT has expired by decoding the payload and comparing
-     * the `exp` claim against the current system time.
+     * the `exp` claim against the current system time, less [skewSeconds].
      * Returns true if expired or unparseable (fail-safe).
      */
-    private fun isTokenExpired(jwt: String): Boolean {
+    private fun isTokenExpired(jwt: String, skewSeconds: Long = 0L): Boolean {
         return try {
             val parts = jwt.split(".")
             if (parts.size != 3) return true
             val payload = String(Base64.decode(parts[1], Base64.URL_SAFE or Base64.NO_WRAP))
             val exp = JSONObject(payload).optLong("exp", 0L)
             if (exp == 0L) return true
-            System.currentTimeMillis() / 1000 >= exp
+            System.currentTimeMillis() / 1000 + skewSeconds >= exp
         } catch (e: Exception) {
             // Fail-safe: treat unparseable tokens as expired. Log for observability
             // so a server returning malformed tokens (or repeated forced refreshes)

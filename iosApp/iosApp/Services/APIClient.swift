@@ -370,18 +370,49 @@ final class APIClient: @unchecked Sendable {
     }
 
     /// Best-effort server-side session revocation — `POST /auth/logout`.
-    /// Never throws: local sign-out proceeds regardless. Takes the bearer
-    /// token explicitly because the caller clears the keychain synchronously
-    /// right after firing this (the stored token would already be gone).
-    func logout(bearerToken: String?) async {
-        guard let token = bearerToken, !token.isEmpty else { return }
+    /// Never throws: local sign-out proceeds regardless. Takes the tokens
+    /// explicitly because the caller clears the keychain synchronously right
+    /// after firing this (the stored ones would already be gone).
+    ///
+    /// MR-2532: it NEVER refreshes (`SignOutRevocation`). The bearer goes only
+    /// while the access token is usable; otherwise, or when the bearer is
+    /// answered 401, the refresh token goes in the body, as /auth/refresh takes
+    /// it, and the server revokes exactly that session and issues nothing. It
+    /// used to send the bearer alone: an expired access token (an hour after
+    /// the last request) got a 401 and the session lived on the server until it
+    /// expired.
+    func signOut(_ tokens: SignOutTokens) async {
+        switch SignOutRevocation.plan(for: tokens, now: Date()) {
+        case .nothing:
+            return
+        case .refreshToken:
+            break
+        case .bearerThenRefreshTokenOn401:
+            let status = await postLogout(bearer: tokens.accessToken, refreshToken: nil)
+            guard SignOutRevocation.refreshTokenAfterBearer(status: status,
+                                                            hasRefreshToken: !(tokens.refreshToken ?? "").isEmpty) else {
+                return
+            }
+        }
+        _ = await postLogout(bearer: nil, refreshToken: tokens.refreshToken)
+    }
+
+    /// One `POST /auth/logout`: the HTTP status, or nil with no answer. The
+    /// client header comes from the session configuration, as for every call.
+    private func postLogout(bearer: String?, refreshToken: String?) async -> Int? {
         guard let url = URL(string: "/auth/logout", relativeTo: baseURL),
-              url.scheme?.lowercased() == "https" else { return }
+              url.scheme?.lowercased() == "https" else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        _ = try? await session.data(for: request)
+        if let bearer, !bearer.isEmpty {
+            request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        }
+        if let refreshToken, !refreshToken.isEmpty {
+            request.httpBody = try? encoder.encode(RefreshBody(refresh_token: refreshToken))
+        }
+        guard let answer = try? await session.data(for: request) else { return nil }
+        return (answer.1 as? HTTPURLResponse)?.statusCode
     }
 
     /// Shared response handling for `/auth/login/desktop`,
@@ -764,6 +795,31 @@ final class APIClient: @unchecked Sendable {
         return config
     }
 
+    /// The access token on file, for a sign-out that must read it before the
+    /// keychain wipe (MR-2532, `releasePeerForSignOut`).
+    var storedAccessToken: String? { keychain.accessToken }
+
+    /// MR-2532, owner decision 2026-11-24 ("never refresh at sign-out"): the
+    /// sign-out's peer release. ONE `DELETE /vpn/connections/{keyId}` with
+    /// `bearer`, never a refresh on its 401, at most
+    /// `SignOutRevocation.peerReleaseTimeout`. Nothing is sent when `bearer`
+    /// is already unusable (expired, or none): the server's stale-connection
+    /// sweep frees the slot in about 5-10 minutes. A refresh here could
+    /// replay a token a lost refresh already consumed, which the server reads
+    /// as theft and answers by revoking every session and every WireGuard
+    /// peer of the account. Never throws.
+    func releasePeerForSignOut(keyId: String, bearer: String?) async {
+        guard SignOutRevocation.releasesPeer(bearer: bearer, now: Date()), let bearer else { return }
+        let encoded = keyId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? keyId
+        guard let url = URL(string: "/vpn/connections/\(encoded)", relativeTo: baseURL),
+              url.scheme?.lowercased() == "https" else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = SignOutRevocation.peerReleaseTimeout
+        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        _ = try? await session.data(for: request)
+    }
+
     /// Release the server-side WireGuard peer for a connection. The backend keeps
     /// the peer (and the user's connection slot) alive until this is called —
     /// tearing down only the local tunnel leaks the slot until it is evicted.
@@ -1068,6 +1124,19 @@ final class APIClient: @unchecked Sendable {
         let generationNow = await sessionGeneration.current
         guard generationNow == generationAtStart,
               keychain.refreshToken == refresh else {
+            // MR-2532: a sign-out landed while this refresh was on the wire.
+            // The session it just renewed is not stored, so it is revoked with
+            // the token it was handed; the sign-out could only present the
+            // consumed one, which the server refuses without a reuse response.
+            // Review of #666 (L3, L4): decided by what the keychain holds now,
+            // not by the generation, whose bump runs after the wipe: no
+            // session stored means signed out; a session stored means a
+            // sign-in since (never revoked: the server would end that device's
+            // whole lineage) or a refresh that rotated it.
+            if SignOutRevocation.revokesLateRotation(sessionStored: keychain.refreshToken != nil) {
+                let late = SignOutTokens(accessToken: nil, refreshToken: tokens.refreshToken ?? refresh)
+                Task.detached { [weak self] in await self?.signOut(late) }
+            }
             return
         }
         // The rotated refresh token replaces the old one; if the server omits

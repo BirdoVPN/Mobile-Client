@@ -774,11 +774,19 @@ final class VpnViewModel: ObservableObject {
     }
 
     /// Sign-out variant: tears the tunnel down synchronously (the keychain the
-    /// extension reads must still exist at that point) and AWAITS the
-    /// server-side slot release before returning, so the caller can wipe
-    /// credentials immediately after without the DELETE racing token removal.
-    /// Order stays load-bearing: `await disconnectForSignOut()` BEFORE
-    /// `authVM.logout()`.
+    /// extension reads must still exist at that point). Order stays
+    /// load-bearing: `await disconnectForSignOut()` BEFORE `authVM.logout()`.
+    ///
+    /// MR-2532, owner decision 2026-11-24 ("never refresh at sign-out"): the
+    /// server-side slot release is ONE DELETE with the access token read here,
+    /// before the wipe, and no refresh on its 401
+    /// (`APIClient.releasePeerForSignOut`). With an access token already
+    /// unusable nothing is sent; the server's stale-connection sweep frees the
+    /// slot in about 5-10 minutes. It no longer holds the sign-out up either
+    /// (review of #666, M3): the request runs detached, bounded at 10 s, and
+    /// the local wipe that follows does not wait for it. It used to await
+    /// `api.disconnect(keyId:)`, whose 401 refreshed and retried, each step
+    /// bounded only by URLSession's 30 s / 60 s.
     func disconnectForSignOut() async {
         isReapplyingSettings = false
         let keyId = activeKeyId
@@ -786,7 +794,9 @@ final class VpnViewModel: ObservableObject {
         vpnManager.disconnect()
         resetSessionState()
         if let keyId {
-            try? await api.disconnect(keyId: keyId)
+            let api = self.api
+            let bearer = api.storedAccessToken
+            Task.detached { await api.releasePeerForSignOut(keyId: keyId, bearer: bearer) }
         }
     }
 
