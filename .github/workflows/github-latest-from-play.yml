@@ -15,10 +15,12 @@
 # tracks and DISCARDS the edit.
 #
 # On GitHub, .github/scripts/latest-follows-play.sh keeps Latest ON Play's 100%
-# build, not merely "never behind it" (owner 2026-11-18, MR-2418): on
-# 2026-11-13 android-v1.4.40 was published by hand as a full release while Play
-# had it at 10%, and the old "Latest is newer; leaving it" branch kept it Latest
-# (and in F-Droid and the update banner) for three days. Any full android-v*
+# build, not merely "never behind it" (owner 2026-11-18, MR-2418): from
+# 2026-11-11 to 2026-11-16 android-v1.4.38, 1.4.39 and 1.4.40 were each
+# published by hand as a full release while Play had them at 10% (Play's 100%
+# build stayed 1.4.37), and the old "Latest is newer; leaving it" branch kept
+# them Latest (and in F-Droid and the update banner) for about 4.4 days
+# (docs/RELEASE-LOG.md). Any full android-v*
 # release ahead of Play's 100% build is now set back to a prerelease, Play's
 # build is made Latest, and the run goes red so the deviation is seen. It also
 # runs when a release is published or edited by hand (a person's or PAT's edit

@@ -130,7 +130,8 @@ check "in step: no edits" no_edits
 check "in step: no dispatch" dispatched 0
 check "in step: the 10% prerelease stays a prerelease" full_is "android-v1.4.39 android-v1.4.40"
 
-# 4. The 2026-11-13 incident: 1.4.40 published by hand as full + Latest while Play had 1.4.39 at 100%.
+# 4. The incident's shape: 1.4.40 published by hand as full + Latest while Play's 100% build is older
+#    (here 1.4.39; in the real 2026-11-11..16 incident it was 1.4.37, see docs/RELEASE-LOG.md).
 setup "android-v1.4.38 0 0
 android-v1.4.39 0 0
 android-v1.4.40 0 0" "android-v1.4.40" "$P_39

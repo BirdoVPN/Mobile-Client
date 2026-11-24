@@ -4,8 +4,9 @@
 #
 # Owner rule 2026-10-01: GitHub Latest for Android is the newest build that Play's production track
 # shows as `completed` (100% rollout). Owner 2026-11-18 (MR-2418): Latest moves only once Play is at
-# 100%. On 2026-11-13 android-v1.4.40 was published by hand as a full release while Play had it at 10%,
-# and this job's old "Latest is newer than Play; leaving it" branch kept it Latest for three days. The
+# 100%. From 2026-11-11 to 2026-11-16 android-v1.4.38, 1.4.39 and 1.4.40 were each published by hand as a
+# full release while Play had them at 10% and Play's 100% build stayed 1.4.37; this job's old "Latest is
+# newer than Play; leaving it" branch kept them Latest for about 4.4 days (docs/RELEASE-LOG.md). The
 # F-Droid index and the in-app update banner read full releases too, so they moved with it.
 #
 # So, against Play's 100% build (P):
