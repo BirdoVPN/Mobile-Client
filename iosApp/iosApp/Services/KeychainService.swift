@@ -76,18 +76,23 @@ final class KeychainService: @unchecked Sendable {
 
     // MARK: - Save / Clear (host app only)
 
-    /// Persist the auth credentials atomically. Returns `false` if either
-    /// required item (access or refresh token) failed to write, so callers can
-    /// surface a real error instead of hitting a silent auth failure on the
-    /// next launch.
+    /// Persist the auth credentials. Returns `false` if either required item
+    /// (access or refresh token) failed to write, so callers can surface a real
+    /// error instead of hitting a silent auth failure on the next launch.
     ///
-    /// A HALF-written pair is the dangerous case (finding #60): if the access
-    /// token wrote but the refresh token failed, a later cold start would route
-    /// to Home on a session whose refresh token is stale/missing — a token
-    /// rotation the client can never complete (finding #433). So on a refresh
-    /// write failure we roll the access token back to its PREVIOUS value (or
-    /// delete it if there was none) and report failure — the keychain is left
-    /// in the same consistent state it had before the call.
+    /// A HALF-written pair is the dangerous case (findings #60, #433). The two
+    /// tokens are two keychain items, so `TokenPairWrite` writes the REFRESH
+    /// token first, each in one step (MR-2580): neither a failed write nor a
+    /// kill between the two ever leaves the new access token with an older
+    /// refresh token, which after a refresh rotation is already spent, and
+    /// which the server treats as theft when it is presented again.
+    ///
+    /// On a failure, `replacing` decides what is left (`TokenPairWrite.Replaced`):
+    ///   - a sign-in or a number rotation (`.anotherSession`): the prior pair,
+    ///     put back as it was;
+    ///   - a refresh rotation (`.consumedRefreshToken`): the new refresh token,
+    ///     never the spent one, next to the prior access token, whose next 401
+    ///     refreshes with it.
     @discardableResult
     func save(accessToken: String,
               refreshToken: String,
@@ -394,9 +399,6 @@ extension KeychainService: InstallIdentityStore {
     func clearSession() { clear() }
 }
 
-/// MR-2580: the store `TokenPairWrite` writes the session's pair through.
-extension KeychainService: TokenPairStore {}
-
 /// MR-1729: the live keychain behind `HostOnlyKeychain`. `group == nil` sends no
 /// `kSecAttrAccessGroup`, exactly as every host-only query here did before; the
 /// attributes are the ones those queries always used.
@@ -438,3 +440,6 @@ extension KeychainService: KeychainGroupStore {
         KeychainItemQuery.remove(service: service, account: account, group: group)
     }
 }
+
+/// MR-2580: the store `TokenPairWrite` writes the session's pair through.
+extension KeychainService: TokenPairStore {}

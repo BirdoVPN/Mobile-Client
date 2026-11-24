@@ -47,11 +47,30 @@ enum KeychainItemQuery {
         return calls.add(newItem(data, service: service, account: account, group: group)) == errSecSuccess
     }
 
-    /// One step (`KeychainGroupStore.replace`). Spec-first (MR-2580): still
-    /// today's delete-then-add, so TokenPairWriteTests can show it failing.
+    /// One step (`KeychainGroupStore.replace`): the value is updated where the
+    /// item exists, and the item is added (`newItem`) where it does not. It is
+    /// never deleted first, so a failed write leaves it as it was and a kill
+    /// cannot catch it gone. False when it was not written.
     static func replace(_ data: Data, service: String, account: String, group: String?,
                         calls: any KeychainCalls = SystemKeychainCalls()) -> Bool {
-        store(data, service: service, account: account, group: group, calls: calls)
+        let query = item(service: service, account: account, group: group)
+        switch calls.update(query, newValue(data)) {
+        case errSecSuccess:
+            return true
+        case errSecItemNotFound:
+            switch calls.add(newItem(data, service: service, account: account, group: group)) {
+            case errSecSuccess:
+                return true
+            case errSecDuplicateItem:
+                // Another writer added it between the two calls: replace theirs.
+                return calls.update(query, newValue(data)) == errSecSuccess
+            default:
+                return false
+            }
+        default:
+            // Locked, not entitled, an I/O error: nothing was changed.
+            return false
+        }
     }
 
     static func remove(service: String, account: String, group: String?,
