@@ -422,4 +422,28 @@ enum AnonNumberRotationCommit {
         }
         return true
     }
+
+    /// MR-2581: what became of a confirm's new pair.
+    enum Outcome: Equatable, Sendable {
+        case stored
+        /// The keychain refused it: the user signs in with the new number.
+        case notStored
+        /// The app signed out (or another sign-in landed) while the confirm was
+        /// on the wire. Nothing is written, and the caller ends the new
+        /// session on the server.
+        case sessionChanged
+    }
+
+    /// `commit`, for the session the confirm was sent from (`sentFrom`) and
+    /// the one signed in now (`current`), as `AuthViewModel.sessionEpoch`
+    /// counts them. Spec-first (MR-2581): still today's unfenced commit.
+    static func commit(newNumber: String,
+                       accessToken: String,
+                       refreshToken: String,
+                       to store: any RotationCommitStore,
+                       sentFrom: UInt64,
+                       current: UInt64) -> Outcome {
+        let stored = commit(newNumber: newNumber, accessToken: accessToken, refreshToken: refreshToken, to: store)
+        return stored ? .stored : .notStored
+    }
 }

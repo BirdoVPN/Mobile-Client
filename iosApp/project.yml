@@ -373,6 +373,10 @@ targets:
       # ConnectRetryAfter (the file above). APIClient.swift (its caller)
       # cannot be compiled into this bundle.
       - path: iosApp/Services/RefreshAnswer.swift
+      # MR-2581: which session a 401 ended (DeadRefreshToken). Foundation-only,
+      # pinned by SessionEndFenceTests; APIClient and AuthViewModel (its
+      # callers) cannot be compiled into this bundle.
+      - path: iosApp/Services/SessionEndFence.swift
       # MR-1100: the Home globe's route — one leg for a single hop, you ->
       # entry -> exit for Multi-Hop — its camera framing and draw order.
       # Foundation-only by design (CountryCoords too), pinned by
