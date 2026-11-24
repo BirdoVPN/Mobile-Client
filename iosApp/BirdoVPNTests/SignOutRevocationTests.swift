@@ -69,10 +69,24 @@ final class SignOutRevocationTests: XCTestCase {
 
     /// A refresh on the wire when the sign-out lands has consumed the token the
     /// sign-out reads. The rotation it then gets is never stored, and the
-    /// session it renewed is revoked with the token it was handed.
-    func testARotationThatLandsAfterASignOutIsRevoked() {
-        XCTAssertTrue(SignOutRevocation.revokesLateRotation(generationAtStart: 4, generationNow: 5))
-        XCTAssertFalse(SignOutRevocation.revokesLateRotation(generationAtStart: 4, generationNow: 4))
+    /// session it renewed is revoked with the token it was handed, but only
+    /// while no session is stored (review of #666, L3/L4): after a sign-in the
+    /// server would end that device's whole lineage, the new session included.
+    func testARotationThatLandsAfterASignOutIsRevokedOnlyWithNoSessionStored() {
+        XCTAssertTrue(SignOutRevocation.revokesLateRotation(sessionStored: false))
+        XCTAssertFalse(SignOutRevocation.revokesLateRotation(sessionStored: true))
+    }
+
+    /// MR-2532, owner decision 2026-11-24: the sign-out's peer release goes
+    /// only with an access token that is still usable; otherwise nothing is
+    /// sent (the server's sweep frees the slot). Bounded at 10 s.
+    func testThePeerReleaseGoesOnlyWithAUsableAccessToken() {
+        XCTAssertTrue(SignOutRevocation.releasesPeer(bearer: jwt(exp: now.timeIntervalSince1970 + 600), now: now))
+        XCTAssertFalse(SignOutRevocation.releasesPeer(bearer: jwt(exp: now.timeIntervalSince1970 - 10), now: now))
+        XCTAssertFalse(SignOutRevocation.releasesPeer(
+            bearer: jwt(exp: now.timeIntervalSince1970 + SignOutRevocation.accessTokenSkew - 5), now: now))
+        XCTAssertFalse(SignOutRevocation.releasesPeer(bearer: nil, now: now))
+        XCTAssertEqual(SignOutRevocation.peerReleaseTimeout, 10)
     }
 
     /// The tokens never print (CredentialRedacting, as every credential type).
@@ -146,9 +160,46 @@ final class SignOutRevocationTests: XCTestCase {
         let api = try source("iosApp/Services/APIClient.swift")
         let refresh = slice(api, from: "private func refreshTokens() async throws {", to: "\n    }\n")
         let fence = slice(refresh, from: "guard generationNow == generationAtStart,", to: "            return\n        }\n")
-        XCTAssertTrue(fence.contains("SignOutRevocation.revokesLateRotation(generationAtStart: generationAtStart,"))
+        XCTAssertTrue(fence.contains("SignOutRevocation.revokesLateRotation(sessionStored: keychain.refreshToken != nil)"))
         XCTAssertTrue(fence.contains("SignOutTokens(accessToken: nil, refreshToken: tokens.refreshToken ?? refresh)"))
         XCTAssertTrue(fence.contains("await self?.signOut(late)"))
         XCTAssertFalse(fence.contains("keychain.save("))
+    }
+
+    /// MR-2532, owner decision 2026-11-24 ("never refresh at sign-out"), the
+    /// WHOLE sign-out with the tunnel up and the access token expired:
+    /// `disconnectForSignOut` (the peer release) and then `logout` (the
+    /// session). Every request on the way is sent once with what is on file
+    /// and never through a refresh, and the release does not hold the local
+    /// wipe up (review of #666, H1 and M3). Before, the release was
+    /// `api.disconnect(keyId:)`, an authenticated `performRequest` whose 401
+    /// refreshed and retried, awaited before the wipe.
+    func testTheWholeSignOutNeverRefreshes() throws {
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        let release = slice(vm, from: "    func disconnectForSignOut() async {", to: "\n    }\n")
+        XCTAssertFalse(release.contains("api.disconnect(keyId:"), "the release refreshes on a 401")
+        XCTAssertTrue(release.contains("let bearer = api.storedAccessToken"), "the bearer must be read before the wipe")
+        XCTAssertTrue(release.contains(
+            "Task.detached { await api.releasePeerForSignOut(keyId: keyId, bearer: bearer) }"),
+            "the release must not hold the local wipe up")
+        XCTAssertFalse(release.contains("try? await api."), "nothing in the release is awaited")
+
+        let api = try source("iosApp/Services/APIClient.swift")
+        let peer = slice(api, from: "func releasePeerForSignOut(keyId: String, bearer: String?) async {", to: "\n    }\n")
+        XCTAssertTrue(peer.contains("guard SignOutRevocation.releasesPeer(bearer: bearer, now: Date()), let bearer else { return }"))
+        XCTAssertTrue(peer.contains("request.timeoutInterval = SignOutRevocation.peerReleaseTimeout"))
+        let signOut = slice(api, from: "func signOut(_ tokens: SignOutTokens) async {", to: "\n    }\n")
+        let post = slice(api, from: "private func postLogout(bearer: String?, refreshToken: String?) async -> Int? {",
+                         to: "\n    }\n")
+        for (name, body) in [("releasePeerForSignOut", peer), ("signOut", signOut), ("postLogout", post)] {
+            for refreshing in ["performRequest(", "refreshActor", "refreshTokens(", "/auth/refresh", "keychain."] {
+                XCTAssertFalse(body.contains(refreshing), "\(name) reaches \(refreshing)")
+            }
+        }
+        // ...and the sign-out itself hands both tokens, read before the wipe,
+        // to that one server half (testTheSignOutReadsBothTokensBeforeTheWipe).
+        let auth = try source("iosApp/ViewModels/AuthViewModel.swift")
+        let logout = slice(auth, from: "    func logout() {", to: "\n    }\n")
+        XCTAssertEqual(logout.components(separatedBy: "await api.").count - 1, 1, "one server call in logout()")
     }
 }

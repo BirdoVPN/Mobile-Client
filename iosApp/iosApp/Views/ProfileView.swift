@@ -848,8 +848,9 @@ struct ProfileView: View {
     }
 
     private func performSignOut() {
-        // No confirmation dialog (Android parity). Slot release is awaited so
-        // the server frees this device's connection before the tokens die.
+        // No confirmation dialog (Android parity). The slot release reads the
+        // access token before the wipe and goes once, never through a refresh,
+        // without holding the wipe up (MR-2532, owner 2026-11-24).
         Task {
             await vpnVM.disconnectForSignOut()
             authVM.logout()

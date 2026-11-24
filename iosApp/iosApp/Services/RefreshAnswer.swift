@@ -376,11 +376,28 @@ enum SignOutRevocation {
         return exp - now.timeIntervalSince1970 > accessTokenSkew
     }
 
-    /// A refresh that rotated the pair after a sign-out landed (the session
-    /// generation moved while it was on the wire). Its pair is never stored,
-    /// and the session it renewed is revoked with the refresh token it was
-    /// handed: the sign-out itself could only present the consumed one.
-    static func revokesLateRotation(generationAtStart: UInt64, generationNow: UInt64) -> Bool {
-        generationNow != generationAtStart
+    /// A refresh whose rotated pair the fence did not store (a sign-out, a
+    /// sign-in or another refresh landed while it was on the wire). Its
+    /// session is revoked with the refresh token it was handed only when NO
+    /// session is stored now, i.e. the user signed out: the sign-out itself
+    /// could only present the consumed token. With a session stored (a
+    /// sign-in since, or a rotation) nothing is revoked: for a device-scoped
+    /// session the server ends that device's whole lineage, a new session
+    /// included (review of #666, L3). Read from the keychain, not from the
+    /// session generation, whose bump runs after the wipe (L4).
+    static func revokesLateRotation(sessionStored: Bool) -> Bool {
+        !sessionStored
     }
+
+    /// MR-2532, owner decision 2026-11-24: the sign-out's peer release is
+    /// sent only with an access token that is still usable, never through a
+    /// refresh. Otherwise the server's stale-connection sweep frees the slot.
+    static func releasesPeer(bearer: String?, now: Date) -> Bool {
+        guard let bearer else { return false }
+        return accessTokenUsable(bearer, now: now)
+    }
+
+    /// The sign-out's peer release never holds the sign-out longer than this
+    /// (review of #666, M3; Android `SIGN_OUT_RELEASE_TIMEOUT_MS`).
+    static let peerReleaseTimeout: TimeInterval = 10
 }

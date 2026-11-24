@@ -3819,17 +3819,46 @@ class VpnManagerTest {
 
     @Test
     fun `sign-out waits for the server to release the slot`() = runTest {
-        val gate = CompletableDeferred<ApiResult<Unit>>()
-        coEvery { repository.disconnectVpn(any()) } coAnswers { gate.await() }
+        val gate = CompletableDeferred<Unit>()
+        coEvery { repository.releasePeerForSignOut(any()) } coAnswers { gate.await() }
 
         val signOut = launch { vpnManager.disconnectForSignOut() }
         runCurrent()
         assertTrue(BirdoVpnService.ACTION_STOP in dispatchedActions)
         assertFalse("sign-out must not finish before the DELETE", signOut.isCompleted)
 
-        gate.complete(ApiResult.Success(Unit))
+        gate.complete(Unit)
         runCurrent()
         assertTrue(signOut.isCompleted)
+    }
+
+    /**
+     * MR-2532, owner decision 2026-11-24 ("never refresh at sign-out"): with
+     * the tunnel up, the sign-out releases the session's peer through
+     * releasePeerForSignOut (one DELETE, no refresh, skipped with an unusable
+     * access token), never through disconnectVpn's refresh-and-retry. A plain
+     * Disconnect keeps disconnectVpn.
+     */
+    @Test
+    fun `a sign-out with the tunnel up releases the peer without the refreshing path`() = runTest {
+        connectAndEstablish()
+
+        vpnManager.disconnectForSignOut()
+        runCurrent()
+
+        coVerify(exactly = 1) { repository.releasePeerForSignOut("key-123") }
+        coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+    }
+
+    @Test
+    fun `a plain Disconnect still releases through disconnectVpn`() = runTest {
+        connectAndEstablish()
+
+        vpnManager.disconnect()
+        runCurrent()
+
+        coVerify(exactly = 1) { repository.disconnectVpn("key-123") }
+        coVerify(exactly = 0) { repository.releasePeerForSignOut(any()) }
     }
 
     // ── A Disconnecting with nothing left to stop (1.4.40 on an S25) ─────

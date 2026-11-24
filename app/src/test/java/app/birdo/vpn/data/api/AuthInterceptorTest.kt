@@ -43,11 +43,13 @@ class AuthInterceptorTest {
     private val tokenManager = mockk<TokenManager>()
 
     /** Runs the interceptor over `url` and returns the request it forwarded. */
-    private fun forwarded(url: String): Request {
+    private fun forwarded(url: String, headers: Map<String, String> = emptyMap()): Request {
         val interceptor = AuthInterceptor(tokenManager)
         val sent = slot<Request>()
         val chain = mockk<Interceptor.Chain>()
-        every { chain.request() } returns Request.Builder().url(url).build()
+        every { chain.request() } returns Request.Builder().url(url)
+            .apply { headers.forEach { (name, value) -> header(name, value) } }
+            .build()
         every { chain.proceed(capture(sent)) } answers {
             Response.Builder()
                 .request(sent.captured)
@@ -61,6 +63,32 @@ class AuthInterceptorTest {
     }
 
     private val apiUrl = BuildConfig.API_BASE_URL + "/auth/me"
+
+    /**
+     * MR-2532 (review of #666, M1): the refresh-token sign-out carries NO
+     * bearer, whatever session is stored when it is sent. With the bearer, a
+     * late revoke sent after a re-sign-in named the NEW session, and the
+     * server's access-token path ended that one instead. The marker header
+     * itself does not leave the device either.
+     */
+    @Test
+    fun `a request marked no-bearer goes without Authorization and without the marker`() {
+        every { tokenManager.getAccessToken() } returns "a-live-access-token"
+        val sent = forwarded(BuildConfig.API_BASE_URL + "/auth/logout", mapOf(NO_BEARER_HEADER to "1"))
+        assertNull(sent.header("Authorization"))
+        assertNull(sent.header(NO_BEARER_HEADER))
+        assertEquals("birdo-android", sent.header("X-Desktop-Client"))
+        // ...and an unmarked request to the same host still carries it.
+        assertEquals("Bearer a-live-access-token", forwarded(apiUrl).header("Authorization"))
+    }
+
+    /** The refresh-token sign-out route is the one that is marked. */
+    @Test
+    fun `the refresh-token sign-out is marked no-bearer`() {
+        val method = BirdoApi::class.java.declaredMethods.single { it.name == "logoutWithRefreshToken" }
+        val headers = method.getAnnotation(retrofit2.http.Headers::class.java)?.value?.toList().orEmpty()
+        assertEquals(listOf("$NO_BEARER_HEADER: 1"), headers)
+    }
     private val webUrl = BuildConfig.WEB_BASE_URL + BirdoRepository.CLIENT_CONFIG_PATH
 
     @Test

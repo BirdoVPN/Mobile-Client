@@ -1299,6 +1299,81 @@ class BirdoRepositoryTest {
     }
 
     /**
+     * MR-2532, owner decision 2026-11-24 ("never refresh at sign-out"), the
+     * WHOLE sign-out as VpnManager.disconnectForSignOut and
+     * AuthViewModel.logout run it, with the tunnel up and the access token
+     * expired: the peer release sends nothing (the slot is freed by the
+     * server's sweep), the session ends with the refresh token, and nothing
+     * anywhere goes to /auth/refresh. Before, the release went through
+     * withAutoRefresh and refreshed on its 401.
+     */
+    @Test
+    fun `a whole sign-out with an expired access token never refreshes`() = runTest {
+        every { tokenManager.hasUsableAccessToken(any()) } returns false
+        every { tokenManager.getLastKeyId() } returns "key-1"
+        every { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { api.logoutWithRefreshToken(any()) } returns Response.success(Unit)
+
+        repository.releasePeerForSignOut("key-1")
+        repository.logout()
+
+        coVerify(exactly = 0) { api.refreshToken(any()) }
+        coVerify(exactly = 0) { api.disconnect(any()) }
+        coVerify(exactly = 0) { api.logout() }
+        coVerify(exactly = 1) { api.logoutWithRefreshToken(RefreshRequest("live_refresh")) }
+        verify { tokenManager.clearLastKeyId() }
+    }
+
+    /** ...and with a usable one: the release goes ONCE, and its 401 refreshes nothing. */
+    @Test
+    fun `the sign-out's peer release goes once and its 401 refreshes nothing`() = runTest {
+        every { tokenManager.getLastKeyId() } returns "key-1"
+        coEvery { api.disconnect(any()) } returns
+            Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+
+        repository.releasePeerForSignOut("key-1")
+
+        coVerify(exactly = 1) { api.disconnect("key-1") }
+        coVerify(exactly = 0) { api.refreshToken(any()) }
+    }
+
+    /**
+     * Review of #666 (M1, L3): a refresh that outlived a sign-out lands after
+     * the user signed in again. Its session is NOT revoked then: the request
+     * would end the device's whole lineage on the server, the new session
+     * included.
+     */
+    @Test
+    fun `a late rotation after a re-sign-in revokes nothing`() = runTest {
+        var access: String? = "old_access"
+        var refresh: String? = "old_refresh"
+        every { tokenManager.getAccessToken() } answers { access }
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.clearAll() } answers { access = null; refresh = null }
+        every { tokenManager.setTokens(any(), any()) } answers { access = firstArg(); refresh = secondArg() }
+        coEvery { api.logout() } returns Response.success(Unit)
+        coEvery { api.login(any()) } returns Response.success(
+            LoginResponse(ok = true, tokens = TokenPair("new_account_access", "new_account_refresh")),
+        )
+        val answer = CompletableDeferred<Unit>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            answer.await()
+            Response.success(RefreshResponse(accessToken = "late_access", refreshToken = "late_refresh", expiresIn = 3600))
+        }
+
+        val caller = launch { repository.refreshToken() }
+        runCurrent()
+        caller.cancel()
+        repository.logout()
+        repository.login("next@test.com", "pass123")
+        answer.complete(Unit)
+        runCurrent()
+
+        coVerify(exactly = 0) { api.logoutWithRefreshToken(any()) }
+        assertEquals("new_account_refresh", refresh)
+    }
+
+    /**
      * If the refresh token is dead too, there is nothing left to revoke. What
      * this pins is that logout does NOT then replay the dead token: exactly one
      * refresh, and no retry of api.logout afterwards.

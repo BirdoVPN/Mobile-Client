@@ -2384,7 +2384,7 @@ class VpnManager @Inject constructor(
      * service and so skipped the peer release, the reconnect cancel and the
      * supersede of an in-flight dial.
      */
-    suspend fun disconnect() = withContext(Dispatchers.Main.immediate) {
+    suspend fun disconnect(signingOut: Boolean = false) = withContext(Dispatchers.Main.immediate) {
         // On Main, like every other writer of the supervisor's state: the
         // tile calls this from its own IO scope, and a Disconnect racing
         // onFailure there could leave a re-dial scheduled (REVIEW-AND-017).
@@ -2406,7 +2406,7 @@ class VpnManager @Inject constructor(
         // Cleared here, not only when the service's stop lands: Home must not
         // keep saying it over the user's own Disconnect.
         BirdoVpnService.clearKillSwitchNotArmed()
-        tearDownTunnel(userInitiated = true)
+        tearDownTunnel(userInitiated = true, signingOut = signingOut)
     }
 
     /** Fire-and-forget [disconnect] for callers with no coroutine of their own. */
@@ -2422,7 +2422,9 @@ class VpnManager @Inject constructor(
      * regardless.
      */
     suspend fun disconnectForSignOut() {
-        withTimeoutOrNull(SIGN_OUT_RELEASE_TIMEOUT_MS) { disconnect() }
+        // MR-2532 (owner, 2026-11-24): the release goes once, never through a
+        // refresh (BirdoRepository.releasePeerForSignOut).
+        withTimeoutOrNull(SIGN_OUT_RELEASE_TIMEOUT_MS) { disconnect(signingOut = true) }
         _sessionExpired.value = false
         // MR-2380: the restriction was this account's; the next one starts clean.
         _accountRestriction.value = null
@@ -2466,6 +2468,7 @@ class VpnManager @Inject constructor(
         reason: String? = null,
         reasonKind: FailureKind = FailureKind.TRANSIENT,
         releasePeer: Boolean = true,
+        signingOut: Boolean = false,
     ) {
         _state.value = VpnState.Disconnecting
         transitionStartTime = System.currentTimeMillis()
@@ -2496,7 +2499,11 @@ class VpnManager @Inject constructor(
         // Notify backend (best effort), naming THIS session's key.
         val key = sessionKeyId
         sessionKeyId = null
-        if (releasePeer) repository.disconnectVpn(key)
+        // A sign-out releases it once, never through a refresh (MR-2532, owner
+        // 2026-11-24): see BirdoRepository.releasePeerForSignOut.
+        if (releasePeer) {
+            if (signingOut) repository.releasePeerForSignOut(key) else repository.disconnectVpn(key)
+        }
 
         // Don't set Disconnected here — the service sets it after the tunnel is
         // actually stopped, and the state collector (or, when that state did

@@ -795,6 +795,31 @@ final class APIClient: @unchecked Sendable {
         return config
     }
 
+    /// The access token on file, for a sign-out that must read it before the
+    /// keychain wipe (MR-2532, `releasePeerForSignOut`).
+    var storedAccessToken: String? { keychain.accessToken }
+
+    /// MR-2532, owner decision 2026-11-24 ("never refresh at sign-out"): the
+    /// sign-out's peer release. ONE `DELETE /vpn/connections/{keyId}` with
+    /// `bearer`, never a refresh on its 401, at most
+    /// `SignOutRevocation.peerReleaseTimeout`. Nothing is sent when `bearer`
+    /// is already unusable (expired, or none): the server's stale-connection
+    /// sweep frees the slot in about 5-10 minutes. A refresh here could
+    /// replay a token a lost refresh already consumed, which the server reads
+    /// as theft and answers by revoking every session and every WireGuard
+    /// peer of the account. Never throws.
+    func releasePeerForSignOut(keyId: String, bearer: String?) async {
+        guard SignOutRevocation.releasesPeer(bearer: bearer, now: Date()), let bearer else { return }
+        let encoded = keyId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? keyId
+        guard let url = URL(string: "/vpn/connections/\(encoded)", relativeTo: baseURL),
+              url.scheme?.lowercased() == "https" else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = SignOutRevocation.peerReleaseTimeout
+        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        _ = try? await session.data(for: request)
+    }
+
     /// Release the server-side WireGuard peer for a connection. The backend keeps
     /// the peer (and the user's connection slot) alive until this is called —
     /// tearing down only the local tunnel leaks the slot until it is evicted.
@@ -1103,8 +1128,12 @@ final class APIClient: @unchecked Sendable {
             // The session it just renewed is not stored, so it is revoked with
             // the token it was handed; the sign-out could only present the
             // consumed one, which the server refuses without a reuse response.
-            if SignOutRevocation.revokesLateRotation(generationAtStart: generationAtStart,
-                                                     generationNow: generationNow) {
+            // Review of #666 (L3, L4): decided by what the keychain holds now,
+            // not by the generation, whose bump runs after the wipe: no
+            // session stored means signed out; a session stored means a
+            // sign-in since (never revoked: the server would end that device's
+            // whole lineage) or a refresh that rotated it.
+            if SignOutRevocation.revokesLateRotation(sessionStored: keychain.refreshToken != nil) {
                 let late = SignOutTokens(accessToken: nil, refreshToken: tokens.refreshToken ?? refresh)
                 Task.detached { [weak self] in await self?.signOut(late) }
             }

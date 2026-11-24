@@ -130,8 +130,9 @@ struct HomeView: View {
             onConfirm: {
                 Task { @MainActor in
                     // Order is load-bearing: disconnectForSignOut() tears the
-                    // tunnel down and AWAITS the server-side slot release
-                    // BEFORE logout() wipes the keychain the extension reads.
+                    // tunnel down and reads the access token for the slot
+                    // release BEFORE logout() wipes the keychain the extension
+                    // reads. The release itself is not awaited (MR-2532).
                     await vpnVM.disconnectForSignOut()
                     authVM.logout()
                 }

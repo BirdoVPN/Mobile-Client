@@ -853,10 +853,17 @@ class BirdoRepository @Inject constructor(
      * pair is never stored (the fence in [lockedRefresh]), and the session it
      * renewed is revoked with the refresh token it was handed, so a refresh on
      * the wire at the moment of the sign-out cannot leave a session alive.
-     * Best effort, in the refresh's own scope; nothing waits for it.
+     * Skipped while a session is stored (a sign-in since). Best effort, in the
+     * refresh's own scope; nothing waits for it.
      */
     private fun revokeLateRotation(refreshToken: String) {
         refreshScope.launch {
+            // Review of #666 (M1, L3): never while a session is stored. The user
+            // may have signed in again meanwhile, and for a device-scoped
+            // session the server ends that device's whole lineage, the new
+            // session included. The request itself carries no bearer
+            // ([BirdoApi.logoutWithRefreshToken]).
+            if (tokenManager.getRefreshToken() != null) return@launch
             try {
                 api.logoutWithRefreshToken(RefreshRequest(refreshToken))
             } catch (e: CancellationException) {
@@ -1444,8 +1451,12 @@ class BirdoRepository @Inject constructor(
             // Through withAutoRefresh, NOT a bare api.disconnect(): access tokens
             // live one hour, so the ordinary end-of-session disconnect presented
             // an expired token, got a silent 401, and left the WireGuard peer
-            // provisioned server-side — consuming a plan connection slot while
-            // the UI reported a clean disconnect. Same class as the logout() fix.
+            // provisioned server-side, consuming a plan connection slot while
+            // the UI reported a clean disconnect. That holds for a Disconnect
+            // inside a session. A SIGN-OUT no longer comes here: the owner chose
+            // "never refresh at sign-out" (2026-11-24, MR-2532), so it releases
+            // the peer with [releasePeerForSignOut], once and without a refresh,
+            // and the stale-connection sweep frees the slot when it cannot.
             serverResult = withAutoRefreshNoBody(R.string.error_unexpected) { api.disconnect(target) }
         }
         // Local teardown is authoritative, but only for THIS key: clear the
@@ -1459,6 +1470,35 @@ class BirdoRepository @Inject constructor(
             }
         }
         return serverResult
+    }
+
+    /**
+     * MR-2532, owner decision 2026-11-24 ("never refresh at sign-out"): the
+     * sign-out's peer release. ONE DELETE with the access token as it is, and
+     * no refresh on its 401. With an access token that is already unusable
+     * (expired, or none) nothing is sent: the server's stale-connection sweep
+     * frees the slot in about 5-10 minutes, which the owner accepted. A
+     * refresh here could replay a token a lost refresh already consumed, which
+     * the server reads as theft and answers by revoking every session and
+     * every WireGuard peer of the account. The stored key id goes as in
+     * [disconnectVpn].
+     */
+    suspend fun releasePeerForSignOut(keyId: String?) {
+        val target = keyId ?: tokenManager.getLastKeyId()
+        if (target != null && tokenManager.hasUsableAccessToken()) {
+            try {
+                api.disconnect(target)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Best effort: the sweep frees the slot.
+            }
+        }
+        synchronized(keyIdLock) {
+            if (target == null || tokenManager.getLastKeyId() == target) {
+                tokenManager.clearLastKeyId()
+            }
+        }
     }
 
     /**
