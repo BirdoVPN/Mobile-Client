@@ -151,11 +151,17 @@ final class SessionEndFenceTests: XCTestCase {
             return XCTFail("the 401 branch does not record which token died")
         }
         XCTAssertLessThan(record.lowerBound, thrown.lowerBound)
-        guard let save = refresh.range(of: "guard keychain.save("),
+        // A rotation the server accepted (stored, or kept in memory while the
+        // keychain refuses it, #671) means the session on file is alive.
+        guard let save = refresh.range(of: "keychain.saveRotation("),
+              let accepted = refresh.range(of: "case .stored, .keptInMemory:"),
+              let superseded = refresh.range(of: "case .superseded:"),
               let forget = refresh.range(of: "deadRefreshToken.forget()") else {
             return XCTFail("a refresh that worked does not forget the dead token")
         }
         XCTAssertLessThan(save.lowerBound, forget.lowerBound, "forgotten before the new pair was stored")
+        XCTAssertTrue(accepted.upperBound <= forget.lowerBound && forget.upperBound <= superseded.lowerBound,
+                      "the dead token is forgotten outside the accepted rotation's case")
     }
 
     func testARotationAnsweredAfterASignOutStoresNothing() throws {

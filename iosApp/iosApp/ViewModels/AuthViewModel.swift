@@ -582,7 +582,11 @@ final class AuthViewModel: ObservableObject {
         // Cold-start routing from local tokens only: logged in iff either
         // stored JWT is unexpired. Unparseable = expired (fail-safe). Never on
         // a previous install's session that a failed clean-up left behind.
+        // #671 review (MR-2580): nor on a refresh token a rotation spent and
+        // could not replace (`SessionTokenVault`): it is never presented, and
+        // the session is signed out here, locally, with no request.
         let sessionLive = !install.storedSessionUnusable
+            && !keychain.storedRefreshTokenIsSpent
             && (Self.isTokenLive(keychain.accessToken) || Self.isTokenLive(keychain.refreshToken))
         // A signed-in session is no longer grandfathered into consent: it
         // used to set `gdpr_consented` here, which made a signed-in user
@@ -611,7 +615,7 @@ final class AuthViewModel: ObservableObject {
             // account number included (#485 review): `clear()` alone kept
             // `anonymous_id`, a signed-out device's copy of a previous
             // account's number.
-            if keychain.accessToken != nil || keychain.refreshToken != nil {
+            if keychain.accessToken != nil || keychain.refreshToken != nil || keychain.storedRefreshTokenIsSpent {
                 LocalSignOut.wipe(keychain)
             }
         }
