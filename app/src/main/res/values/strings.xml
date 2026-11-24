@@ -780,6 +780,8 @@
     <!-- A1-026: the session waits behind a captive portal. -->
     <string name="notif_body_captive_portal">Sign in to this Wi-Fi network to continue.</string>
 
+    <!-- MR-2373 (owner 2026-11-20): the fleet gate came on while connected; the app does not re-dial for it. -->
+    <string name="vpn_settings_birdoshield_next_connect">Applies when you next connect</string>
     <!-- A1-024: the Windows wording (P1-parity), pointing at the Android setting. -->
     <string name="vpn_settings_birdoshield_custom_dns">Custom DNS overrides BirdoShield. Turn off Custom DNS Servers in Settings to use the filtering resolver.</string>
 

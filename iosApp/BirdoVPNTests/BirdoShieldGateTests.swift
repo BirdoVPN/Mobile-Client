@@ -98,4 +98,85 @@ final class BirdoShieldGateTests: XCTestCase {
             "the decoded gate must drive the row"
         )
     }
+
+    // MARK: - MR-2373: a gate flipped while connected (owner 2026-11-20)
+    //
+    // When the server turns the gate on during a CONNECTED session the app does
+    // not reconnect; the row says "Applies when you next connect". Same cases
+    // as Android's BirdoShieldAvailabilityTest (MR-2373).
+
+    func testARowReadingOnOverASessionDialledWithTheGateOffSaysItAppliesWhenYouNextConnect() {
+        let row = BirdoShieldGate.row(preference: true, available: true, sessionGate: false)
+        XCTAssertTrue(row.isVisible)
+        XCTAssertTrue(row.isOn, "the switch still shows the user's choice")
+        XCTAssertTrue(row.isEnabled, "and can still be switched (a user's flip re-dials, as before)")
+        XCTAssertTrue(row.appliesWhenNextConnected)
+    }
+
+    func testNoNoteWhenThereIsNothingForTheNextConnectToApply() {
+        // Dialled under the gate on: the session already filters.
+        XCTAssertFalse(BirdoShieldGate.row(preference: true, available: true, sessionGate: true).appliesWhenNextConnected)
+        // No connected session.
+        XCTAssertFalse(BirdoShieldGate.row(preference: true, available: true, sessionGate: nil).appliesWhenNextConnected)
+        // The preference is off: the gate changes nothing for this session.
+        XCTAssertFalse(BirdoShieldGate.row(preference: false, available: true, sessionGate: false).appliesWhenNextConnected)
+        // A gate turned OFF mid-session hides the row as before (owner 2026-11-13).
+        let off = BirdoShieldGate.row(preference: true, available: false, sessionGate: true)
+        XCTAssertFalse(off.isVisible)
+        XCTAssertFalse(off.appliesWhenNextConnected)
+        // With no session the row is what it always was.
+        XCTAssertEqual(
+            BirdoShieldGate.row(preference: true, available: true),
+            BirdoShieldGate.Row(isOn: true, isEnabled: true, isVisible: true)
+        )
+    }
+
+    func testTheNoteIsTheOwnersWords() {
+        XCTAssertEqual(BirdoShieldGate.nextConnectNotice, "Applies when you next connect")
+    }
+
+    /// The gate a dial was built under is the client's own record, injected by
+    /// APIClient: a server can never set it.
+    func testTheDialledGateIsNeverReadFromTheWire() throws {
+        let json = #"{"endpoint":"1.2.3.4:51820","serverPublicKey":"pk","assignedIp":"10.0.0.2","dialedShieldGate":true}"#
+        let config = try JSONDecoder().decode(VPNConnectionConfig.self, from: Data(json.utf8))
+        XCTAssertNil(config.dialedShieldGate)
+    }
+
+    /// Wiring the bundle cannot compile (the view and the view models pull in
+    /// the whole app): the dial records its gate, the session carries it to
+    /// the row, the row shows the note, and a fetched gate never re-dials.
+    func testTheConnectedSessionsGateReachesTheRowAndAFlipNeverReDials() throws {
+        func count(_ needle: String, in text: String) -> Int { text.components(separatedBy: needle).count - 1 }
+        let api = try source("iosApp/Services/APIClient.swift")
+        XCTAssertEqual(count("let dnsFilteringEnabled = Self.dnsFilteringEnabled(gateOn: shieldGateOn)", in: api), 2,
+                       "both connect bodies are built under the gate they record")
+        XCTAssertEqual(count("config.dialedShieldGate = shieldGateOn", in: api), 2)
+        let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
+        XCTAssertEqual(count("sessionShieldGate = config.dialedShieldGate", in: vm), 2, "connect and Multi-Hop")
+        XCTAssertTrue(vm.contains("sessionShieldGate = ctx.newConfig?.dialedShieldGate"), "a committed live rebuild")
+        XCTAssertTrue(vm.contains("sessionShieldGate = nil"), "the session's reset")
+        let view = try source("iosApp/Views/VpnSettingsView.swift")
+        XCTAssertTrue(view.contains("sessionGate: vpnVM.isConnected ? vpnVM.sessionShieldGate : nil"))
+        XCTAssertTrue(view.contains("? BirdoShieldGate.nextConnectNotice : nil"))
+        let settings = try source("iosApp/ViewModels/SettingsViewModel.swift")
+        let fetch = try XCTUnwrap(
+            settings.components(separatedBy: "func refreshClientConfig() async {").dropFirst().first?
+                .components(separatedBy: "\n    }\n").first
+        )
+        XCTAssertTrue(fetch.contains("ConnectWire.dnsFilteringGateDefaultsKey"), "the fetch keeps the gate for the next dial")
+        XCTAssertFalse(fetch.contains("requestSettingsReapply"), "a fetched gate never re-dials (owner 2026-11-20)")
+    }
+
+    private func source(_ path: String) throws -> String {
+        // .../iosApp/BirdoVPNTests/BirdoShieldGateTests.swift -> .../iosApp/iosApp
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("iosApp")
+        let url = root.appendingPathComponent(path)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            XCTFail("\(path) not found under \(root.path): this pin would be vacuous")
+            return ""
+        }
+        return try String(contentsOf: url, encoding: .utf8).replacingOccurrences(of: "\r\n", with: "\n")
+    }
 }

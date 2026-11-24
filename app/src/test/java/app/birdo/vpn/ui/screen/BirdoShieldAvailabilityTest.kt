@@ -3,6 +3,7 @@ package app.birdo.vpn.ui.screen
 import app.birdo.vpn.data.model.ClientConfigResponse
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.di.NetworkModule
+import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.ui.viewmodel.VpnUiState
 import app.birdo.vpn.ui.viewmodel.nextDnsFilteringAvailable
 import kotlinx.serialization.json.Json
@@ -217,6 +218,53 @@ class BirdoShieldAvailabilityTest {
         assertFalse(birdoShieldRowState(true, false, customDnsEnabled = true).overriddenByCustomDns)
     }
 
+    // -- MR-2373: a gate flipped while connected (owner 2026-11-20) --
+
+    @Test
+    fun `MR-2373 a row reading ON over a session dialled with the gate off says it applies when you next connect`() {
+        val row = birdoShieldRowState(
+            dnsFilteringEnabled = true, dnsFilteringAvailable = true, sessionShieldGate = false,
+        )
+        assertTrue(row.visible)
+        assertTrue("the switch still shows the user's choice", row.checked)
+        assertTrue("and can still be switched (a user's flip re-dials, as before)", row.enabled)
+        assertTrue(row.appliesWhenNextConnected)
+    }
+
+    @Test
+    fun `MR-2373 no note when there is nothing for the next connect to apply`() {
+        // Dialled under the gate on: the session already filters.
+        assertFalse(birdoShieldRowState(true, true, sessionShieldGate = true).appliesWhenNextConnected)
+        // No connected session.
+        assertFalse(birdoShieldRowState(true, true, sessionShieldGate = null).appliesWhenNextConnected)
+        // The preference is off: the gate changes nothing for this session.
+        assertFalse(birdoShieldRowState(false, true, sessionShieldGate = false).appliesWhenNextConnected)
+        // Custom DNS overrides it: that note is shown instead.
+        val overridden = birdoShieldRowState(true, true, customDnsEnabled = true, sessionShieldGate = false)
+        assertFalse(overridden.appliesWhenNextConnected)
+        assertTrue(overridden.overriddenByCustomDns)
+        // A gate turned OFF mid-session hides the row as before (owner 2026-11-13).
+        val off = birdoShieldRowState(true, false, sessionShieldGate = true)
+        assertFalse(off.visible)
+        assertFalse(off.appliesWhenNextConnected)
+    }
+
+    @Test
+    fun `MR-2373 only a connected session's gate counts`() {
+        assertEquals(false, liveSessionShieldGate(VpnState.Connected, false))
+        assertNull(liveSessionShieldGate(VpnState.Connecting, false))
+        assertNull(liveSessionShieldGate(VpnState.Disconnected, false))
+        assertNull(liveSessionShieldGate(VpnState.Reconnecting(), false))
+    }
+
+    @Test
+    fun `MR-2373 the note is the owner's words`() {
+        assertEquals(
+            "Applies when you next connect",
+            app.birdo.vpn.testing.StringsXml.text("vpn_settings_birdoshield_next_connect"),
+        )
+    }
+
     // -- 4. The wiring ------------------------------------------
 
     /**
@@ -331,6 +379,55 @@ class BirdoShieldAvailabilityTest {
         assertTrue("ConnectWire.dnsFilteringGateDefaultsKey" in api)
         val settings = source("iosApp/iosApp/ViewModels/SettingsViewModel.swift")
         assertTrue("forKey: ConnectWire.dnsFilteringGateDefaultsKey" in settings)
+    }
+
+    /**
+     * MR-2373 wiring, both apps: the dial records the gate it read, the session
+     * carries it to the row, and the row shows the note. Every piece is needed:
+     * without one the row never says it, and the pure tests above stay green.
+     */
+    @Test
+    fun `MR-2373 the session's gate reaches the BirdoShield row on both apps`() {
+        val manager = source("app/src/main/java/app/birdo/vpn/service/VpnManager.kt")
+        assertEquals(
+            "every dial and rebuild sends under the gate it keeps",
+            4, Regex("""dnsFiltering = shieldInEffect\(dialGate\)""").findAll(manager).count(),
+        )
+        assertEquals(
+            "and keeps it with the session it commits",
+            4, Regex("""_sessionShieldGate\.value = dialGate""").findAll(manager).count(),
+        )
+        assertTrue("a teardown forgets it", "_sessionShieldGate.value = null" in manager)
+        val vm = source("app/src/main/java/app/birdo/vpn/ui/viewmodel/VpnViewModel.kt")
+        assertTrue("vpnManager.sessionShieldGate.collect" in vm)
+        assertTrue(
+            "a fetched gate must never ask for a reapply (no re-dial on a flip)",
+            "requestSettingsReapply" !in braceBlock(vm, vm.indexOf('{', vm.indexOf("fun fetchClientConfig()"))),
+        )
+        val nav = source("app/src/main/java/app/birdo/vpn/ui/navigation/BirdoNavGraph.kt")
+        assertTrue("sessionShieldGate = liveSessionShieldGate(vpnState.vpnState, vpnState.sessionShieldGate)" in nav)
+        val screen = source("app/src/main/java/app/birdo/vpn/ui/screen/VpnSettingsScreen.kt")
+        assertTrue(
+            "birdoShieldRowState(state.dnsFilteringEnabled, dnsFilteringAvailable, state.customDnsEnabled, sessionShieldGate)" in screen,
+        )
+        assertTrue("shield.appliesWhenNextConnected -> stringResource(R.string.vpn_settings_birdoshield_next_connect)" in screen)
+
+        val api = source("iosApp/iosApp/Services/APIClient.swift")
+        assertEquals(2, Regex("""config\.dialedShieldGate = shieldGateOn""").findAll(api).count())
+        assertEquals(2, Regex("""Self\.dnsFilteringEnabled\(gateOn: shieldGateOn\)""").findAll(api).count())
+        val iosVm = source("iosApp/iosApp/ViewModels/VpnViewModel.swift")
+        assertEquals(2, Regex("""sessionShieldGate = config\.dialedShieldGate""").findAll(iosVm).count())
+        assertTrue("sessionShieldGate = ctx.newConfig?.dialedShieldGate" in iosVm)
+        assertTrue("sessionShieldGate = nil" in iosVm)
+        val iosView = source("iosApp/iosApp/Views/VpnSettingsView.swift")
+        assertTrue("sessionGate: vpnVM.isConnected ? vpnVM.sessionShieldGate : nil" in iosView)
+        assertTrue("? BirdoShieldGate.nextConnectNotice : nil" in iosView)
+        val gate = source("iosApp/iosApp/Services/BirdoShieldGate.swift")
+        assertTrue(
+            "the iOS copy is the Android string, word for word",
+            "static let nextConnectNotice = \"" +
+                app.birdo.vpn.testing.StringsXml.text("vpn_settings_birdoshield_next_connect") + "\"" in gate,
+        )
     }
 
     private fun source(path: String): String {

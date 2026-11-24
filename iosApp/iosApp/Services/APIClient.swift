@@ -613,9 +613,16 @@ final class APIClient: @unchecked Sendable {
     ///
     /// Owner 2026-11-13: ANDed with the last-known fleet gate, so a preference
     /// set while the gate was on is not sent while it is off or not known.
-    private static var dnsFilteringEnabled: Bool {
-        UserDefaults.standard.bool(forKey: ConnectWire.dnsFilteringDefaultsKey)
-            && UserDefaults.standard.bool(forKey: ConnectWire.dnsFilteringGateDefaultsKey)
+    private static func dnsFilteringEnabled(gateOn: Bool) -> Bool {
+        UserDefaults.standard.bool(forKey: ConnectWire.dnsFilteringDefaultsKey) && gateOn
+    }
+
+    /// The last-known BirdoShield FLEET gate (`ConnectWire.dnsFilteringGateDefaultsKey`),
+    /// read ONCE per connect request: the body is built under it and the
+    /// returned config carries it (`VPNConnectionConfig.dialedShieldGate`,
+    /// MR-2373), so the session knows which gate it was dialled under.
+    private static var dnsFilteringGateOn: Bool {
+        UserDefaults.standard.bool(forKey: ConnectWire.dnsFilteringGateDefaultsKey)
     }
 
     /// `rebuildOf`: the server-side key the LIVE tunnel is riding (Mobile-Client
@@ -654,7 +661,8 @@ final class APIClient: @unchecked Sendable {
         // switched it on (SettingsViewModel persists the same key). Read
         // the raw store at dial time, like quantum above, so the flag a
         // reconnect carries is the one the user set — not a stale VM copy.
-        let dnsFilteringEnabled = Self.dnsFilteringEnabled
+        let shieldGateOn = Self.dnsFilteringGateOn
+        let dnsFilteringEnabled = Self.dnsFilteringEnabled(gateOn: shieldGateOn)
         // Generate the WireGuard keypair on-device; send only the public key.
         let wg = WireGuardKeypair.generate()
         // AUDIT-M-DRIFT: the field is `serverNodeId` (ConnectDto), not `serverId`.
@@ -697,6 +705,7 @@ final class APIClient: @unchecked Sendable {
         // The private key never came from the server — use the on-device one.
         config.privateKey = wg.privateKey
         config.pqUploadedKey = pqPk
+        config.dialedShieldGate = shieldGateOn
         pairHandedToConfig = true
         return config
     }
@@ -723,7 +732,8 @@ final class APIClient: @unchecked Sendable {
         var pairHandedToConfig = false
         defer { if !pairHandedToConfig { BirdoPQManager.shared.discardHandOff(publicKey: pqPk) } }
         // BirdoShield (D18) — the multi-hop twin of getConnectConfig's read.
-        let dnsFilteringEnabled = Self.dnsFilteringEnabled
+        let shieldGateOn = Self.dnsFilteringGateOn
+        let dnsFilteringEnabled = Self.dnsFilteringEnabled(gateOn: shieldGateOn)
         // Generate the WireGuard keypair on-device; send only the public key.
         let wg = WireGuardKeypair.generate()
         let body = try encoder.encode(
@@ -760,6 +770,7 @@ final class APIClient: @unchecked Sendable {
         // The private key never came from the server — use the on-device one.
         config.privateKey = wg.privateKey
         config.pqUploadedKey = pqPk
+        config.dialedShieldGate = shieldGateOn
         pairHandedToConfig = true
         return config
     }

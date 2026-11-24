@@ -137,6 +137,13 @@ data class VpnUiState(
      */
     val dnsFilteringAvailable: Boolean? = null,
     /**
+     * MR-2373: the fleet gate the current session was dialled under
+     * (VpnManager.sessionShieldGate), or null with no session. A gate the
+     * server flips while connected does not re-dial (owner 2026-11-20); the
+     * BirdoShield row reads this to say "Applies when you next connect".
+     */
+    val sessionShieldGate: Boolean? = null,
+    /**
      * MR-1980: the free plan's monthly cap as `GET /api/client-config`
      * publishes it (`plans.RECON.bandwidthLimitGb`, birdo-web#708), or null —
      * not fetched yet, or a server that publishes none. The paywall falls back
@@ -515,6 +522,11 @@ class VpnViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(deviceNotice = notice)
             }
         }
+        viewModelScope.launch {
+            vpnManager.sessionShieldGate.collect { gate ->
+                _uiState.value = _uiState.value.copy(sessionShieldGate = gate)
+            }
+        }
     }
 
     /** A1-025: watch Android's Private DNS under the tunnel. */
@@ -777,6 +789,10 @@ class VpnViewModel @Inject constructor(
      * `false` (owner 2026-11-13): the row shows only once a fetch said the gate
      * is on. The dial reads the same last-known answer, persisted in
      * [AppPreferences.dnsFilteringGateOn].
+     *
+     * A change while connected never re-dials (owner 2026-11-20, MR-2373): the
+     * session keeps the gate it was dialled under ([VpnUiState.sessionShieldGate])
+     * and the BirdoShield row says "Applies when you next connect".
      *
      * The same response carries the free plan's cap for the paywall (MR-1980,
      * [nextFreePlanCapGb]) and the plan-gating table (MR-1517), which the

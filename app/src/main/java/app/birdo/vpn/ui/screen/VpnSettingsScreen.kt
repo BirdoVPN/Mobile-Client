@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
 import app.birdo.vpn.service.StealthPolicy
+import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.ui.components.BirdoCard
 import app.birdo.vpn.ui.components.BirdoSectionHeader
 import app.birdo.vpn.ui.components.BirdoTextField
@@ -54,6 +55,14 @@ internal data class BirdoShieldRowState(
     val visible: Boolean = !unavailable,
     /** Custom DNS replaces the filtering resolver, so the switch would do nothing (A1-024). */
     val overriddenByCustomDns: Boolean = false,
+    /**
+     * MR-2373, owner 2026-11-20: the row reads ON but the connected session was
+     * dialled while the fleet gate was off (the server switched it on since, or
+     * the dial ran before the first fetch said so), so the session does not
+     * filter yet. The app does not re-dial for a gate flip; the row says
+     * "Applies when you next connect" instead.
+     */
+    val appliesWhenNextConnected: Boolean = false,
 )
 
 /**
@@ -71,25 +80,44 @@ internal data class BirdoShieldRowState(
  * Note what this does NOT do: it never writes. An unavailable gate makes the
  * row read OFF, but [dnsFilteringEnabled] is left untouched in preferences, so
  * the user's own choice comes back by itself when the gate does.
+ *
+ * @param sessionShieldGate MR-2373: the fleet gate the CONNECTED session was
+ *   dialled under ([liveSessionShieldGate]), or null with no connected
+ *   session. A gate the server turns on mid-session does not re-dial (owner
+ *   2026-11-20), so a row that reads ON over a session dialled with the gate
+ *   off says "Applies when you next connect". A gate turned OFF mid-session
+ *   hides the row as before (owner 2026-11-13); that session keeps filtering
+ *   until it ends.
  */
 internal fun birdoShieldRowState(
     dnsFilteringEnabled: Boolean,
     dnsFilteringAvailable: Boolean?,
     customDnsEnabled: Boolean = false,
+    sessionShieldGate: Boolean? = null,
 ): BirdoShieldRowState {
     val unavailable = dnsFilteringAvailable != true
     // A1-024, as Windows does it: with Custom DNS on, the tunnel never asks
     // the filtering resolver, so the row reads OFF, cannot be switched, and
     // says why. The stored preference is kept for when Custom DNS goes off.
     val overridden = !unavailable && customDnsEnabled
+    val checked = dnsFilteringEnabled && !unavailable && !overridden
     return BirdoShieldRowState(
-        checked = dnsFilteringEnabled && !unavailable && !overridden,
+        checked = checked,
         enabled = !unavailable && !overridden,
         unavailable = unavailable,
         visible = !unavailable,
         overriddenByCustomDns = overridden,
+        appliesWhenNextConnected = checked && sessionShieldGate == false,
     )
 }
+
+/**
+ * MR-2373: the fleet gate the session was dialled under, only while that
+ * session is CONNECTED (null otherwise): the BirdoShield row's
+ * "Applies when you next connect" speaks of a live connection only.
+ */
+internal fun liveSessionShieldGate(vpnState: VpnState, sessionShieldGate: Boolean?): Boolean? =
+    sessionShieldGate.takeIf { vpnState is VpnState.Connected }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -111,6 +139,9 @@ fun VpnSettingsScreen(
     // this account dials has DNS filtering switched on at all. Defaults to
     // `null` (unknown), which reads as available — see [birdoShieldRowState].
     dnsFilteringAvailable: Boolean? = null,
+    // MR-2373: the gate the connected session was dialled under
+    // ([liveSessionShieldGate]); null with no connected session.
+    sessionShieldGate: Boolean? = null,
 ) {
     var mtuText by rememberSaveable {
         mutableStateOf(if (state.wireGuardMtu > 0) state.wireGuardMtu.toString() else "")
@@ -171,7 +202,11 @@ fun VpnSettingsScreen(
             // "not available" advertises a feature the account cannot use.
             // Their stored preference is untouched and the row returns on
             // its own when the gate comes back.
-            val shield = birdoShieldRowState(state.dnsFilteringEnabled, dnsFilteringAvailable, state.customDnsEnabled)
+            //
+            // A gate the server turns on while connected does not re-dial (owner
+            // 2026-11-20, MR-2373): the row says the session gets it when the
+            // user next connects.
+            val shield = birdoShieldRowState(state.dnsFilteringEnabled, dnsFilteringAvailable, state.customDnsEnabled, sessionShieldGate)
             if (shield.visible) {
                 item {
                     VpnToggle(
@@ -182,6 +217,7 @@ fun VpnSettingsScreen(
                     // does (owner 2026-11-07).
                         description = when {
                             shield.overriddenByCustomDns -> stringResource(R.string.vpn_settings_birdoshield_custom_dns)
+                            shield.appliesWhenNextConnected -> stringResource(R.string.vpn_settings_birdoshield_next_connect)
                             else -> null
                         },
                         checked = shield.checked,

@@ -217,7 +217,17 @@ enum BirdoShieldGate {
         let isEnabled: Bool
         /// False unless the fleet gate is known to be on: the row is not shown.
         let isVisible: Bool
+        /// MR-2373, owner 2026-11-20: the row reads ON but the CONNECTED session
+        /// was dialled while the fleet gate was off (the server switched it on
+        /// since, or the dial ran before a fetch said so), so that session does
+        /// not filter yet. The app does not re-dial for a gate flip; the row
+        /// says `nextConnectNotice` instead.
+        var appliesWhenNextConnected: Bool = false
     }
+
+    /// The row's note while `Row.appliesWhenNextConnected` (owner 2026-11-20).
+    /// Android's twin is `vpn_settings_birdoshield_next_connect`.
+    static let nextConnectNotice = "Applies when you next connect"
 
     /// - Parameters:
     ///   - preference: the user's persisted per-device opt-in
@@ -235,12 +245,22 @@ enum BirdoShieldGate {
     /// Note what this does NOT do: it never writes. An unavailable gate makes
     /// the row read OFF, but `preference` is left untouched in UserDefaults, so
     /// the user's own choice comes back by itself when the gate does.
-    static func row(preference: Bool, available: Bool?) -> Row {
+    ///
+    /// - Parameter sessionGate: MR-2373: the fleet gate the CONNECTED session
+    ///   was dialled under (`VPNConnectionConfig.dialedShieldGate`), or `nil`
+    ///   with no connected session. A gate the server turns on mid-session does
+    ///   not re-dial (owner 2026-11-20), so a row that reads ON over a session
+    ///   dialled with the gate off says `nextConnectNotice`. A gate turned OFF
+    ///   mid-session hides the row as before (owner 2026-11-13); that session
+    ///   keeps filtering until it ends.
+    static func row(preference: Bool, available: Bool?, sessionGate: Bool? = nil) -> Row {
         let unavailable = available != true
+        let isOn = preference && !unavailable
         return Row(
-            isOn: preference && !unavailable,
+            isOn: isOn,
             isEnabled: !unavailable,
-            isVisible: !unavailable
+            isVisible: !unavailable,
+            appliesWhenNextConnected: isOn && sessionGate == false
         )
     }
 }

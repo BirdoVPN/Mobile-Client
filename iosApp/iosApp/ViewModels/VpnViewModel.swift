@@ -160,6 +160,12 @@ final class VpnViewModel: ObservableObject {
     /// UI never paints the Connected dot on a server the user merely tapped. nil
     /// unless a live session exists. (Review #3 — the live-switch truth fix.)
     @Published private(set) var connectedServerId: String?
+    /// MR-2373: the BirdoShield FLEET gate the current session was dialled
+    /// under (`VPNConnectionConfig.dialedShieldGate`), or nil with no session
+    /// this app dialled. A gate the server flips while connected does not
+    /// re-dial (owner 2026-11-20); VPN Settings reads this to say "Applies when
+    /// you next connect" (`BirdoShieldGate.row(preference:available:sessionGate:)`).
+    @Published private(set) var sessionShieldGate: Bool?
     /// The live Multi-Hop session, if any — nil for single-hop sessions.
     /// Drives Home's "Protected · Multi-Hop" surfaces (status pill, server
     /// card, globe focus) and forces the rebuild paths to preserve — or
@@ -711,6 +717,7 @@ final class VpnViewModel: ObservableObject {
                     releaseServerSlot()
                     throw error
                 }
+                sessionShieldGate = config.dialedShieldGate
                 // quantumActive: only when a true bilateral ML-KEM PSK was
                 // actually derived for this connection.
                 applyUpdateAdvisory(config.clientUpdate)
@@ -891,6 +898,7 @@ final class VpnViewModel: ObservableObject {
                 // downgrade) and Home renders the route that actually exists.
                 activeMultiHop = MultiHopSession(entry: entry, exit: exit,
                                                  route: confirmed.route)
+                sessionShieldGate = config.dialedShieldGate
             } catch {
                 // The peer exists but is unusable (unconfirmed/mismatched
                 // route, or local tunnel setup failed): release it or it holds
@@ -1568,6 +1576,7 @@ final class VpnViewModel: ObservableObject {
         quantumActive = false
         connectedSince = nil
         connectedServerId = nil
+        sessionShieldGate = nil
         activeMultiHop = nil
         isSwitching = false
         bytesReceived = 0
@@ -1900,6 +1909,8 @@ final class VpnViewModel: ObservableObject {
                     activeMultiHop = MultiHopSession(entry: entry, exit: exit, route: ctx.confirmedRoute ?? "")
                     connectedServerId = entry.id
                 }
+                // MR-2373: the session is the new peer's now, dialled under its gate.
+                sessionShieldGate = ctx.newConfig?.dialedShieldGate
                 // `ctx.newConfig`, not `config` — the rebuild path carries the
                 // new tunnel config on its context, and it is optional. A nil
                 // here clears the banner, which is correct: no advisory means

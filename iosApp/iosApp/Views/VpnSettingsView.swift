@@ -55,16 +55,21 @@ struct VpnSettingsView: View {
                         // cannot use. Their stored preference is untouched and
                         // the row returns on its own when the gate does.
                         // Twin of Android's `birdoShieldRowState`.
+                        // A gate the server turns on while connected does not
+                        // re-dial (owner 2026-11-20, MR-2373): the row says the
+                        // session gets it when the user next connects.
                         let shield = BirdoShieldGate.row(
                             preference: settingsVM.dnsFilteringEnabled,
-                            available: settingsVM.dnsFilteringAvailable
+                            available: settingsVM.dnsFilteringAvailable,
+                            sessionGate: vpnVM.isConnected ? vpnVM.sessionShieldGate : nil
                         )
                         if shield.isVisible {
                             VpnToggleRow(icon: "shield.fill",
                                          iconColor: shield.isEnabled
                                              ? BirdoTheme.green : BirdoTheme.onSurfaceFaint,
                                          title: "BirdoShield",
-                                         description: nil,
+                                         description: shield.appliesWhenNextConnected
+                                             ? BirdoShieldGate.nextConnectNotice : nil,
                                          isOn: $settingsVM.dnsFilteringEnabled,
                                          isEnabled: shield.isEnabled,
                                          displayOn: shield.isOn)
