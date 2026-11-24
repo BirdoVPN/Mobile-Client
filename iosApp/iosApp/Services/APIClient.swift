@@ -1077,11 +1077,13 @@ final class APIClient: @unchecked Sendable {
         // client on a token it can never replay. Surface it so the retry does
         // NOT run against a stale/blank Authorization header.
         // MR-2580: answering with this pair spent `refresh` on the server, so
-        // it is never put back (`TokenPairWrite.Replaced.consumedRefreshToken`).
-        guard keychain.save(accessToken: tokens.accessToken,
-                            refreshToken: tokens.refreshToken ?? refresh,
-                            email: keychain.userEmail,
-                            replacing: .consumedRefreshToken) else {
+        // it is never put back (`KeychainService.saveRotation`).
+        switch keychain.saveRotation(accessToken: tokens.accessToken,
+                                     refreshToken: tokens.refreshToken ?? refresh,
+                                     expectingRefreshToken: refresh) {
+        case .stored, .superseded:
+            return
+        case .keptInMemory:
             throw APIError.invalidResponse
         }
     }

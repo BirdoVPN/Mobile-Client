@@ -45,26 +45,47 @@ enum TokenPairWrite {
         case consumedRefreshToken
     }
 
+    /// What a write left in the keychain.
+    enum Outcome: Equatable, Sendable {
+        /// Both tokens.
+        case stored
+        /// A refresh rotation only: the new refresh token, next to the prior
+        /// access token (the access write failed).
+        case refreshOnly
+        /// Neither new token: the prior pair, or what of it could be put back.
+        case notStored
+    }
+
     /// Store the new pair, refresh token first. True when both tokens are
-    /// stored. False when they are not, and then the keychain holds the prior
-    /// pair; or the prior access token alone (a sign-in whose prior refresh
-    /// token could not be put back); or, after a refresh rotation only, the
-    /// prior access token with the new refresh token.
+    /// stored (`write`).
     @discardableResult
     static func save(accessToken: Data,
                      refreshToken: Data,
                      replacing: Replaced,
                      in store: any TokenPairStore) -> Bool {
+        write(accessToken: accessToken, refreshToken: refreshToken, replacing: replacing, in: store) == .stored
+    }
+
+    /// Store the new pair, refresh token first, and say what was left. A
+    /// failure leaves the prior pair; or the prior access token alone (a
+    /// sign-in whose prior refresh token could not be put back); or, after a
+    /// refresh rotation only, the prior access token with the new refresh token
+    /// (`.refreshOnly`).
+    static func write(accessToken: Data,
+                      refreshToken: Data,
+                      replacing: Replaced,
+                      in store: any TokenPairStore) -> Outcome {
         // Read BEFORE anything is written: what a failed sign-in puts back.
         let prior: KeychainLookup? = replacing == .anotherSession ? store.hostLookup(.refreshToken) : nil
         guard store.replaceHostData(refreshToken, for: .refreshToken) else {
-            return false
+            return .notStored
         }
         guard store.replaceHostData(accessToken, for: .accessToken) else {
-            if let prior { putBack(prior, in: store) }
-            return false
+            guard let prior else { return .refreshOnly }
+            putBack(prior, in: store)
+            return .notStored
         }
-        return true
+        return .stored
     }
 
     /// Undo a failed sign-in's refresh write. What cannot be put back (it could

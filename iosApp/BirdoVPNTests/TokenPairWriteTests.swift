@@ -53,11 +53,28 @@ final class TokenPairWriteTests: XCTestCase {
                                    "a kill after change \(index) leaves the new access token with "
                                        + "\(state.refresh == nil ? "no" : "the prior") refresh token (\(replacing))")
                 }
-                // A kill after the first write: the new refresh token, and the
-                // prior access token, whose next 401 refreshes with it.
-                XCTAssertEqual(keychain.states.first?.refresh, newRefresh, "\(replacing)")
+                // A refresh rotation's first write: the new refresh token, next
+                // to the prior access token, whose next 401 refreshes with it.
+                if replacing == .consumedRefreshToken {
+                    XCTAssertEqual(keychain.states.first?.refresh, newRefresh)
+                }
             }
         }
+    }
+
+    /// #671 review: a sign-in over another account's pair (an account switch
+    /// without a sign-out). Every kill point leaves ONE account: the prior
+    /// access token goes before the new refresh token comes, so requests never
+    /// act on the prior account while the refresh moves to the new one.
+    func testEveryKillPointOfASignInLeavesOneAccount() {
+        let keychain = signedIn()
+        XCTAssertTrue(save(keychain, .anotherSession))
+        for (index, state) in keychain.states.enumerated() {
+            XCTAssertFalse(state.access == priorAccess && state.refresh == newRefresh,
+                           "a kill after change \(index) leaves the prior account's access token "
+                               + "with the new account's refresh token")
+        }
+        XCTAssertEqual(keychain.pair, .init(access: newAccess, refresh: newRefresh))
     }
 
     // MARK: - What a failure leaves
@@ -68,18 +85,27 @@ final class TokenPairWriteTests: XCTestCase {
             keychain.fails = { item, _ in item == .refreshToken }
             XCTAssertFalse(save(keychain, replacing))
             XCTAssertEqual(keychain.pair, .init(access: priorAccess, refresh: priorRefresh), "\(replacing)")
-            XCTAssertFalse(keychain.writes.contains(.accessToken),
-                           "the access token was written with no refresh token to go with it (\(replacing))")
+            XCTAssertFalse(keychain.states.contains { $0.access == newAccess },
+                           "the new access token was stored with no refresh token to go with it (\(replacing))")
         }
     }
 
     /// A sign-in or a number rotation: the device is left as it was, so the
     /// caller's "not stored" is true.
     func testAFailedAccessWriteOnASignInPutsThePriorPairBack() {
+        // Writes: 0 the new refresh token, 1 the new access token (refused),
+        // then the put-backs.
         let keychain = signedIn()
-        keychain.fails = { item, _ in item == .accessToken }
+        keychain.fails = { item, earlier in item == .accessToken && earlier == 1 }
         XCTAssertFalse(save(keychain, .anotherSession))
         XCTAssertEqual(keychain.pair, .init(access: priorAccess, refresh: priorRefresh))
+
+        // The access token refused every time: still the prior account only.
+        let refusing = signedIn()
+        refusing.fails = { item, _ in item == .accessToken }
+        XCTAssertFalse(save(refusing, .anotherSession))
+        XCTAssertEqual(refusing.pair.refresh, priorRefresh)
+        XCTAssertNotEqual(refusing.pair.access, newAccess)
     }
 
     /// A cold start counts a live refresh token as signed in, so a sign-in that
@@ -114,7 +140,9 @@ final class TokenPairWriteTests: XCTestCase {
         XCTAssertEqual(unread.pair, .init(access: priorAccess, refresh: nil))
 
         let stuck = signedIn()
-        stuck.fails = { item, earlier in item == .accessToken || (item == .refreshToken && earlier > 0) }
+        stuck.fails = { item, earlier in
+            (item == .accessToken && earlier == 1) || (item == .refreshToken && earlier > 0)
+        }
         XCTAssertFalse(save(stuck, .anotherSession))
         XCTAssertEqual(stuck.pair, .init(access: priorAccess, refresh: nil))
     }
@@ -246,34 +274,36 @@ final class TokenPairWriteTests: XCTestCase {
         return sources
     }
 
-    /// Every pair the app stores goes through `KeychainService.save`, and says
-    /// what it replaces: only the refresh rotation spent the stored refresh
-    /// token. The PacketTunnel extension stores none.
-    func testEveryPairWriteGoesThroughSaveAndSaysWhatItReplaces() throws {
-        var found: [String: [String]] = [:]
-        for source in try appSources() {
-            var rest = source.text[...]
-            while let call = rest.range(of: "save(accessToken:") {
-                let head = rest[..<call.lowerBound]
-                rest = rest[call.upperBound...]
-                // The two declarations, and KeychainService handing over to TokenPairWrite.
-                if head.hasSuffix("func ") || head.hasSuffix("TokenPairWrite.") { continue }
-                guard let close = rest.firstIndex(of: ")") else { break }
-                let arguments = rest[..<close]
-                let replacing = arguments.range(of: "replacing: .")
-                    .map { label in String(arguments[label.upperBound...].prefix(while: \.isLetter)) } ?? "(nothing)"
-                found[source.name, default: []].append(replacing)
+    /// Every pair the app stores goes through the keychain's session vault: a
+    /// new session's with `save`, the refresh rotation's with `saveRotation`
+    /// (its compare-and-swap inside the vault's lock). The PacketTunnel
+    /// extension stores none.
+    func testEveryPairWriteGoesThroughTheVault() throws {
+        let sources = try appSources()
+        func calls(_ name: String, skipping prefixes: [String]) -> [String: Int] {
+            var found: [String: Int] = [:]
+            for source in sources {
+                var rest = source.text[...]
+                while let call = rest.range(of: name) {
+                    let head = rest[..<call.lowerBound]
+                    rest = rest[call.upperBound...]
+                    if prefixes.contains(where: { head.hasSuffix($0) }) { continue }
+                    found[source.name, default: 0] += 1
+                }
             }
+            return found
         }
-        XCTAssertEqual(found, [
-            "APIClient.swift": ["consumedRefreshToken"],
-            "AuthViewModel.swift": ["anotherSession", "anotherSession"],
-            "ReplaceNumberSheet.swift": ["anotherSession"],
-        ])
+        XCTAssertEqual(calls("save(accessToken:", skipping: ["func ", "TokenPairWrite.", "session."]),
+                       ["AuthViewModel.swift": 2, "ReplaceNumberSheet.swift": 1])
+        XCTAssertEqual(calls("saveRotation(accessToken:", skipping: ["func ", "session."]),
+                       ["APIClient.swift": 1])
+        XCTAssertEqual(calls("TokenPairWrite.save(", skipping: []).merging(calls("TokenPairWrite.write(", skipping: []),
+                                                                          uniquingKeysWith: +),
+                       ["SessionTokenVault.swift": 2])
     }
 
-    /// Nothing else writes either token: `KeychainService.save` hands the pair
-    /// to `TokenPairWrite`, and only it writes them.
+    /// Nothing else writes either token: only `TokenPairWrite` does, for the
+    /// vault.
     func testOnlyTokenPairWriteWritesTheTokens() throws {
         let sources = try appSources()
         let tokenWrite = try NSRegularExpression(
@@ -288,13 +318,12 @@ final class TokenPairWriteTests: XCTestCase {
         XCTAssertEqual(writers, ["TokenPairWrite.swift"])
 
         let keychain = try XCTUnwrap(sources.first { $0.name == "KeychainService.swift" }).text
-        guard let start = keychain.range(of: "func save(accessToken: String,"),
+        guard let start = keychain.range(of: "func save(accessToken: String, refreshToken: String, email: String?) -> Bool {"),
               let end = keychain.range(of: "\n    }\n", range: start.upperBound..<keychain.endIndex) else {
             return XCTFail("KeychainService.save not found")
         }
         let body = keychain[start.lowerBound..<end.upperBound]
-        XCTAssertTrue(body.contains("TokenPairWrite.save("), "KeychainService.save writes the pair itself")
-        XCTAssertTrue(body.contains("replacing: replacing"), "KeychainService.save drops what its caller replaces")
+        XCTAssertTrue(body.contains("session.save("), "KeychainService.save writes the pair itself")
     }
 }
 
@@ -303,7 +332,7 @@ final class TokenPairWriteTests: XCTestCase {
 /// The two token items. Every write is one step, as `HostOnlyKeychain.replace`
 /// is; any write can be made to fail; and every state the items pass through is
 /// kept, so a test can ask what a kill after any change would have left.
-private final class MemoryKeychain: TokenPairStore {
+final class MemoryKeychain: TokenPairStore {
     struct Pair: Equatable {
         var access: Data?
         var refresh: Data?
@@ -318,6 +347,8 @@ private final class MemoryKeychain: TokenPairStore {
     var fails: (HostKeychainItem, Int) -> Bool = { _, _ in false }
     /// The keychain cannot be read.
     var failLookups = false
+    /// Deletes do nothing (a keychain locked since boot).
+    var deletesFail = false
 
     init(access: Data?, refresh: Data?) {
         pair = Pair(access: access, refresh: refresh)
@@ -336,6 +367,7 @@ private final class MemoryKeychain: TokenPairStore {
     }
 
     func deleteHostData(_ item: HostKeychainItem) {
+        guard !deletesFail, value(item) != nil else { return }
         set(item, nil)
     }
 

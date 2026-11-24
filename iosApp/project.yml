@@ -444,6 +444,11 @@ targets:
       # injected, so no keychain is needed). Pinned by TokenPairWriteTests.
       - path: iosApp/Services/TokenPairWrite.swift
       - path: iosApp/Services/KeychainItemQuery.swift
+      # ...and the session vault: the lock every pair write takes, a refresh
+      # rotation's pair kept in memory when the keychain refuses it, and the
+      # durable spent-refresh-token fence (#671 review). Foundation-only,
+      # pinned by SessionTokenVaultTests.
+      - path: iosApp/Services/SessionTokenVault.swift
       # ...and the four entitlements files, carried as RESOURCES so the same
       # test checks that only the app (never the PacketTunnel extension) lists
       # the host group.

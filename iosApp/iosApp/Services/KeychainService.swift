@@ -42,10 +42,19 @@ final class KeychainService: @unchecked Sendable {
     private let placementLock = NSLock()
     private var resolvedPlacement: HostKeychainPlacement?
 
+    /// #671 review (MR-2580): the token pair as this process sees it, and the
+    /// lock every pair write takes (`SessionTokenVault`).
+    private let session = SessionTokenVault(fence: FileSpentRefreshFence.standard())
+
     // MARK: - Public Accessors (host app only)
 
-    var accessToken: String? { read(.accessToken) }
-    var refreshToken: String? { read(.refreshToken) }
+    var accessToken: String? { session.accessToken(in: self).flatMap { String(data: $0, encoding: .utf8) } }
+    /// The refresh token a refresh may present: never one the fence marks
+    /// spent (`SessionTokenVault`).
+    var refreshToken: String? { session.refreshToken(in: self).flatMap { String(data: $0, encoding: .utf8) } }
+    /// A relaunch found the stored refresh token spent, with no newer pair: the
+    /// session is signed out locally, and the token is never presented.
+    var storedRefreshTokenIsSpent: Bool { session.storedRefreshTokenIsSpent }
     var userEmail: String? { read(.userEmail) }
     /// SSOT device identity ("ios_" + a random v4 UUID, minted by APIClient).
     /// PER INSTALL (MR-1726, Android parity): it survives `clear()`, so
@@ -76,38 +85,51 @@ final class KeychainService: @unchecked Sendable {
 
     // MARK: - Save / Clear (host app only)
 
-    /// Persist the auth credentials. Returns `false` if either required item
-    /// (access or refresh token) failed to write, so callers can surface a real
-    /// error instead of hitting a silent auth failure on the next launch.
+    /// Persist a NEW session's credentials: a sign-in, a number rotation.
+    /// Returns `false` if either required item (access or refresh token) failed
+    /// to write, so callers can surface a real error instead of hitting a
+    /// silent auth failure on the next launch. A refresh rotation stores its
+    /// pair with `saveRotation`.
     ///
     /// A HALF-written pair is the dangerous case (findings #60, #433). The two
     /// tokens are two keychain items, so `TokenPairWrite` writes the REFRESH
     /// token first, each in one step (MR-2580): neither a failed write nor a
     /// kill between the two ever leaves the new access token with an older
     /// refresh token, which after a refresh rotation is already spent, and
-    /// which the server treats as theft when it is presented again.
-    ///
-    /// On a failure, `replacing` decides what is left (`TokenPairWrite.Replaced`):
-    ///   - a sign-in or a number rotation (`.anotherSession`): the prior pair,
-    ///     put back as it was;
-    ///   - a refresh rotation (`.consumedRefreshToken`): the new refresh token,
-    ///     never the spent one, next to the prior access token, whose next 401
-    ///     refreshes with it.
+    /// which the server treats as theft when it is presented again. On a
+    /// failure the prior pair is put back as it was
+    /// (`TokenPairWrite.Replaced.anotherSession`).
     @discardableResult
-    func save(accessToken: String,
-              refreshToken: String,
-              email: String?,
-              replacing: TokenPairWrite.Replaced) -> Bool {
-        guard TokenPairWrite.save(accessToken: Data(accessToken.utf8),
-                                  refreshToken: Data(refreshToken.utf8),
-                                  replacing: replacing,
-                                  in: self) else { return false }
+    func save(accessToken: String, refreshToken: String, email: String?) -> Bool {
+        guard session.save(accessToken: Data(accessToken.utf8),
+                           refreshToken: Data(refreshToken.utf8),
+                           in: self) else { return false }
         if let email {
             write(.userEmail, value: email)
         } else {
             delete(.userEmail)
         }
         return true
+    }
+
+    /// A refresh rotation's pair, for the refresh token it presented
+    /// (`APIClient.refreshTokens`). The server spent that token when it
+    /// answered, so it is never stored again (`SessionTokenVault`).
+    func saveRotation(accessToken: String,
+                      refreshToken: String,
+                      expectingRefreshToken presented: String) -> SessionTokenVault.RotationSave {
+        session.saveRotation(accessToken: Data(accessToken.utf8),
+                             refreshToken: Data(refreshToken.utf8),
+                             expectingRefreshToken: Data(presented.utf8),
+                             in: self)
+    }
+
+    /// Store a pair a refresh rotation could only keep in memory, now that the
+    /// keychain may take it (foreground, unlock, before a refresh). True when
+    /// none is left to store.
+    @discardableResult
+    func persistPendingSession() -> Bool {
+        session.persistPending(in: self)
     }
 
     @discardableResult
@@ -137,8 +159,7 @@ final class KeychainService: @unchecked Sendable {
     /// doc; a sign-out drops `anonymous_id` separately (`LocalSignOut.wipe`)
     /// and a reinstall is handled by `InstallIdentity`.
     func clear() {
-        delete(.accessToken)
-        delete(.refreshToken)
+        session.clear(in: self)
         delete(.userEmail)
         delete(.signInMethod)
         // Also wipe any tunnel secrets that may have been left behind.
