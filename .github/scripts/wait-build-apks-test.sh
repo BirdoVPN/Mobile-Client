@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================================
 # Self-test for .github/scripts/wait-build-apks.sh (the emulator job's wait for
-# the two APKs "Build APK" uploads; MR-1410, MR-2382, MR-2402, MR-2512), run by
+# the two APKs "Build APK" uploads; MR-1410, MR-2382, MR-2402, MR-2512,
+# MR-2557), run by
 # that job before it waits. gh, sleep, timeout and the clock are stubs, so no
 # case needs a token, the network or real time. A re-run's race cannot be
 # staged on demand in CI, so each case replays what the API reports during one:
@@ -21,9 +22,16 @@
 #                   completed, started before this attempt
 #                   and ended after its start                  -> exit 1
 #                   completed with no start time               -> exit 1
+#   same second     carried over, ended in the second this
+#                   attempt started                           -> its APKs (MR-2557)
+#                   started in the second this attempt did    -> this attempt's
 #   never starts    queued, or in_progress with no start or
 #                   an old one, for the queued cap (20 min)    -> exit 1, not earlier
 #                   queued 19.5 min, then runs past the cap    -> its APKs
+#   seen running    then one read regresses to queued past
+#                   the cap                                   -> its APKs (MR-2557)
+#                   then the reads stay regressed             -> exit 1 at its
+#                                                                deadline, not the cap
 #   two uploads     the newer one has the LOWER id            -> the newer (MR-2402)
 #                   both in the same second                   -> the higher id
 #   expired         the only APK has expired                  -> never taken
@@ -34,7 +42,9 @@
 #                   6 failed reads in a row (jobs/artifacts)  -> exit 1
 #                   the attempt unreadable 6 times            -> exit 1, no poll
 #                   a read that hangs: cut by `timeout 60`    -> their ids
-#                   every gh call runs as `timeout 60 gh`
+#                   a hung read ignores the TERM: killed 10 s
+#                   later (`timeout -k 10 60`; MR-2557)        -> their ids
+#                   every gh call runs as `timeout -k 10 60 gh`
 #   not listed      no single job named "Build APK", 30 polls -> exit 1
 #   in step         BUILD_TIMEOUT_MIN = jobs.build.timeout-minutes, and the
 #                   wait ends before the emulator job's own timeout (MR-2382),
@@ -104,6 +114,9 @@ case "$(cat "$file")" in
   # A read that never answers. exec, so that the signal `timeout` sends ends
   # the sleep itself, and no orphan keeps the caller's $(...) pipe open.
   HANG) exec "$WBA_REAL_SLEEP" 30 ;;
+  # One that also ignores the TERM (an ignored signal stays ignored across
+  # the exec): only a KILL ends it.
+  HANG_NOTERM) trap '' TERM; exec "$WBA_REAL_SLEEP" 30 ;;
 esac
 if [ "$kind" = artifacts ]; then
   json=$(jq --arg n "$name" '.artifacts |= map(select(.name == $n)) | .total_count = (.artifacts | length)' "$file")
@@ -125,17 +138,28 @@ cat >"$stubs/date" <<'STUB'
 #!/usr/bin/env bash
 if [ "$*" = "-u +%s" ]; then cat "$WBA_CASE/clock"; else exec "$WBA_REAL_DATE" "$@"; fi
 STUB
-# timeout <seconds> <command...>: logs both, then runs the command under the
-# real timeout cut to 10 s, so a hung read costs this test seconds, not a
-# minute; the fake clock then moves on by the full <seconds>.
+# timeout [-k <kill-after>] <seconds> <command...>: logs them, then runs the
+# command under the real timeout cut to 10 s (and a kill-after cut to 2 s), so
+# a hung read costs this test seconds, not a minute. The fake clock then moves
+# on by the full <seconds> when the TERM ended it (124), plus <kill-after>
+# when only the KILL did (137).
 cat >"$stubs/timeout" <<'STUB'
 #!/usr/bin/env bash
+k=""
+if [ "$1" = -k ]; then k="$2"; shift 2; fi
 d="$1"
 shift
-printf '%s %s\n' "$d" "$1" >>"$WBA_CASE/timeouts.log"
+printf '%s%s %s\n' "${k:+-k $k }" "$d" "$1" >>"$WBA_CASE/timeouts.log"
 rc=0
-"$WBA_REAL_TIMEOUT" 10 "$@" || rc=$?
-if [ "$rc" -eq 124 ]; then echo $(( $(cat "$WBA_CASE/clock") + d )) >"$WBA_CASE/clock"; fi
+if [ -n "$k" ]; then
+  "$WBA_REAL_TIMEOUT" -k 2 10 "$@" || rc=$?
+else
+  "$WBA_REAL_TIMEOUT" 10 "$@" || rc=$?
+fi
+case "$rc" in
+  124) echo $(( $(cat "$WBA_CASE/clock") + d )) >"$WBA_CASE/clock" ;;
+  137) echo $(( $(cat "$WBA_CASE/clock") + d + ${k:-0} )) >"$WBA_CASE/clock" ;;
+esac
 exit "$rc"
 STUB
 chmod +x "$stubs/gh" "$stubs/sleep" "$stubs/date" "$stubs/timeout"
@@ -205,11 +229,11 @@ no_artifact_read_in_first() { # <n>: the first n API reads are all of the jobs
 clock_is() { [ "$(cat "$case_dir/clock")" -eq "$(epoch "$1")" ]; }
 clock_is_after() { [ "$(cat "$case_dir/clock")" -eq $(( $(epoch "$1") + $2 )) ]; } # <time> <seconds>
 iso_after() { "$real_date" -u -d "@$(( $(epoch "$1") + $2 ))" +%Y-%m-%dT%H:%M:%SZ; } # <time> <seconds>
-all_reads_bounded() { # every gh call of the case ran as `timeout 60 gh ...`
+all_reads_bounded() { # every gh call of the case ran as `timeout -k 10 60 gh ...`
   local calls bounded logged
   calls=$(wc -l <"$case_dir/calls.log")
   logged=$(wc -l <"$case_dir/timeouts.log" 2>/dev/null || echo 0)
-  bounded=$(grep -cx '60 gh' "$case_dir/timeouts.log" 2>/dev/null || true)
+  bounded=$(grep -cx -- '-k 10 60 gh' "$case_dir/timeouts.log" 2>/dev/null || true)
   [ "$calls" -gt 0 ] && [ "$logged" -eq "$calls" ] && [ "${bounded:-0}" -eq "$calls" ]
 }
 # The queued cap the script sets (MR-2512); the cases below follow it.
@@ -326,6 +350,27 @@ check "completed, started before this attempt and ended after its start: exit 1,
   failed_with 'fit neither attempt 2'
 show
 
+# -- the second this attempt started (MR-2557) ------------------------------------
+# Carried over, it ended in that very second (run 44384671633, attempt 4,
+# ended only 4 s before it): it can only be an earlier attempt's, so its APKs
+# are tested. A strict "ended before" made it fit neither attempt.
+new_case carried-same-second 2026-11-19T11:02:00Z 2026-11-19T11:00:00Z
+fixture jobs 1 "$(jobs_json completed success 2026-11-19T10:00:00Z 2026-11-19T11:00:00Z)"
+fixture artifacts 1 "$(arts_json "$old_app" "$old_test")"
+run_wait 2
+check "carried over, ended in the second this attempt started: its own APKs" took 900 901
+show
+
+# Started in that very second: this attempt's, so the earlier APKs are not.
+new_case this-same-second 2026-11-19T11:02:00Z 2026-11-19T11:00:00Z
+fixture jobs 1 "$(jobs_json in_progress null 2026-11-19T11:00:00Z)"
+fixture artifacts 1 "$(arts_json "$old_app" "$old_test")"
+fixture artifacts 3 "$(arts_json "$old_app" "$old_test" \
+  "$(art 950 debug-apk 2026-11-19T11:06:00Z)" "$(art 951 debug-android-test-apk 2026-11-19T11:06:01Z)")"
+run_wait 2
+check "started in the second this attempt started: this attempt's, not the earlier APKs" took 950 951
+show
+
 # -- a Build APK that never starts in this attempt (MR-2512) ----------------------
 # Queued (no runner), or in_progress with no start or one before this
 # attempt's: the wait ends at the queued cap from its own start, not earlier.
@@ -355,6 +400,35 @@ fixture artifacts $(( start_poll + 7 )) "$(arts_json "$(art 970 debug-apk "$(iso
   "$(art 971 debug-android-test-apk "$(iso_after "$late_start" 61)")")"
 run_wait 1
 check "queued until 30 s before the cap, then running past it: its APKs" took 970 971
+show
+
+# -- seen running, then a read that regresses (MR-2557) ---------------------------
+# Once this attempt's Build APK was seen running, the queued cap no longer
+# applies: one stale read past the cap (queued, no start) does not end the
+# wait while the build runs on.
+new_case latch-cap 2026-11-19T11:00:10Z 2026-11-19T11:00:00Z
+regress_poll=$(( cap_s / 10 + 5 ))
+fixture jobs 1 "$(jobs_json in_progress null 2026-11-19T11:01:00Z)"
+fixture jobs "$regress_poll" "$(jobs_json queued null null)"
+fixture jobs $(( regress_poll + 2 )) "$(jobs_json in_progress null 2026-11-19T11:01:00Z)"
+fixture artifacts 1 "$(arts_json "$old_app" "$old_test")"
+fixture artifacts $(( regress_poll + 3 )) "$(arts_json "$old_app" "$old_test" \
+  "$(art 950 debug-apk 2026-11-19T11:22:00Z)" "$(art 951 debug-android-test-apk 2026-11-19T11:22:01Z)")"
+run_wait 2
+check "seen running, then read as queued past the cap: the wait goes on, then its APKs" took 950 951
+show
+
+# ... and if the reads stay regressed (here in_progress with an older start),
+# the deadline of the start it was seen with ends the wait: 11:01 + 40 + 5,
+# not the cap 20 minutes after this wait's start (11:50).
+new_case latch-deadline 2026-11-19T11:30:00Z 2026-11-19T11:00:00Z
+fixture jobs 1 "$(jobs_json in_progress null 2026-11-19T11:01:00Z)"
+fixture jobs 2 "$(jobs_json in_progress null 2026-11-19T10:00:00Z)"
+fixture artifacts 1 "$(arts_json "$old_app" "$old_test")"
+run_wait 2 40
+check "seen running, then regressed reads: exit 1 at its deadline" \
+  failed_with 'Build APK started at 2026-11-19T11:01:00Z, is past its 40-minute timeout plus 5 minutes'
+check "seen running, then regressed reads: at 11:46:00 (its start + 45 min), not the cap" clock_is 2026-11-19T11:46:00Z
 show
 
 # -- the newest upload by time, not by id (MR-2402) ------------------------------
@@ -462,7 +536,16 @@ fixture artifacts 0 "$(arts_json "$old_app" "$old_test")"
 run_wait 1
 check "API: a read that hangs is cut off and retried: the APKs" took 900 901
 check "API: ... the hung read is cut at 60 s (fake clock 10:06:00 + 60 + 10)" clock_is 2026-11-19T10:07:10Z
-check "API: every gh call runs as \`timeout 60 gh\` (attempt, jobs, artifacts)" all_reads_bounded
+check "API: every gh call runs as \`timeout -k 10 60 gh\` (attempt, jobs, artifacts)" all_reads_bounded
+show
+
+new_case api-hangs-noterm 2026-11-19T10:06:00Z
+fixture jobs 1 HANG_NOTERM
+fixture jobs 2 "$(jobs_json in_progress null 2026-11-19T10:00:00Z)"
+fixture artifacts 0 "$(arts_json "$old_app" "$old_test")"
+run_wait 1
+check "API: a hung read that ignores the TERM is killed and retried: the APKs" took 900 901
+check "API: ... killed 10 s after the TERM (fake clock 10:06:00 + 60 + 10, then 10 s)" clock_is 2026-11-19T10:07:20Z
 show
 
 new_case api-artifacts-down 2026-11-19T10:06:00Z
