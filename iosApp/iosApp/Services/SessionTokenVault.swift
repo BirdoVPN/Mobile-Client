@@ -17,6 +17,10 @@ final class SessionTokenVault: @unchecked Sendable {
         /// The refresh token the rotation presented is no longer the current
         /// one (a sign-out, a sign-in, another rotation): nothing is written.
         case superseded
+        /// The keychain refused the pair AND the fence could not be written:
+        /// nothing durable would keep the spent refresh token from being
+        /// presented after a relaunch, so the session is signed out now.
+        case signedOut
     }
 
     private let fence: any SpentRefreshFence
@@ -38,10 +42,16 @@ final class SessionTokenVault: @unchecked Sendable {
     /// is spent, and the session is signed out locally.
     var storedRefreshTokenIsSpent: Bool { false }
 
-    /// A new session's pair (a sign-in, a number rotation).
-    func save(accessToken: Data, refreshToken: Data, in store: any TokenPairStore) -> Bool {
-        TokenPairWrite.save(accessToken: accessToken, refreshToken: refreshToken,
-                            replacing: .anotherSession, in: store)
+    /// A new session's pair (a sign-in, a number rotation), and its e-mail.
+    func save(accessToken: Data, refreshToken: Data, email: Data?, in store: any TokenPairStore) -> Bool {
+        guard TokenPairWrite.save(accessToken: accessToken, refreshToken: refreshToken,
+                                  replacing: .anotherSession, in: store) else { return false }
+        if let email {
+            store.replaceHostData(email, for: .userEmail)
+        } else {
+            store.deleteHostData(.userEmail)
+        }
+        return true
     }
 
     /// A refresh rotation's pair, for the refresh token it presented.
@@ -82,10 +92,16 @@ protocol SpentRefreshFence: AnyObject {
 /// its folder are created with `FileProtectionType.none` on iOS. macOS has no
 /// such classes.
 final class FileSpentRefreshFence: SpentRefreshFence, @unchecked Sendable {
-    let url: URL
+    /// Writes the file: `Data.write(to:options:)`, or a recorder in the tests.
+    typealias Writer = @Sendable (_ data: Data, _ url: URL, _ options: Data.WritingOptions) throws -> Void
 
-    init(directory: URL) {
+    let url: URL
+    private let writer: Writer
+
+    init(directory: URL,
+         writer: @escaping Writer = { data, url, options in try data.write(to: url, options: options) }) {
         url = directory.appendingPathComponent("spent-refresh-fence", isDirectory: false)
+        self.writer = writer
     }
 
     /// `Application Support/BirdoVPN/spent-refresh-fence`, in the app's own
@@ -107,7 +123,7 @@ final class FileSpentRefreshFence: SpentRefreshFence, @unchecked Sendable {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true,
                                                     attributes: Self.folderAttributes)
-            try Data("spent at \(stamp)\n".utf8).write(to: url, options: Self.writeOptions)
+            try writer(Data("spent at \(stamp)\n".utf8), url, Self.writeOptions)
             return true
         } catch {
             return false
@@ -119,10 +135,10 @@ final class FileSpentRefreshFence: SpentRefreshFence, @unchecked Sendable {
     }
 
     #if os(iOS)
-    private static var writeOptions: Data.WritingOptions { [.atomic, .noFileProtection] }
-    private static var folderAttributes: [FileAttributeKey: Any]? { [.protectionKey: FileProtectionType.none] }
+    static var writeOptions: Data.WritingOptions { [.atomic, .noFileProtection] }
+    static var folderAttributes: [FileAttributeKey: Any]? { [.protectionKey: FileProtectionType.none] }
     #else
-    private static var writeOptions: Data.WritingOptions { [.atomic] }
-    private static var folderAttributes: [FileAttributeKey: Any]? { nil }
+    static var writeOptions: Data.WritingOptions { [.atomic] }
+    static var folderAttributes: [FileAttributeKey: Any]? { nil }
     #endif
 }

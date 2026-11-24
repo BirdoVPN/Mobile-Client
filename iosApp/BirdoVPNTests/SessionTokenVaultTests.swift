@@ -161,10 +161,194 @@ final class SessionTokenVaultTests: XCTestCase {
         refusedRotation(keychain, vault)
         XCTAssertTrue(fence.isSet)
         keychain.fails = { _, _ in false }
-        XCTAssertTrue(vault.save(accessToken: a2, refreshToken: r2, in: keychain))
+        XCTAssertTrue(vault.save(accessToken: a2, refreshToken: r2, email: nil, in: keychain))
         XCTAssertFalse(fence.isSet)
         XCTAssertEqual(vault.accessToken(in: keychain), a2, "the old pair in memory outlived the sign-in")
         XCTAssertEqual(vault.refreshToken(in: keychain), r2)
+    }
+
+    /// The fence itself cannot be written: nothing durable would keep the
+    /// spent token from a relaunch, so the session is signed out now, and the
+    /// caller revokes the dropped pair with its own access token.
+    func testAFenceThatCannotBeWrittenSignsOutNow() {
+        let fence = MemoryFence()
+        fence.failSets = true
+        let keychain = signedIn()
+        let vault = SessionTokenVault(fence: fence)
+        keychain.fails = { _, _ in true }
+        XCTAssertEqual(vault.saveRotation(accessToken: a1, refreshToken: r1, expectingRefreshToken: r0, in: keychain),
+                       .signedOut)
+        XCTAssertNil(vault.refreshToken(in: keychain), "the spent refresh token can still be presented")
+        XCTAssertNil(vault.accessToken(in: keychain))
+        XCTAssertEqual(keychain.pair, .init(access: nil, refresh: nil))
+    }
+
+    /// The fence goes only once the NEW refresh token reads back: a write that
+    /// reported success and stored nothing keeps it.
+    func testTheFenceIsClearedOnlyWhenTheNewRefreshTokenReadsBack() {
+        let fence = MemoryFence()
+        let keychain = signedIn()
+        let vault = SessionTokenVault(fence: fence)
+        refusedRotation(keychain, vault)
+        keychain.fails = { _, _ in false }
+        keychain.dropsWrites = [.refreshToken]
+        XCTAssertFalse(vault.persistPending(in: keychain))
+        XCTAssertTrue(fence.isSet, "cleared on a write that did not read back")
+        XCTAssertEqual(vault.refreshToken(in: keychain), r1)
+        keychain.dropsWrites = []
+        XCTAssertTrue(vault.persistPending(in: keychain))
+        XCTAssertFalse(fence.isSet)
+    }
+
+    // MARK: - One account at every kill point, every session item
+
+    private let e0 = Data("email-0".utf8)
+    private let e1 = Data("email-1".utf8)
+    private let m0 = Data("method-0".utf8)
+    private let n0 = Data("number-0".utf8)
+
+    /// Which accounts' items a state holds: 0 the prior one, 1 the new one.
+    private func accounts(_ state: MemoryKeychain.Pair) -> Set<Int> {
+        var found: Set<Int> = []
+        for (value, prior, new) in [(state.access, a0, a1), (state.refresh, r0, r1), (state.email, e0, e1)] {
+            if value == prior { found.insert(0) }
+            if value == new { found.insert(1) }
+        }
+        if state.method == m0 || state.anonymousId == n0 { found.insert(0) }
+        return found
+    }
+
+    /// #671 review, item 4: a sign-in over another account's session. The
+    /// prior e-mail, sign-in method and anonymous number go first with the
+    /// prior access token, and the new e-mail is written last
+    /// (`AuthViewModel` writes the method and the number after `save`).
+    func testEveryKillPointOfASignInLeavesOneAccountsItems() {
+        let keychain = MemoryKeychain(access: a0, refresh: r0, email: e0, method: m0, anonymousId: n0)
+        let vault = SessionTokenVault(fence: MemoryFence())
+        XCTAssertTrue(vault.save(accessToken: a1, refreshToken: r1, email: e1, in: keychain))
+        for (index, state) in keychain.states.enumerated() {
+            XCTAssertLessThanOrEqual(accounts(state).count, 1, "a kill after change \(index) mixes two accounts")
+        }
+        XCTAssertEqual(keychain.pair, .init(access: a1, refresh: r1, email: e1))
+
+        // A failed sign-in puts every prior item back.
+        let failed = MemoryKeychain(access: a0, refresh: r0, email: e0, method: m0, anonymousId: n0)
+        failed.fails = { item, earlier in item == .accessToken && earlier == 1 }
+        XCTAssertFalse(SessionTokenVault(fence: MemoryFence()).save(accessToken: a1, refreshToken: r1, email: e1,
+                                                                   in: failed))
+        XCTAssertEqual(failed.pair, .init(access: a0, refresh: r0, email: e0, method: m0, anonymousId: n0))
+        for state in failed.states {
+            XCTAssertLessThanOrEqual(accounts(state).count, 1)
+        }
+    }
+
+    /// #671 review, item 3 (Low): a failed put-back whose delete fails too,
+    /// then `saveWithRetry`'s second attempt. Never two accounts' tokens.
+    func testARetryAfterAFailedPutBackNeverMixesAccounts() {
+        let keychain = signedIn()
+        keychain.fails = { item, earlier in item == .accessToken || (item == .refreshToken && earlier > 0) }
+        keychain.onWrite = { item in
+            if item == .accessToken { keychain.deletesFail = true }
+        }
+        let vault = SessionTokenVault(fence: MemoryFence())
+        XCTAssertFalse(SessionPersistence.saveWithRetry {
+            vault.save(accessToken: a1, refreshToken: r1, email: nil, in: keychain)
+        })
+        for (index, state) in keychain.states.enumerated() {
+            XCTAssertLessThanOrEqual(accounts(state).count, 1, "change \(index) mixes two accounts")
+        }
+        XCTAssertLessThanOrEqual(accounts(keychain.pair).count, 1)
+    }
+
+    // MARK: - The interleavings of the #671 review, item 3
+
+    /// Starts `other` on another thread at the first main-thread write of
+    /// `item`, and lets it run for a while. Without the vault's lock it runs to
+    /// its end right there, in the middle of that write's caller; with it, it
+    /// waits until the caller is done.
+    private final class Interleaving: @unchecked Sendable {
+        private let done = DispatchSemaphore(value: 0)
+        private var fired = false
+
+        func arm(_ keychain: MemoryKeychain, at item: HostKeychainItem, _ other: @escaping @Sendable () -> Void) {
+            keychain.onWrite = { [self] written in
+                guard Thread.isMainThread, written == item, !fired else { return }
+                fired = true
+                DispatchQueue.global().async {
+                    other()
+                    self.done.signal()
+                }
+                if done.wait(timeout: .now() + .milliseconds(300)) == .success { done.signal() }
+            }
+        }
+
+        func finish() {
+            XCTAssertEqual(done.wait(timeout: .now() + 10), .success, "the other writer never finished")
+        }
+    }
+
+    private final class Box: @unchecked Sendable {
+        var rotation: SessionTokenVault.RotationSave?
+    }
+
+    /// (a) A refresh rotation lands while a sign-in is between reading the
+    /// prior pair and putting it back: the spent prior token must not come
+    /// back over the rotation's new pair.
+    func testARotationDuringASignInsPutBackNeverLeavesTheSpentToken() {
+        let keychain = signedIn()
+        // The sign-in's (main thread) access writes fail; the rotation's do not.
+        keychain.fails = { item, _ in item == .accessToken && Thread.isMainThread }
+        let vault = SessionTokenVault(fence: MemoryFence())
+        let box = Box()
+        let interleaving = Interleaving()
+        let (a1, r1, r0) = (self.a1, self.r1, self.r0)
+        interleaving.arm(keychain, at: .refreshToken) {
+            box.rotation = vault.saveRotation(accessToken: a1, refreshToken: r1, expectingRefreshToken: r0,
+                                              in: keychain)
+        }
+        XCTAssertFalse(vault.save(accessToken: a2, refreshToken: r2, email: nil, in: keychain))
+        interleaving.finish()
+        XCTAssertNotEqual(keychain.pair.refresh, r0, "the refresh token the rotation spent was put back")
+        XCTAssertEqual(box.rotation, .stored)
+        XCTAssertEqual(keychain.pair.refresh, r1)
+    }
+
+    /// (b) A sign-out lands while a rotation is writing: the rotation's pair
+    /// must not outlive the sign-out.
+    func testASignOutDuringARotationIsNotUndone() {
+        let keychain = signedIn()
+        let vault = SessionTokenVault(fence: MemoryFence())
+        let interleaving = Interleaving()
+        interleaving.arm(keychain, at: .refreshToken) {
+            vault.clear(in: keychain)
+        }
+        _ = vault.saveRotation(accessToken: a1, refreshToken: r1, expectingRefreshToken: r0, in: keychain)
+        interleaving.finish()
+        XCTAssertEqual(keychain.pair, .init(access: nil, refresh: nil), "the signed-out session came back")
+        XCTAssertNil(vault.refreshToken(in: keychain))
+    }
+
+    /// (c) A rotation of account A lands while account B's sign-in is writing:
+    /// B's pair must be the one left, and no state may mix the two.
+    func testARotationDuringASignInNeverMixesAccounts() {
+        let keychain = signedIn()
+        let vault = SessionTokenVault(fence: MemoryFence())
+        let box = Box()
+        let interleaving = Interleaving()
+        let (a1, r1, r0) = (self.a1, self.r1, self.r0)
+        interleaving.arm(keychain, at: .refreshToken) {
+            box.rotation = vault.saveRotation(accessToken: a1, refreshToken: r1, expectingRefreshToken: r0,
+                                              in: keychain)
+        }
+        XCTAssertTrue(vault.save(accessToken: a2, refreshToken: r2, email: nil, in: keychain))
+        interleaving.finish()
+        XCTAssertEqual(box.rotation, .superseded, "a rotation of the old account wrote over the sign-in")
+        XCTAssertEqual(keychain.pair, .init(access: a2, refresh: r2))
+        for (index, state) in keychain.states.enumerated() {
+            let oldAccount = state.access == a0 || state.access == a1 || state.refresh == r0 || state.refresh == r1
+            let newAccount = state.access == a2 || state.refresh == r2
+            XCTAssertFalse(oldAccount && newAccount, "change \(index) mixes two accounts")
+        }
     }
 
     // MARK: - The compare-and-swap, inside the lock
@@ -210,6 +394,29 @@ final class SessionTokenVaultTests: XCTestCase {
         XCTAssertFalse(FileSpentRefreshFence(directory: folder).isSet)
     }
 
+    /// The write itself, through an injected writer: atomic, and unprotected
+    /// on iOS (the default class would hide it until the first unlock).
+    func testTheFenceFileIsWrittenUnprotected() {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fence-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        final class Recorder: @unchecked Sendable {
+            var options: Data.WritingOptions?
+        }
+        let recorder = Recorder()
+        let fence = FileSpentRefreshFence(directory: folder) { data, url, options in
+            recorder.options = options
+            try data.write(to: url, options: options)
+        }
+        XCTAssertTrue(fence.set())
+        XCTAssertEqual(recorder.options?.contains(.atomic), true)
+        #if os(iOS)
+        XCTAssertEqual(recorder.options?.contains(.noFileProtection), true, "the fence file is protected")
+        XCTAssertEqual(FileSpentRefreshFence.folderAttributes?[.protectionKey] as? FileProtectionType,
+                       FileProtectionType.none)
+        #endif
+    }
+
     // MARK: - Where it is wired (source pins: APIClient, AuthViewModel and
     // KeychainService cannot be compiled into this bundle)
 
@@ -246,13 +453,22 @@ final class SessionTokenVaultTests: XCTestCase {
             return XCTFail("a refresh does not first store a pair kept in memory")
         }
         XCTAssertLessThan(persist.lowerBound, read.lowerBound)
-        guard let save = refresh.range(of: "keychain.saveRotation(") else {
-            return XCTFail("the rotated pair is not stored through saveRotation")
+        guard let save = refresh.range(of: "keychain.saveRotation("),
+              let kept = refresh.range(of: "case .stored, .keptInMemory, .superseded:"),
+              let signedOut = refresh.range(of: "case .signedOut:") else {
+            return XCTFail("the rotated pair is not stored through saveRotation, or an outcome is not handled")
         }
-        let after = refresh[save.lowerBound...]
-        XCTAssertTrue(after.contains("expectingRefreshToken: refresh"))
-        XCTAssertFalse(after.contains("throw"),
+        XCTAssertTrue(refresh[save.lowerBound...].contains("expectingRefreshToken: refresh"))
+        XCTAssertFalse(refresh[kept.upperBound..<signedOut.lowerBound].contains("throw"),
                        "a pair kept in memory fails the request instead of serving it")
+        // Signed out because nothing durable could fence the spent token: the
+        // dropped pair is revoked with ITS OWN access token (never the stored
+        // one: #666's Android M1), with no refresh handling, and the caller
+        // signs out.
+        let dropped = refresh[signedOut.upperBound...]
+        XCTAssertTrue(dropped.contains("let dropped = tokens.accessToken"))
+        XCTAssertTrue(dropped.contains("logout(bearerToken: dropped)"))
+        XCTAssertTrue(dropped.contains("throw APIError.unauthorized"))
 
         let retry = try XCTUnwrap(member("func retryHeldRefresh() async throws {", in: api))
         XCTAssertTrue(retry.contains("keychain.persistPendingSession()"), "coming to the foreground stores nothing")
@@ -299,8 +515,10 @@ final class SessionTokenVaultTests: XCTestCase {
 }
 
 /// The fence, in memory: one object stands for the file across a relaunch.
-final class MemoryFence: SpentRefreshFence {
+final class MemoryFence: SpentRefreshFence, @unchecked Sendable {
     private(set) var stored: Bool
+    /// The file cannot be written (a full disk).
+    var failSets = false
 
     init(set: Bool = false) {
         stored = set
@@ -309,6 +527,7 @@ final class MemoryFence: SpentRefreshFence {
     var isSet: Bool { stored }
 
     func set() -> Bool {
+        guard !failSets else { return false }
         stored = true
         return true
     }

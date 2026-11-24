@@ -79,15 +79,28 @@ final class TokenPairWriteTests: XCTestCase {
 
     // MARK: - What a failure leaves
 
-    func testAFailedRefreshWriteLeavesThePriorPairIntact() {
-        for replacing in everyWrite {
-            let keychain = signedIn()
-            keychain.fails = { item, _ in item == .refreshToken }
-            XCTAssertFalse(save(keychain, replacing))
-            XCTAssertEqual(keychain.pair, .init(access: priorAccess, refresh: priorRefresh), "\(replacing)")
-            XCTAssertFalse(keychain.states.contains { $0.access == newAccess },
-                           "the new access token was stored with no refresh token to go with it (\(replacing))")
-        }
+    /// A sign-in: the prior pair is another session's, not spent by this write.
+    func testAFailedRefreshWriteOnASignInLeavesThePriorPairIntact() {
+        let keychain = signedIn()
+        keychain.fails = { item, _ in item == .refreshToken }
+        XCTAssertFalse(save(keychain, .anotherSession))
+        XCTAssertEqual(keychain.pair, .init(access: priorAccess, refresh: priorRefresh))
+        XCTAssertFalse(keychain.states.contains { $0.access == newAccess },
+                       "the new access token was stored with no refresh token to go with it")
+    }
+
+    /// #671 review, item 1 (inverted from the first head, which kept the
+    /// "prior pair intact" here): after a refresh rotation the prior refresh
+    /// token is the one the server just spent. Where the keychain still allows
+    /// a delete it goes; where it does not, `SessionTokenVault` fences it.
+    func testAFailedRefreshWriteAfterARotationRemovesTheSpentToken() {
+        let keychain = signedIn()
+        keychain.fails = { item, _ in item == .refreshToken }
+        XCTAssertEqual(TokenPairWrite.write(accessToken: newAccess, refreshToken: newRefresh,
+                                            replacing: .consumedRefreshToken, in: keychain), .notStored)
+        XCTAssertNil(keychain.pair.refresh, "the spent refresh token is still stored, ready to be presented")
+        XCTAssertEqual(keychain.pair.access, priorAccess)
+        XCTAssertFalse(keychain.states.contains { $0.access == newAccess })
     }
 
     /// A sign-in or a number rotation: the device is left as it was, so the
@@ -198,6 +211,17 @@ final class TokenPairWriteTests: XCTestCase {
         XCTAssertEqual(calls.items, [itemKey: Data("ours".utf8)])
     }
 
+    /// #671 review: the other writer's copy, then an update that fails: false,
+    /// and their copy is left as it was (never deleted).
+    func testAReplaceRacingAnotherWriterThatThenFailsLeavesTheirs() {
+        let calls = SecItemCalls()
+        calls.items[itemKey] = Data("theirs".utf8)
+        calls.updateAnswers = [errSecItemNotFound, errSecIO]
+        XCTAssertFalse(replace(Data("ours".utf8), calls))
+        XCTAssertEqual(calls.made, ["update", "add", "update"])
+        XCTAssertEqual(calls.items, [itemKey: Data("theirs".utf8)])
+    }
+
     /// The attributes are the ones every build has added these items with
     /// (KeychainService's header): only the way the value is written changed.
     func testANewItemKeepsTheAttributesEveryBuildAddedItWith() throws {
@@ -302,12 +326,12 @@ final class TokenPairWriteTests: XCTestCase {
                        ["SessionTokenVault.swift": 2])
     }
 
-    /// Nothing else writes either token: only `TokenPairWrite` does, for the
-    /// vault.
+    /// Nothing else writes or deletes either token: only `TokenPairWrite` and
+    /// the vault, under the vault's one lock (#671 review, delta 5).
     func testOnlyTokenPairWriteWritesTheTokens() throws {
         let sources = try appSources()
         let tokenWrite = try NSRegularExpression(
-            pattern: #"\b(setHostData|replaceHostData|write|replace)\([^)\n]*\.(accessToken|refreshToken)\b"#)
+            pattern: #"\b(setHostData|replaceHostData|deleteHostData|write|replace|delete)\([^)\n]*\.(accessToken|refreshToken)\b"#)
         var writers: Set<String> = []
         for source in sources {
             let text = source.text
@@ -315,7 +339,7 @@ final class TokenPairWriteTests: XCTestCase {
                 writers.insert(source.name)
             }
         }
-        XCTAssertEqual(writers, ["TokenPairWrite.swift"])
+        XCTAssertEqual(writers, ["TokenPairWrite.swift", "SessionTokenVault.swift"])
 
         let keychain = try XCTUnwrap(sources.first { $0.name == "KeychainService.swift" }).text
         guard let start = keychain.range(of: "func save(accessToken: String, refreshToken: String, email: String?) -> Bool {"),
@@ -329,65 +353,95 @@ final class TokenPairWriteTests: XCTestCase {
 
 // MARK: - In-memory keychains
 
-/// The two token items. Every write is one step, as `HostOnlyKeychain.replace`
-/// is; any write can be made to fail; and every state the items pass through is
-/// kept, so a test can ask what a kill after any change would have left.
-final class MemoryKeychain: TokenPairStore {
+/// The session's items: both tokens, and the e-mail, sign-in method and
+/// anonymous number written with them. Every write is one step, as
+/// `HostOnlyKeychain.replace` is; any write can be made to fail; every state
+/// the items pass through is kept, so a test can ask what a kill after any
+/// change would have left; and `onWrite` runs before each write, outside the
+/// fake's own lock, so a test can start another writer right there.
+final class MemoryKeychain: TokenPairStore, @unchecked Sendable {
     struct Pair: Equatable {
         var access: Data?
         var refresh: Data?
+        var email: Data? = nil
+        var method: Data? = nil
+        var anonymousId: Data? = nil
     }
 
-    private(set) var pair: Pair
-    /// The pair after each change: what a kill right after it leaves.
-    private(set) var states: [Pair] = []
-    /// Every write tried, in order, failed ones included.
-    private(set) var writes: [HostKeychainItem] = []
+    private let lock = NSLock()
+    private var current: Pair
+    private var recorded: [Pair] = []
+    private var tried: [HostKeychainItem] = []
+
     /// Whether a write fails: its item, and how many writes were tried before it.
     var fails: (HostKeychainItem, Int) -> Bool = { _, _ in false }
     /// The keychain cannot be read.
     var failLookups = false
-    /// Deletes do nothing (a keychain locked since boot).
+    /// Deletes do nothing (a keychain locked since boot, or an I/O error).
     var deletesFail = false
+    /// Writes of these items report success and store nothing.
+    var dropsWrites: Set<HostKeychainItem> = []
+    /// Runs before each write, with the item, outside the fake's lock.
+    var onWrite: ((HostKeychainItem) -> Void)?
 
-    init(access: Data?, refresh: Data?) {
-        pair = Pair(access: access, refresh: refresh)
+    init(access: Data?, refresh: Data?, email: Data? = nil, method: Data? = nil, anonymousId: Data? = nil) {
+        current = Pair(access: access, refresh: refresh, email: email, method: method, anonymousId: anonymousId)
     }
 
+    var pair: Pair { lock.withLock { current } }
+    /// The items after each change: what a kill right after it leaves.
+    var states: [Pair] { lock.withLock { recorded } }
+    /// Every write tried, in order, failed ones included.
+    var writes: [HostKeychainItem] { lock.withLock { tried } }
+
     func hostLookup(_ item: HostKeychainItem) -> KeychainLookup {
-        if failLookups { return .failed(errSecInteractionNotAllowed) }
-        return value(item).map { .found($0) } ?? .notFound
+        lock.withLock {
+            if failLookups { return .failed(errSecInteractionNotAllowed) }
+            return value(item).map { .found($0) } ?? .notFound
+        }
     }
 
     func replaceHostData(_ data: Data, for item: HostKeychainItem) -> Bool {
-        defer { writes.append(item) }
-        if fails(item, writes.count) { return false }
-        set(item, data)
-        return true
+        onWrite?(item)
+        return lock.withLock {
+            defer { tried.append(item) }
+            if fails(item, tried.count) { return false }
+            if dropsWrites.contains(item) { return true }
+            set(item, data)
+            return true
+        }
     }
 
     func deleteHostData(_ item: HostKeychainItem) {
-        guard !deletesFail, value(item) != nil else { return }
-        set(item, nil)
+        lock.withLock {
+            guard !deletesFail, value(item) != nil else { return }
+            set(item, nil)
+        }
     }
 
     private func value(_ item: HostKeychainItem) -> Data? {
         switch item {
-        case .accessToken: return pair.access
-        case .refreshToken: return pair.refresh
+        case .accessToken: return current.access
+        case .refreshToken: return current.refresh
+        case .userEmail: return current.email
+        case .signInMethod: return current.method
+        case .anonymousId: return current.anonymousId
         default: return nil
         }
     }
 
     private func set(_ item: HostKeychainItem, _ data: Data?) {
         switch item {
-        case .accessToken: pair.access = data
-        case .refreshToken: pair.refresh = data
+        case .accessToken: current.access = data
+        case .refreshToken: current.refresh = data
+        case .userEmail: current.email = data
+        case .signInMethod: current.method = data
+        case .anonymousId: current.anonymousId = data
         default:
-            XCTFail("TokenPairWrite wrote \(item), which is not a session token")
+            XCTFail("the session write touched \(item), which is not a session item")
             return
         }
-        states.append(pair)
+        recorded.append(current)
     }
 }
 

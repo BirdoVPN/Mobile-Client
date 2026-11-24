@@ -101,15 +101,10 @@ final class KeychainService: @unchecked Sendable {
     /// (`TokenPairWrite.Replaced.anotherSession`).
     @discardableResult
     func save(accessToken: String, refreshToken: String, email: String?) -> Bool {
-        guard session.save(accessToken: Data(accessToken.utf8),
-                           refreshToken: Data(refreshToken.utf8),
-                           in: self) else { return false }
-        if let email {
-            write(.userEmail, value: email)
-        } else {
-            delete(.userEmail)
-        }
-        return true
+        session.save(accessToken: Data(accessToken.utf8),
+                     refreshToken: Data(refreshToken.utf8),
+                     email: email.map { Data($0.utf8) },
+                     in: self)
     }
 
     /// A refresh rotation's pair, for the refresh token it presented

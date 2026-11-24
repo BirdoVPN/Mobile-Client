@@ -1083,7 +1083,7 @@ final class APIClient: @unchecked Sendable {
                                      expectingRefreshToken: refresh) {
         case .stored, .superseded:
             return
-        case .keptInMemory:
+        case .keptInMemory, .signedOut:
             throw APIError.invalidResponse
         }
     }
