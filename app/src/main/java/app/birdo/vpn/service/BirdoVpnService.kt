@@ -3337,8 +3337,18 @@ sealed class VpnState {
     /**
      * @param kind why, for recovery: the supervisor retries, stops or asks the
      *   user on this, never on the message text.
+     * @param unanswered MR-2595: the server never answered this setup's first
+     *   handshake, by the transport probe's own verdict, on the last transport
+     *   the setup had left. The one failure that may spend the retry on another
+     *   relay (VpnManager). Never set for a failure of this device's own: the
+     *   adapter, the kill switch, a rate limit, the Stealth helper, Quantum
+     *   Protection.
      */
-    data class Error(val message: String, val kind: FailureKind = FailureKind.TRANSIENT) : VpnState()
+    data class Error(
+        val message: String,
+        val kind: FailureKind = FailureKind.TRANSIENT,
+        val unanswered: Boolean = false,
+    ) : VpnState()
 }
 
 /**

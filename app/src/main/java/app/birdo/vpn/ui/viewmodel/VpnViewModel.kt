@@ -94,6 +94,8 @@ data class VpnUiState(
     val stealthChosen: Boolean = false,
     /** Asked for Stealth, connected without it for the plan (VpnManager.stealthNotice). */
     val stealthNotice: String? = null,
+    /** MR-2595: the one retry on another server after no first handshake is running (VpnManager.relayRetryNotice). */
+    val relayRetryNotice: String? = null,
     /** MR-2221: what the last refused connect said about a restricted account (VpnManager.accountRestriction). */
     val accountRestriction: AccountRestriction? = null,
     /** MR-2220: the server's notice on a successful connect (VpnManager.deviceNotice). */

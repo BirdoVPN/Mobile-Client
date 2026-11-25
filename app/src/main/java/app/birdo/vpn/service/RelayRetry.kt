@@ -58,6 +58,15 @@ enum class SelectionOrigin {
 }
 
 /**
+ * MR-2595: where the one retry after an unanswered first handshake landed,
+ * and who chose the location it replaced: the move keeps that, so a location
+ * the user picked stays theirs and a server the client chose stays the
+ * client's. Home follows it ([server] is the fresh list's entry). In memory
+ * only, never logged.
+ */
+data class RelayRetryLanding(val server: VpnServer, val origin: SelectionOrigin)
+
+/**
  * MR-2492: the one automatic move per connect. Refilled by a dial the user or
  * the system starts and by a session that comes up; taken by the move
  * itself. The move's own dial refills nothing, so a move never chains.
@@ -184,6 +193,18 @@ object RelayRetry {
         alreadySpent -> "[RelayRetry] server offline: the automatic retry is spent (1 of 1)"
         else -> "[RelayRetry] server offline: no relay qualifies for a retry (0 of 1)"
     }
+
+    /**
+     * MR-2595: the log line for the retry decision after a server never
+     * answered its first handshake. TODO(MR-2595): spec stub, today's line.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun noAnswerLine(choice: Choice?, origin: SelectionOrigin, listed: Boolean = true): String =
+        logLine(choice, alreadySpent = false)
+
+    /** MR-2595: how the one retry ended, with this run's counts. TODO(MR-2595): spec stub. */
+    @Suppress("UNUSED_PARAMETER")
+    fun noAnswerOutcomeLine(connected: Boolean, attempted: Int, connectedCount: Int): String = ""
 
     private fun reach(failed: VpnServer, target: VpnServer): Reach {
         val country = normalized(failed.countryCode)

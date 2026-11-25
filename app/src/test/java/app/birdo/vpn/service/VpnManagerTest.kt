@@ -10,6 +10,7 @@ import app.birdo.vpn.data.model.ServerNodeInfo
 import app.birdo.vpn.shared.model.MultiHopInfo
 import app.birdo.vpn.shared.model.MultiHopNodeInfo
 import app.birdo.vpn.shared.model.PlanFeature
+import app.birdo.vpn.shared.model.TransportFallbackReason
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
@@ -84,6 +85,9 @@ class VpnManagerTest {
     private var widgetRefreshes = 0
     private val stringExtras = mutableMapOf<String, String?>()
 
+    /** Every boolean extra put on an Intent, in order (MR-2595: the forced block). */
+    private val booleanExtras = mutableListOf<Pair<String, Boolean>>()
+
     /** Alerts for a refused widget tap VpnManager posted, and withdrew (MR-938). */
     private val tapRefusedAlerts = mutableListOf<VpnNotificationManager.AlertModel>()
     private var tapRefusedWithdrawals = 0
@@ -113,6 +117,10 @@ class VpnManagerTest {
         }
         every { anyConstructed<Intent>().putExtra(any<String>(), any<String>()) } answers {
             stringExtras[firstArg()] = secondArg()
+            self as Intent
+        }
+        every { anyConstructed<Intent>().putExtra(any<String>(), any<Boolean>()) } answers {
+            booleanExtras += firstArg<String>() to secondArg<Boolean>()
             self as Intent
         }
 
@@ -2069,6 +2077,553 @@ class VpnManagerTest {
 
             assertEquals(SessionCopy.SERVER_UNREACHABLE, (vpnManager.state.value as? VpnState.Error)?.message)
             coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    // ── MR-2595: ONE retry on another relay after no first handshake ───────
+    //
+    // Owner (2026-11-19 Q2; 2026-11-20 "Same country, like iPhone"): a server
+    // the client chose gets ONE retry, the same city first, then the best
+    // server anywhere; a location the user picked gets ONE retry inside its
+    // country, else its own error stands, never abroad; only relays a fresh
+    // /vpn/servers lists online and open to the plan; Multi-Hop never moves;
+    // only a TRUE no-answer spends it; the log says counts only. Desktop #470
+    // (MR-2514, MR-2569), iOS #549/#645/#648. Android had none (review of
+    // web #965): a connect whose server never answered stopped on its error.
+
+    /**
+     * The service's verdict that the server never answered this setup's first
+     * handshake: the transport probe's, on the last transport it had.
+     */
+    private fun noAnswer() = VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED, unanswered = true)
+
+    /**
+     * The setup the service is running gets no answer. Then the time a retry's
+     * teardown waits for the service runs out (no fake service answers it).
+     */
+    private fun TestScope.serverNeverAnswers() {
+        serviceEmits(VpnState.Connecting)
+        serviceEmits(noAnswer())
+        advanceTimeBy(6_000)
+    }
+
+    /** The setup the service is running handshakes. */
+    private fun TestScope.serverAnswers() {
+        serviceEmits(VpnState.Connecting)
+        serviceEmits(VpnState.Connected)
+        runCurrent()
+    }
+
+    /** /vpn/servers, as the dial (if it reads it) and then the retry read it. */
+    private fun listed(vararg servers: VpnServer) = serversAre(servers.toList(), servers.toList())
+
+    /** Every RelayRetryLanding VpnManager announces, from now on. */
+    private fun TestScope.recordLandings(): MutableList<RelayRetryLanding> {
+        val landed = mutableListOf<RelayRetryLanding>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            vpnManager.relayRetryLanded.collect { landed += it }
+        }
+        return landed
+    }
+
+    @Test
+    fun `MR-2595 a server the client chose that never answers is retried once, in its own city first`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        listed(
+            relay("fra", "DE", "Frankfurt", 10),
+            relay("sto", "SE", "Stockholm", 20),
+            relay("fra-2", "DE", "Frankfurt", 60),
+        )
+        try {
+            vpnManager.quickConnect()
+            assertEquals("fra", lastServer)
+            assertTrue("a quick connect's server is the client's pick", lastAutoPicked)
+
+            serverNeverAnswers()
+
+            // From a fresh list: the same city before a less loaded server abroad.
+            coVerify(exactly = 1) { repository.getServers(true) }
+            coVerify(exactly = 1) { repository.connectVpn("fra-2", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("sto", any()) }
+            assertTrue(vpnManager.state.value.toString(), vpnManager.state.value.isConnectingPhase)
+            assertEquals(SessionCopy.RELAY_RETRY_SAME_COUNTRY, vpnManager.relayRetryNotice.value)
+
+            // The retry gets no answer either: its error ends the connect.
+            serverNeverAnswers()
+            advanceTimeBy(30 * 60_000L)
+
+            coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+            coVerify(exactly = 1) { repository.getServers(true) }
+            val error = vpnManager.state.value as? VpnState.Error
+            assertEquals(SessionCopy.NO_TUNNEL, error?.message)
+            assertEquals(FailureKind.NEVER_ESTABLISHED, error?.kind)
+            verify { prefs.sessionShouldBeUp = false }
+            assertNull(vpnManager.relayRetryNotice.value)
+            // A server that never answered is never saved as the last server.
+            assertEquals("fra", lastServer)
+            assertTrue(lastAutoPicked)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 a server the client chose with nothing else in its city is retried on the best server anywhere`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        listed(
+            relay("fra", "DE", "Frankfurt", 10),
+            relay("sto", "SE", "Stockholm", 20),
+            relay("ams", "NL", "Amsterdam", 30),
+        )
+        try {
+            vpnManager.quickConnect()
+
+            serverNeverAnswers()
+
+            coVerify(exactly = 1) { repository.connectVpn("sto", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("ams", any()) }
+            assertEquals(SessionCopy.RELAY_RETRY_ANYWHERE, vpnManager.relayRetryNotice.value)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 a location the user picked that never answers is retried once, inside its country only`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        listed(
+            relay("nyc", "US", "New York", 10),
+            relay("yyz", "CA", "Toronto", 0),
+            relay("lax", "US", "Los Angeles", 70),
+        )
+        try {
+            vpnManager.connect("nyc")
+            assertFalse("a tapped location is the user's", lastAutoPicked)
+
+            serverNeverAnswers()
+
+            coVerify(exactly = 1) { repository.connectVpn("lax", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("yyz", any()) }
+            assertEquals(SessionCopy.RELAY_RETRY_SAME_COUNTRY, vpnManager.relayRetryNotice.value)
+
+            serverNeverAnswers()
+            advanceTimeBy(30 * 60_000L)
+
+            coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+            coVerify(exactly = 0) { repository.connectVpn("yyz", any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 a location the user picked with no other server in its country keeps its own error, never abroad`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        listed(
+            relay("fra", "DE", "Frankfurt", 10),
+            relay("ams", "NL", "Amsterdam", 0),
+            relay("lon", "GB", "London", 0),
+        )
+        try {
+            vpnManager.connect("fra")
+
+            serverNeverAnswers()
+            advanceTimeBy(30 * 60_000L)
+
+            // It looked, in a fresh list, and found nothing at home.
+            coVerify(exactly = 1) { repository.getServers(true) }
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+            val error = vpnManager.state.value as? VpnState.Error
+            assertEquals(SessionCopy.NO_TUNNEL, error?.message)
+            assertEquals(FailureKind.NEVER_ESTABLISHED, error?.kind)
+            assertEquals(
+                app.birdo.vpn.ui.screen.Remedy.CHOOSE_SERVER,
+                app.birdo.vpn.ui.screen.homeRemedy(app.birdo.vpn.ui.viewmodel.VpnUiState(vpnState = error!!)),
+            )
+            assertNull(vpnManager.relayRetryNotice.value)
+            verify { prefs.sessionShouldBeUp = false }
+            assertFalse(
+                "nothing is torn down for a retry that never runs",
+                BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions,
+            )
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 a Multi-Hop route that never answers never moves`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        listed(relay("de-1", "DE", "Frankfurt", 10), relay("de-2", "DE", "Frankfurt", 0))
+        try {
+            multiHopDialled()
+
+            serverNeverAnswers()
+            advanceTimeBy(30 * 60_000L)
+
+            coVerify(exactly = 0) { repository.getServers(any()) }
+            coVerify(exactly = 0) { repository.connectVpn(any(), any()) }
+            coVerify(exactly = 1) {
+                repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any())
+            }
+            assertEquals(SessionCopy.NO_TUNNEL, (vpnManager.state.value as? VpnState.Error)?.message)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 a failure of this device's own spends no retry and moves nothing`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        listed(relay("fra", "DE", "Frankfurt", 10), relay("fra-2", "DE", "Frankfurt", 0))
+        val local = listOf(
+            // the Stealth helper (Xray), and a Stealth the server refused
+            VpnState.Error(SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED),
+            // the adapter and the engine
+            VpnState.Error(SessionCopy.VPN_PERMISSION, FailureKind.VPN_PERMISSION_REQUIRED),
+            VpnState.Error(SessionCopy.ENGINE_FAILED, FailureKind.TRANSIENT),
+            // the kill switch could not be armed (the no-answer path's own Error is replaced by this one)
+            VpnState.Error(SessionCopy.KILL_SWITCH_NOT_ARMED, FailureKind.NEVER_ESTABLISHED),
+            // a rate limit
+            VpnState.Error(SessionCopy.RATE_LIMITED, FailureKind.TRANSIENT),
+            VpnState.Error(SessionCopy.QUANTUM_FAILED, FailureKind.QUANTUM_FAILED),
+            // a watchdog that ran out: a timer, not the probe's verdict
+            VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED),
+        )
+        try {
+            for (error in local) {
+                vpnManager.connect("fra")
+                serviceEmits(VpnState.Connecting)
+                serviceEmits(error)
+                advanceTimeBy(6_000)
+                assertEquals(error.message, (vpnManager.state.value as? VpnState.Error)?.message)
+            }
+
+            coVerify(exactly = 0) { repository.getServers(any()) }
+            coVerify(exactly = 0) { repository.connectVpn("fra-2", any()) }
+            assertNull(vpnManager.relayRetryNotice.value)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 a local failure first leaves the retry for the no-answer that follows`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer("fra", autoPicked = false)
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        listed(relay("fra", "DE", "Frankfurt", 10), relay("fra-2", "DE", "Frankfurt", 40))
+        try {
+            // Always-on: a system start heals what fails on its own.
+            assertTrue(vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON))
+            runCurrent()
+            serviceEmits(VpnState.Connecting)
+            serviceEmits(VpnState.Error(SessionCopy.ENGINE_FAILED, FailureKind.TRANSIENT))
+            // The backoff, then the re-dial's teardown wait.
+            advanceTimeBy(10_000)
+            coVerify(exactly = 2) { repository.connectVpn("fra", any()) }
+            coVerify(exactly = 0) { repository.getServers(any()) }
+
+            serverNeverAnswers()
+
+            coVerify(exactly = 1) { repository.connectVpn("fra-2", any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 a session that was up is not moved by a re-dial that gets no answer`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        listed(relay("fra", "DE", "Frankfurt", 10), relay("fra-2", "DE", "Frankfurt", 0))
+        try {
+            vpnManager.connect("fra")
+            serverAnswers()
+            // A drop: the supervisor re-dials the same server (and #652 moves a server that went away).
+            serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+            advanceTimeBy(10_000)
+
+            serverNeverAnswers()
+            advanceTimeBy(60_000)
+
+            coVerify(exactly = 0) { repository.connectVpn("fra-2", any()) }
+            coVerify(exactly = 0) { repository.getServers(true) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 a retried user pick lands as the user's, saved only once it answers`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        listed(relay("nyc", "US", "New York", 10), relay("lax", "US", "Los Angeles", 70))
+        val landed = recordLandings()
+        try {
+            vpnManager.connect("nyc")
+
+            serverNeverAnswers()
+            coVerify(exactly = 1) { repository.connectVpn("lax", any()) }
+            // Not yet: a server that has not answered is never saved (Desktop #470, L1).
+            assertEquals("nyc", lastServer)
+            assertTrue(landed.isEmpty())
+
+            serverAnswers()
+
+            assertEquals(VpnState.Connected, vpnManager.state.value)
+            assertEquals("lax", lastServer)
+            assertFalse("the move keeps who chose: still the user's location", lastAutoPicked)
+            assertEquals(listOf("lax" to SelectionOrigin.USER), landed.map { it.server.id to it.origin })
+            assertNull(vpnManager.relayRetryNotice.value)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 a retried client's pick lands as the client's`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        listed(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20))
+        val landed = recordLandings()
+        try {
+            vpnManager.quickConnect()
+
+            serverNeverAnswers()
+            serverAnswers()
+
+            assertEquals("sto", lastServer)
+            assertTrue("the move keeps who chose: still the client's pick", lastAutoPicked)
+            assertEquals(listOf("sto" to SelectionOrigin.AUTOMATIC), landed.map { it.server.id to it.origin })
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 the retry never goes to a server listed offline or closed to the plan`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        listed(
+            relay("fra", "DE", "Frankfurt", 10),
+            // A node held for its jurisdiction fails its health check: listed offline.
+            relay("fra-held", "DE", "Frankfurt", 0, isOnline = false),
+            relayOutOfPlan("sto", "SE", "Stockholm"),
+            relay("ams", "NL", "Amsterdam", 40),
+        )
+        try {
+            vpnManager.quickConnect()
+
+            serverNeverAnswers()
+
+            coVerify(exactly = 1) { repository.connectVpn("ams", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("fra-held", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("sto", any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 the retry chooses from a fresh list, never the one the dial read`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(
+            listOf(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20), relay("ams", "NL", "Amsterdam", 30)),
+            // Stockholm went offline since.
+            listOf(
+                relay("fra", "DE", "Frankfurt", 10),
+                relay("sto", "SE", "Stockholm", 20, isOnline = false),
+                relay("ams", "NL", "Amsterdam", 30),
+            ),
+        )
+        try {
+            vpnManager.quickConnect()
+
+            serverNeverAnswers()
+
+            coVerify(exactly = 1) { repository.connectVpn("ams", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("sto", any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 with no fresh list in time there is no retry, and the original error stands`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        coEvery { repository.getServers(false) } returns
+            ApiResult.Success(listOf(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20)))
+        coEvery { repository.getServers(true) } coAnswers { awaitCancellation() }
+        try {
+            vpnManager.quickConnect()
+
+            serverNeverAnswers()
+            advanceTimeBy(30 * 60_000L)
+
+            coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+            assertEquals(SessionCopy.NO_TUNNEL, (vpnManager.state.value as? VpnState.Error)?.message)
+            assertNull(vpnManager.relayRetryNotice.value)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 a Disconnect while the retry looks for a server ends it`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        val servers = listOf(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20))
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        coEvery { repository.getServers(false) } returns ApiResult.Success(servers)
+        val fresh = CompletableDeferred<ApiResult<List<VpnServer>>>()
+        coEvery { repository.getServers(true) } coAnswers { fresh.await() }
+        vpnManager.quickConnect()
+        serviceEmits(VpnState.Connecting)
+        serviceEmits(noAnswer())
+        runCurrent()
+
+        vpnManager.disconnect()
+        fresh.complete(ApiResult.Success(servers))
+        advanceTimeBy(30 * 60_000L)
+
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        assertNull(vpnManager.relayRetryNotice.value)
+    }
+
+    @Test
+    fun `MR-2595 the retry holds the block from the no-answer to the next tunnel, even with the kill switch off`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        every { prefs.killSwitchEnabled } returns false
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        listed(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20))
+        try {
+            vpnManager.quickConnect()
+            val firstStart = dispatchedActions.indexOf(BirdoVpnService.ACTION_START)
+            assertTrue(firstStart >= 0)
+
+            serverNeverAnswers()
+
+            // Between the two tunnels: one fail-closed teardown, the block forced
+            // up as for the Stealth fallback; no STOP, no release.
+            assertEquals(
+                listOf(BirdoVpnService.ACTION_SWITCH_TEARDOWN, BirdoVpnService.ACTION_START),
+                dispatchedActions.drop(firstStart + 1),
+            )
+            assertTrue(booleanExtras.toString(), (BirdoVpnService.EXTRA_FORCE_BLOCK to true) in booleanExtras)
+            // The server that did not answer gives its peer back before the next is asked for.
+            coVerify(exactly = 1) { repository.disconnectVpn("key-123") }
+            coVerify(exactly = 1) { repository.connectVpn("sto", any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 the retry is one attempt, with no Stealth fallback of its own`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            ApiResult.Success(makeConnectResponse())
+        listed(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20))
+        try {
+            vpnManager.quickConnect()
+            serverNeverAnswers()
+            coVerify(exactly = 1) { repository.connectVpn("sto", any(), any(), any(), any(), any(), any(), any(), any()) }
+
+            // The retry's own direct attempt is blocked too.
+            emitTransportBlocked()
+            advanceTimeBy(70_000)
+
+            coVerify(exactly = 0) {
+                repository.connectVpn(
+                    any(), any(), any(), TransportFallbackReason.HANDSHAKE_TIMEOUT, any(), any(), any(), any(), any(),
+                )
+            }
+            coVerify(exactly = 2) { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 the retry's own refusal ends the connect in its own words`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn("fra", any()) } returns ApiResult.Success(makeConnectResponse())
+        coEvery { repository.connectVpn("sto", any()) } returns ApiResult.Error("Too many requests", 429)
+        listed(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20), relay("ams", "NL", "Amsterdam", 30))
+        try {
+            vpnManager.quickConnect()
+
+            serverNeverAnswers()
+            advanceTimeBy(30 * 60_000L)
+
+            coVerify(exactly = 1) { repository.connectVpn("sto", any()) }
+            coVerify(exactly = 0) { repository.connectVpn("ams", any()) }
+            assertEquals(SessionCopy.RATE_LIMITED, (vpnManager.state.value as? VpnState.Error)?.message)
+            assertEquals("fra", lastServer)
+            assertNull(vpnManager.relayRetryNotice.value)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `MR-2595 the retry's log lines say counts, never a server`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        val logs = mutableListOf<String>()
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.i(any(), any()) } answers { logs += secondArg<String>(); 0 }
+        every { android.util.Log.w(any(), any<String>()) } answers { logs += secondArg<String>(); 0 }
+        every { android.util.Log.d(any(), any()) } answers { logs += secondArg<String>(); 0 }
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        val home = relay("id-marker-home", "QX", "Homecityx", 10)
+            .copy(name = "Name-marker-home", country = "Countrymarkerx", hostname = "host-marker-home", ipAddress = "198.51.100.7")
+        val next = relay("id-marker-next", "QX", "Nextcityx", 70)
+            .copy(name = "Name-marker-next", country = "Countrymarkerx", hostname = "host-marker-next", ipAddress = "198.51.100.8")
+        listed(home, next)
+        try {
+            vpnManager.connect(home.id)
+            serverNeverAnswers()
+            serverAnswers()
+
+            assertEquals(
+                listOf(
+                    "[RelayRetry] no handshake: automatic retry 1 of 1 on another server (user pick, same-country)",
+                    "[RelayRetry] the retry after no handshake connected (this run: 1 attempted, 1 connected)",
+                ),
+                logs.filter { it.startsWith("[RelayRetry]") },
+            )
+            for (line in logs) {
+                for (s in listOf(home, next)) {
+                    for (field in listOf(s.id, s.name, s.city, s.country, s.countryCode, s.hostname, s.ipAddress)) {
+                        assertFalse("$line names $field", line.lowercase().contains(field.lowercase()))
+                    }
+                }
+            }
         } finally {
             quiesce()
         }

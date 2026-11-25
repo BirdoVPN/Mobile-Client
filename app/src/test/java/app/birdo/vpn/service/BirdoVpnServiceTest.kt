@@ -134,6 +134,68 @@ class BirdoVpnServiceTest {
         assertNotEquals(a, b)
     }
 
+    // ── MR-2595: only the probe's no-answer verdict marks an Error ────────
+    //
+    // The retry on another relay is spent only by a TRUE no-answer (Desktop
+    // #470, review L2): never by the adapter, the kill switch, a rate limit,
+    // the Stealth helper or Quantum Protection. The service is where that is
+    // decided, and its verdicts need an Android runtime, so the two places
+    // that mark an Error are pinned in its source, and nothing else may.
+
+    @Test
+    fun `MR-2595 an Error is not unanswered unless the service says so`() {
+        assertFalse(VpnState.Error("fail").unanswered)
+        assertFalse(VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED).unanswered)
+        assertNotEquals(
+            VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED),
+            VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED, unanswered = true),
+        )
+    }
+
+    private val serviceSource: String by lazy {
+        var dir = java.io.File("").absoluteFile
+        while (!java.io.File(dir, "settings.gradle.kts").isFile) {
+            dir = dir.parentFile ?: error("settings.gradle.kts not found above ${java.io.File("").absolutePath}")
+        }
+        java.io.File(dir, "app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt").readText()
+    }
+
+    private fun section(start: String, end: String): String {
+        assertTrue("BirdoVpnService.kt has no `$start`", serviceSource.contains(start))
+        return serviceSource.substringAfter(start).substringBefore(end)
+    }
+
+    @Test
+    fun `MR-2595 the probe's no-answer on the last transport is the Error marked unanswered`() {
+        val verdict = section("private fun onProbeVerdict(", "    // ── A1-034")
+        // Over Stealth there is no transport left: the Error says the server never answered.
+        val stealth = verdict.substringAfter("no handshake over stealth").substringBefore("TransportProbe.Result.ABORTED")
+        assertTrue(
+            "the probe's BLOCKED verdict over Stealth must publish its Error with `unanswered = true`",
+            stealth.contains("unanswered = true"),
+        )
+        // Direct, the verdict is remembered for this setup...
+        val direct = verdict.substringAfter("TransportProbe.Result.BLOCKED").substringBefore("no handshake over stealth")
+        assertTrue("the direct BLOCKED verdict must be remembered for its setup", direct.contains("unansweredGen = gen"))
+        // ...so the timeout that ends it, when VpnManager makes no fallback, says the same.
+        val timeout = section("private val connectTimeoutRunnable = Runnable {", "\n    }\n")
+        assertTrue(
+            "the connect timeout of a setup the probe found unanswered must mark its Error",
+            timeout.contains("unanswered = unansweredGen == gen"),
+        )
+    }
+
+    @Test
+    fun `MR-2595 nothing else in the service marks an Error unanswered`() {
+        val marks = Regex("""\bunanswered\s*=(?!=)""").findAll(serviceSource).count()
+        assertEquals(
+            "BirdoVpnService.kt marks an Error unanswered in $marks places. Only the probe's two no-answer " +
+                "verdicts may: a failure of this device's own must never spend the retry on another relay",
+            2,
+            marks,
+        )
+    }
+
     @Test
     fun `VpnState subtypes are distinguishable via when`() {
         val states = listOf(

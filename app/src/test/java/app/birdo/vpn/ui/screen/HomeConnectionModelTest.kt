@@ -192,6 +192,26 @@ class HomeConnectionModelTest {
         assertNull(homeRemedy(VpnUiState(vpnState = VpnState.Error(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, FailureKind.REFUSED))))
     }
 
+    /**
+     * MR-2595: while the one retry on another server runs, Home says so, as
+     * information, through its teardown and its dial; never over the session
+     * it led to, nor over the error that ended it.
+     */
+    @Test
+    fun `MR-2595 the retry's notice shows while it runs, and never over its outcome`() {
+        val notice = SessionCopy.RELAY_RETRY_SAME_COUNTRY
+        for (s in listOf(VpnState.Connecting, VpnState.StealthConnecting, VpnState.Disconnecting, VpnState.Disconnected)) {
+            assertEquals(s.toString(), notice, relayRetryBanner(VpnUiState(vpnState = s, relayRetryNotice = notice)))
+        }
+        assertNull(relayRetryBanner(VpnUiState(vpnState = VpnState.Connected, relayRetryNotice = notice)))
+        assertNull(
+            relayRetryBanner(
+                VpnUiState(vpnState = VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED), relayRetryNotice = notice),
+            ),
+        )
+        assertNull(relayRetryBanner(VpnUiState(vpnState = VpnState.Connecting)))
+    }
+
     // ── MR-945: the server pickers' row markers follow Home ──────────────
 
     private val amsterdam = VpnServer(id = "nl-1", name = "Amsterdam 1", country = "Netherlands", countryCode = "NL")

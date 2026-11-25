@@ -42,7 +42,9 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -191,6 +193,23 @@ class VpnManager @Inject constructor(
 
     private val _stealthNotice = MutableStateFlow<String?>(null)
     val stealthNotice: StateFlow<String?> = _stealthNotice.asStateFlow()
+
+    /**
+     * MR-2595: Home's info notice while the one retry after an unanswered
+     * first handshake runs (SessionCopy.relayRetry), or null.
+     */
+    private val _relayRetryNotice = MutableStateFlow<String?>(null)
+    val relayRetryNotice: StateFlow<String?> = _relayRetryNotice.asStateFlow()
+
+    /**
+     * MR-2595: an EVENT, once per retry that connected: where it landed and
+     * who chose the location it replaced, so Home's card follows the tunnel
+     * without relabelling who chose it. No replay: a screen that opens later
+     * reads the last server and who chose it from AppPreferences, written at
+     * the same moment.
+     */
+    private val _relayRetryLanded = MutableSharedFlow<RelayRetryLanding>(replay = 0, extraBufferCapacity = 1)
+    val relayRetryLanded: SharedFlow<RelayRetryLanding> = _relayRetryLanded.asSharedFlow()
 
     /**
      * What a dial asks for: the stored setting. The server decides entitlement

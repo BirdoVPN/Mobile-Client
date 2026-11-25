@@ -8,6 +8,7 @@ import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.service.BirdoVpnService
+import app.birdo.vpn.service.RelayRetryLanding
 import app.birdo.vpn.service.SelectionOrigin
 import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnManager
@@ -23,6 +24,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -46,6 +48,10 @@ class VpnViewModelTest {
     private val switching = MutableStateFlow(false)
     private val sessionExpired = MutableStateFlow(false)
     private val connectedId = MutableStateFlow<String?>(null)
+
+    /** MR-2595: the retry's notice and where it landed, as VpnManager publishes them. */
+    private val relayRetryNotice = MutableStateFlow<String?>(null)
+    private val relayRetryLanded = MutableSharedFlow<RelayRetryLanding>(extraBufferCapacity = 1)
 
     private lateinit var vpnManager: VpnManager
     private lateinit var repository: BirdoRepository
@@ -72,6 +78,8 @@ class VpnViewModelTest {
         every { vpnManager.dialActive } returns MutableStateFlow(false)
         every { vpnManager.quotaGrace } returns MutableStateFlow(null)
         every { vpnManager.stealthNotice } returns MutableStateFlow(null)
+        every { vpnManager.relayRetryNotice } returns relayRetryNotice
+        every { vpnManager.relayRetryLanded } returns relayRetryLanded
         every { vpnManager.accountRestriction } returns MutableStateFlow(null)
         every { vpnManager.deviceNotice } returns MutableStateFlow(null)
         every { vpnManager.connectedSince } returns MutableStateFlow(0L)
@@ -418,6 +426,69 @@ class VpnViewModelTest {
         testScheduler.runCurrent()
 
         coVerify(exactly = 1) { vpnManager.connect("srv-1", null, SelectionOrigin.AUTOMATIC) }
+    }
+
+    // ── MR-2595: Home follows the one retry after no first handshake ──────
+    //
+    // The card names the server the tunnel landed on, and the next Connect
+    // dials it as whoever chose the location it replaced: Desktop #470's M1
+    // was a moved user pick relabelled as automatic, which then left its
+    // country on the next retry.
+
+    @Test
+    fun `MR-2595 the retry's notice reaches Home while it runs`() = runTest {
+        val vm = viewModel()
+
+        relayRetryNotice.value = SessionCopy.RELAY_RETRY_SAME_COUNTRY
+        assertEquals(SessionCopy.RELAY_RETRY_SAME_COUNTRY, vm.uiState.value.relayRetryNotice)
+
+        relayRetryNotice.value = null
+        assertNull(vm.uiState.value.relayRetryNotice)
+    }
+
+    @Test
+    fun `MR-2595 the card follows the retry of the client's pick, and Connect dials it as the client's`() = runTest {
+        twoServers()
+        val vm = viewModel()
+        vm.loadServers()
+        // The pre-selected best server (z) did not answer; the retry landed on a.
+        assertEquals("z", vm.uiState.value.selectedServer?.id)
+
+        relayRetryLanded.tryEmit(RelayRetryLanding(server("a", "Austria", load = 90), SelectionOrigin.AUTOMATIC))
+        runCurrent()
+
+        assertEquals("a", vm.uiState.value.selectedServer?.id)
+        vm.connect()
+        coVerify(exactly = 1) { vpnManager.connect("a", null, SelectionOrigin.AUTOMATIC) }
+    }
+
+    @Test
+    fun `MR-2595 a user's pick the retry moved stays the user's`() = runTest {
+        twoServers()
+        val vm = viewModel()
+        vm.loadServers()
+        // The user tapped z (the pre-selected one too), which did not answer.
+        vm.pick("z")
+
+        relayRetryLanded.tryEmit(RelayRetryLanding(server("a", "Austria", load = 90), SelectionOrigin.USER))
+        runCurrent()
+
+        assertEquals("a", vm.uiState.value.selectedServer?.id)
+        vm.connect()
+        coVerify(exactly = 1) { vpnManager.connect("a", null, SelectionOrigin.USER) }
+        coVerify(exactly = 0) { vpnManager.connect(any(), any(), SelectionOrigin.AUTOMATIC) }
+    }
+
+    @Test
+    fun `MR-2595 the card follows a retry that landed on a server the screen's list does not have yet`() = runTest {
+        twoServers()
+        val vm = viewModel()
+        vm.loadServers()
+
+        relayRetryLanded.tryEmit(RelayRetryLanding(server("new-1", "Norway", load = 1), SelectionOrigin.USER))
+        runCurrent()
+
+        assertEquals("new-1", vm.uiState.value.selectedServer?.id)
     }
 
     // ── Round 7, item 4: a switch the network cut short ───────────────────
