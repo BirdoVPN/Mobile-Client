@@ -103,13 +103,20 @@ class IosRefreshWiringTest {
             "$apiClientPath: refreshTokens() compares statusCode by hand again",
             Regex("""statusCode\s*==""").containsMatchIn(refreshTokens),
         )
-        // Two .unauthorized throws: no stored refresh token, and `.dead`.
+        // Three .unauthorized throws: no stored refresh token, `.dead`, and
+        // MR-2580 (#671 review): a rotation's pair the keychain refused when
+        // not even the spent-token fence could be written (`.signedOut`), a
+        // local sign-out instead of ever presenting the spent token.
         assertEquals(
             "$apiClientPath: `throw APIError.unauthorized` in refreshTokens()",
-            2,
+            3,
             Regex("""throw APIError\.unauthorized""").findAll(refreshTokens).count(),
         )
         assertTrue("$apiClientPath: `.dead` no longer signs out", branch(".dead:").contains("throw APIError.unauthorized"))
+        assertTrue(
+            "$apiClientPath: the third sign-out is not the unfenceable rotation's",
+            branch(".signedOut:").contains("throw APIError.unauthorized"),
+        )
     }
 
     @Test
@@ -215,12 +222,21 @@ class IosRefreshWiringTest {
     fun `refreshTokens never clears the keychain and writes it only after a rotation`() {
         assertFalse("$apiClientPath: refreshTokens() clears the keychain", refreshTokens.contains("keychain.clear"))
         assertFalse("$apiClientPath: refreshTokens() signs out locally", refreshTokens.contains("LocalSignOut"))
+        // MR-2580 (#671 review): a rotation's pair goes through
+        // `keychain.saveRotation(`, whose compare-and-swap runs inside the
+        // keychain's session lock. (`keychain.persistPendingSession()` first
+        // stores an EARLIER rotation's pair the keychain had refused, if any.)
         assertEquals(
             "$apiClientPath: keychain.save( calls in refreshTokens()",
-            1,
+            0,
             Regex("""keychain\.save\(""").findAll(refreshTokens).count(),
         )
-        val save = refreshTokens.indexOf("keychain.save(")
+        assertEquals(
+            "$apiClientPath: keychain.saveRotation( calls in refreshTokens()",
+            1,
+            Regex("""keychain\.saveRotation\(""").findAll(refreshTokens).count(),
+        )
+        val save = refreshTokens.indexOf("keychain.saveRotation(")
         val switchEnd = refreshTokens.indexOf("\n        }\n", refreshTokens.indexOf("switch RefreshAnswer.classify("))
         assertTrue("$apiClientPath: the keychain is written before the answer is classified", switchEnd in 0 until save)
     }
