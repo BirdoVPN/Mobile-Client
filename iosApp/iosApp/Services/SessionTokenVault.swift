@@ -47,6 +47,16 @@ final class SessionTokenVault: @unchecked Sendable {
         /// The refresh token the rotation presented is no longer the current
         /// one (a sign-out, a sign-in, another rotation): nothing is written.
         case superseded
+        /// #671 review P2: a session other than the one the rotation renewed
+        /// is stored (a sign-in, another rotation). Nothing is written, and the
+        /// rotated pair is never revoked: the server would end that device's
+        /// whole lineage, the stored session with it.
+        case replaced
+        /// #671 review P2: the session the rotation renewed has ended (signed
+        /// out: nothing stored, the stored token fenced, or the session
+        /// generation moved). Nothing is written; the rotated pair is a live
+        /// session nobody holds, so it is the late revoke's (#666).
+        case ended
         /// The keychain refused the pair AND the fence could not be written:
         /// nothing durable would keep the spent refresh token from being
         /// presented after a relaunch, so the session is signed out now.
@@ -127,7 +137,7 @@ final class SessionTokenVault: @unchecked Sendable {
     /// A refresh rotation's pair, for the refresh token it presented. The
     /// compare-and-swap and the write are one step under the lock.
     func saveRotation(accessToken: Data, refreshToken: Data, expectingRefreshToken presented: Data,
-                      in store: any TokenPairStore) -> RotationSave {
+                      sessionEnded: Bool = false, in store: any TokenPairStore) -> RotationSave {
         lock.withLock {
             switch currentRefresh(in: store) {
             case .found(let current) where current != presented:

@@ -342,7 +342,7 @@ final class SessionTokenVaultTests: XCTestCase {
         }
         XCTAssertTrue(vault.save(accessToken: a2, refreshToken: r2, email: nil, in: keychain))
         interleaving.finish()
-        XCTAssertEqual(box.rotation, .superseded, "a rotation of the old account wrote over the sign-in")
+        XCTAssertEqual(box.rotation, .replaced, "a rotation of the old account wrote over the sign-in")
         XCTAssertEqual(keychain.pair, .init(access: a2, refresh: r2))
         for (index, state) in keychain.states.enumerated() {
             let oldAccount = state.access == a0 || state.access == a1 || state.refresh == r0 || state.refresh == r1
@@ -359,14 +359,53 @@ final class SessionTokenVaultTests: XCTestCase {
         let keychain = MemoryKeychain(access: a2, refresh: r2)
         let vault = SessionTokenVault(fence: MemoryFence())
         XCTAssertEqual(vault.saveRotation(accessToken: a1, refreshToken: r1, expectingRefreshToken: r0, in: keychain),
-                       .superseded)
+                       .replaced, "a stored session the rotated pair's revoke would end with its lineage")
         XCTAssertEqual(keychain.pair, .init(access: a2, refresh: r2), "a rotation wrote over a sign-in")
 
-        // Signed out meanwhile.
+        // Signed out meanwhile (the wipe ran; the generation bump has not).
         let signedOut = MemoryKeychain(access: nil, refresh: nil)
         XCTAssertEqual(vault.saveRotation(accessToken: a1, refreshToken: r1, expectingRefreshToken: r0, in: signedOut),
-                       .superseded)
+                       .ended)
         XCTAssertEqual(signedOut.pair, .init(access: nil, refresh: nil), "a rotation brought a signed-out session back")
+    }
+
+    // MARK: - #671 review P2: the late revoke is decided under the lock
+
+    /// The generation moved (a sign-out) but the wipe's deletes failed, so the
+    /// presented token is still stored: the session ended all the same.
+    /// Nothing is written, and it is the late revoke's.
+    func testARotationAfterASignOutWhoseWipeFailedIsEndedAndNeverWritten() {
+        let keychain = signedIn()
+        let vault = SessionTokenVault(fence: MemoryFence())
+        XCTAssertEqual(vault.saveRotation(accessToken: a1, refreshToken: r1, expectingRefreshToken: r0,
+                                          sessionEnded: true, in: keychain),
+                       .ended)
+        XCTAssertEqual(keychain.pair, .init(access: a0, refresh: r0), "a rotation wrote into a signed-out session")
+        XCTAssertTrue(keychain.writes.isEmpty)
+    }
+
+    /// A sign-out and then a sign-in: the stored session is the new one, so
+    /// the old session's rotated pair is never revoked (its revoke would end
+    /// the device's lineage, the new session with it).
+    func testARotationAfterASignOutAndASignInIsReplacedAndNeverRevoked() {
+        let keychain = MemoryKeychain(access: a2, refresh: r2)
+        let vault = SessionTokenVault(fence: MemoryFence())
+        XCTAssertEqual(vault.saveRotation(accessToken: a1, refreshToken: r1, expectingRefreshToken: r0,
+                                          sessionEnded: true, in: keychain),
+                       .replaced)
+        XCTAssertEqual(keychain.pair, .init(access: a2, refresh: r2))
+    }
+
+    /// After a sign-out, a keychain that cannot be read may hold a new session:
+    /// never revoke on a guess.
+    func testAnUnreadableKeychainAfterASignOutIsNeverRevoked() {
+        let keychain = signedIn()
+        keychain.failLookups = true
+        let vault = SessionTokenVault(fence: MemoryFence())
+        XCTAssertEqual(vault.saveRotation(accessToken: a1, refreshToken: r1, expectingRefreshToken: r0,
+                                          sessionEnded: true, in: keychain),
+                       .replaced)
+        XCTAssertTrue(keychain.writes.isEmpty)
     }
 
     func testARotationThatIsStillCurrentIsStored() {
@@ -454,21 +493,43 @@ final class SessionTokenVaultTests: XCTestCase {
         }
         XCTAssertLessThan(persist.lowerBound, read.lowerBound)
         guard let save = refresh.range(of: "keychain.saveRotation("),
-              let kept = refresh.range(of: "case .stored, .keptInMemory, .superseded:"),
-              let signedOut = refresh.range(of: "case .signedOut:") else {
-            return XCTFail("the rotated pair is not stored through saveRotation, or an outcome is not handled")
+              let kept = refresh.range(of: "case .stored, .keptInMemory:"),
+              let replaced = refresh.range(of: "case .replaced:"),
+              let ended = refresh.range(of: "case .ended:"),
+              let signedOut = refresh.range(of: "case .signedOut:"),
+              kept.upperBound <= replaced.lowerBound, replaced.upperBound <= ended.lowerBound,
+              ended.upperBound <= signedOut.lowerBound else {
+            return XCTFail("the rotated pair is not stored through saveRotation, or an outcome is not handled in order")
         }
         XCTAssertTrue(refresh[save.lowerBound...].contains("expectingRefreshToken: refresh"))
-        XCTAssertFalse(refresh[kept.upperBound..<signedOut.lowerBound].contains("throw"),
+        XCTAssertFalse(refresh[kept.upperBound..<replaced.lowerBound].contains("throw"),
                        "a pair kept in memory fails the request instead of serving it")
-        // Signed out because nothing durable could fence the spent token: the
-        // dropped pair is revoked with ITS OWN access token (never the stored
+        // #671 review P2: no early return on a generation change; the vault
+        // decides under its lock, told that the session ended.
+        XCTAssertTrue(refresh[save.lowerBound...].contains("sessionEnded: generationNow != generationAtStart"),
+                      "the generation change is not handed to the locked decision")
+        XCTAssertFalse(refresh.contains("guard generationNow == generationAtStart else"),
+                       "a generation change returns before the locked decision")
+        // P2: a stored session other than the renewed one: never revoked.
+        let neverRevoked = refresh[replaced.upperBound..<ended.lowerBound]
+        XCTAssertFalse(neverRevoked.contains("logout(") || neverRevoked.contains("signOut("),
+                       "a rotation over a stored session revokes, ending the device's lineage")
+        // P3: the late revoke's site, bearer-free (#666's form; its API is not
+        // on main yet, so the site is marked and the pair dropped as on main).
+        let late = refresh[ended.upperBound..<signedOut.lowerBound]
+        XCTAssertTrue(late.contains("signOut(SignOutTokens(accessToken: nil, refreshToken: tokens.refreshToken ?? refresh))"))
+        XCTAssertFalse(late.contains("logout(bearerToken:"), "the late revoke presents a bearer")
+        // P4: signed out because nothing durable could fence the spent token:
+        // the dropped pair is revoked with ITS OWN token (never the stored
         // one: #666's Android M1), with no refresh handling, and the caller
         // signs out.
         let dropped = refresh[signedOut.upperBound...]
         XCTAssertTrue(dropped.contains("let dropped = tokens.accessToken"))
         XCTAssertTrue(dropped.contains("logout(bearerToken: dropped)"))
+        XCTAssertTrue(dropped.contains("signOut(SignOutTokens(accessToken: tokens.accessToken"))
         XCTAssertTrue(dropped.contains("throw APIError.unauthorized"))
+        XCTAssertFalse(dropped.contains("keychain.accessToken") || dropped.contains("keychain.refreshToken"),
+                       "the dropped pair is revoked with the stored token")
 
         let retry = try XCTUnwrap(member("func retryHeldRefresh() async throws {", in: api))
         XCTAssertTrue(retry.contains("keychain.persistPendingSession()"), "coming to the foreground stores nothing")
@@ -476,6 +537,10 @@ final class SessionTokenVaultTests: XCTestCase {
         let keychain = try source("iosApp/Services/KeychainService.swift")
         XCTAssertTrue(keychain.contains("\"UIApplicationProtectedDataDidBecomeAvailable\""),
                       "the first unlock does not store the pair kept in memory")
+        // P5: every read of either token goes through the vault, so a sign-out
+        // that reads both before its wipe (#666) never presents a spent one.
+        XCTAssertTrue(keychain.contains("var accessToken: String? { session.accessToken(in: self)"))
+        XCTAssertTrue(keychain.contains("var refreshToken: String? { session.refreshToken(in: self)"))
 
         let auth = try source("iosApp/ViewModels/AuthViewModel.swift")
         guard let live = auth.range(of: "let sessionLive = "),

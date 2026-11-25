@@ -1087,8 +1087,9 @@ final class APIClient: @unchecked Sendable {
         // spent `refresh` on the server, so it is never stored again.
         switch keychain.saveRotation(accessToken: tokens.accessToken,
                                      refreshToken: tokens.refreshToken ?? refresh,
-                                     expectingRefreshToken: refresh) {
-        case .stored, .keptInMemory, .superseded:
+                                     expectingRefreshToken: refresh,
+                                     sessionEnded: false) {
+        case .stored, .keptInMemory, .superseded, .replaced, .ended:
             // `.keptInMemory`: the keychain refused the pair. This process
             // works on it in memory (so its requests do not 401 into another
             // rotation), the spent token is fenced and never presented, and the

@@ -127,12 +127,17 @@ final class KeychainService: @unchecked Sendable {
     /// A refresh rotation's pair, for the refresh token it presented
     /// (`APIClient.refreshTokens`). The server spent that token when it
     /// answered, so it is never stored again (`SessionTokenVault`).
+    /// `sessionEnded`: the session generation moved while the refresh was on
+    /// the wire (a sign-out); the vault decides under its lock what that means
+    /// (#671 review P2).
     func saveRotation(accessToken: String,
                       refreshToken: String,
-                      expectingRefreshToken presented: String) -> SessionTokenVault.RotationSave {
+                      expectingRefreshToken presented: String,
+                      sessionEnded: Bool) -> SessionTokenVault.RotationSave {
         session.saveRotation(accessToken: Data(accessToken.utf8),
                              refreshToken: Data(refreshToken.utf8),
                              expectingRefreshToken: Data(presented.utf8),
+                             sessionEnded: sessionEnded,
                              in: self)
     }
 
