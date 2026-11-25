@@ -252,6 +252,96 @@ final class TunnelHeartbeatPolicyTests: XCTestCase {
                                    startedAt: now.addingTimeInterval(-300), now: now), .leaveToHost(.rebuild))
     }
 
+    // MARK: - Review F2: the clock across an extension restart
+
+    /// Every on-demand re-dial is a NEW provider instance. The overnight case:
+    /// the key was reaped, the server has forgotten why (`not_found`), the
+    /// data-plane check cancelled the tunnel on wake and the re-dial's first
+    /// beat lands 30 s after its start. With the shared last good beat it is
+    /// the rebuild it is; without it, it read as an ending.
+    func testTheReapClockOutlivesAnExtensionInstance() {
+        let notFound = reply(valid: false, serverOnline: false, reason: .notFound)
+        let restarted = now.addingTimeInterval(-30)
+        var fresh = TunnelHeartbeatState()
+        XCTAssertEqual(fresh.decide(notFound, keyId: "key-a", multiHop: false, startedAt: restarted, now: now,
+                                    sharedLastOk: now.addingTimeInterval(-8 * 3600)), .leaveToHost(.rebuild))
+        var blind = TunnelHeartbeatState()
+        XCTAssertEqual(blind.decide(notFound, keyId: "key-a", multiHop: false, startedAt: restarted, now: now),
+                       .stop(.revoked), "what the restarted clock said before")
+        // A recent good beat in the record: beats were flowing, so it ended on purpose.
+        var recent = TunnelHeartbeatState()
+        XCTAssertEqual(recent.decide(notFound, keyId: "key-a", multiHop: false, startedAt: restarted, now: now,
+                                     sharedLastOk: now.addingTimeInterval(-60)), .stop(.revoked))
+        // The newer of the two clocks wins.
+        var both = TunnelHeartbeatState()
+        XCTAssertEqual(both.decide(reply(reason: .ok), keyId: "key-a", multiHop: false, startedAt: restarted,
+                                   now: now.addingTimeInterval(-20)), .keep)
+        XCTAssertEqual(both.decide(notFound, keyId: "key-a", multiHop: false, startedAt: restarted, now: now,
+                                   sharedLastOk: now.addingTimeInterval(-3600)), .stop(.revoked))
+    }
+
+    /// An ending only INFERRED from a missing record never replaces a rebuild
+    /// or a move already handed over for the same key: only the clock that
+    /// inferred it is newer. The server's own words still end the session.
+    func testAnInferredEndingNeverReplacesAPendingRebuildOrMove() {
+        let notFound = reply(valid: false, serverOnline: false, reason: .notFound)
+        let noReason = reply(valid: false, serverOnline: false)
+        let restarted = now.addingTimeInterval(-30)
+        for pending in [HeartbeatHandOff.Verdict.rebuild, .moveServer] {
+            for inferred in [notFound, noReason] {
+                var state = TunnelHeartbeatState()
+                XCTAssertEqual(state.decide(inferred, keyId: "key-a", multiHop: false, startedAt: restarted, now: now,
+                                            pending: pending), .leaveToHost(pending))
+                XCTAssertTrue(state.settled)
+            }
+            let spoken: [(HeartbeatResult, HeartbeatHandOff.Verdict)] = [
+                (reply(valid: false, serverOnline: true, reason: .revoked), .revoked),
+                (reply(valid: false, serverOnline: false, reason: .evicted), .evicted),
+                (reply(valid: false, serverOnline: false, reason: .quotaExceeded, quotaExceeded: true), .quotaExceeded),
+            ]
+            for (sent, verdict) in spoken {
+                var state = TunnelHeartbeatState()
+                XCTAssertEqual(state.decide(sent, keyId: "key-a", multiHop: false, startedAt: restarted, now: now,
+                                            pending: pending), .stop(verdict))
+            }
+        }
+        // A pending ENDING keeps nothing.
+        var ended = TunnelHeartbeatState()
+        XCTAssertEqual(ended.decide(notFound, keyId: "key-a", multiHop: false, startedAt: restarted, now: now,
+                                    pending: .evicted), .stop(.revoked))
+        XCTAssertTrue(TunnelHeartbeatState.isInferred(notFound))
+        XCTAssertTrue(TunnelHeartbeatState.isInferred(noReason))
+        XCTAssertFalse(TunnelHeartbeatState.isInferred(reply(valid: false, serverOnline: false, reason: .reaped)))
+        XCTAssertFalse(TunnelHeartbeatState.isInferred(reply(valid: false, serverOnline: false, reason: .notFound,
+                                                             quotaExceeded: true)))
+        XCTAssertFalse(TunnelHeartbeatState.isInferred(reply(reason: .notFound)), "a valid reply is no ending")
+    }
+
+    /// The last good beat is written to the shared record at most every two
+    /// minutes (well inside the 5-min reap window), and at once for a new key.
+    func testTheLastGoodBeatIsSharedAtMostEveryTwoMinutes() {
+        XCTAssertEqual(TunnelHeartbeatState.shareEvery, 120)
+        var state = TunnelHeartbeatState()
+        XCTAssertNil(state.okToShare)
+        let ok = reply(reason: .ok)
+        _ = state.decide(ok, keyId: "key-a", multiHop: false, startedAt: now, now: now)
+        XCTAssertEqual(state.okToShare, now)
+        state.markShared(now)
+        XCTAssertNil(state.okToShare)
+        _ = state.decide(ok, keyId: "key-a", multiHop: false, startedAt: now, now: now.addingTimeInterval(90))
+        XCTAssertNil(state.okToShare, "written again inside two minutes")
+        _ = state.decide(ok, keyId: "key-a", multiHop: false, startedAt: now, now: now.addingTimeInterval(120))
+        XCTAssertEqual(state.okToShare, now.addingTimeInterval(120))
+        state.markShared(now.addingTimeInterval(120))
+        _ = state.decide(ok, keyId: "key-b", multiHop: false, startedAt: now, now: now.addingTimeInterval(130))
+        XCTAssertEqual(state.okToShare, now.addingTimeInterval(130), "a new key's first good beat is shared at once")
+        // A reply that is not good never stamps it.
+        var none = TunnelHeartbeatState()
+        _ = none.decide(reply(valid: false, serverOnline: false, reason: .reaped), keyId: "key-a", multiHop: false,
+                        startedAt: now, now: now)
+        XCTAssertNil(none.okToShare)
+    }
+
     // MARK: - The hand-off
 
     /// The verdict crosses the process boundary in the shared keychain, by

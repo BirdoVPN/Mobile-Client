@@ -278,6 +278,10 @@ targets:
       # the host. Foundation-only, pinned by TunnelHeartbeatPolicyTests; the
       # provider itself (NetworkExtension) cannot be compiled into this bundle.
       - path: iosApp/Services/TunnelHeartbeatPolicy.swift
+      # MR-2524 review F1: the route a session was dialled on, kept for a host
+      # started cold, and when a rebuild or a move may use it. Foundation-only,
+      # pinned by HeartbeatRouteTests; VpnViewModel cannot be compiled here.
+      - path: iosApp/Services/HeartbeatRoute.swift
       # D18 BirdoShield, response side. Foundation-only by design: the
       # predicates that decide which resolver the wg-quick config carries —
       # and in particular that the node's own 10.13.13.1 filtering resolver

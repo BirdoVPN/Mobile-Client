@@ -358,6 +358,16 @@ final class VpnViewModel: ObservableObject {
     /// session then refused the user's own reconnects.
     private(set) var activeKeyId: String?
     private static let lastKeyIdDefaultsKey = "last_key_id"
+    /// MR-2524 review F1: the key whose route (server, pick, Multi-Hop pair)
+    /// this process holds in memory: the one it dialled (`setActiveKeyId`),
+    /// or a kept route it matched after a cold start. Any other session's
+    /// rebuild or move waits for its route or ends; it never dials a guess.
+    private var routeKeyId: String?
+    /// The route kept for `activeKeyId` by the process that dialled it
+    /// (`keepHeartbeatRoute`), loaded at a cold start and matched against the
+    /// server list once it has loaded (`heartbeatRouteKnowledge`).
+    private var keptRoute: HeartbeatRoute?
+    private static let lastRouteDefaultsKey = "last_heartbeat_route"
 
     /// REBUILD (Mobile-Client #159): an in-place live rebuild is in flight.
     /// Re-entrancy guard for `rebuildLive`; also suppresses the generic
@@ -443,6 +453,11 @@ final class VpnViewModel: ObservableObject {
         // extension outlives the app, so the session this handle names may
         // still be up right now.
         activeKeyId = UserDefaults.standard.string(forKey: Self.lastKeyIdDefaultsKey)
+        // MR-2524 review F1: and the route it was dialled on, for that key only.
+        let restoredKeyId = activeKeyId
+        keptRoute = UserDefaults.standard.data(forKey: Self.lastRouteDefaultsKey)
+            .flatMap { try? JSONDecoder().decode(HeartbeatRoute.self, from: $0) }
+            .flatMap { $0.keyId == restoredKeyId ? $0 : nil }
 
         // Observe VPN status
         vpnManager.onStatusChange = { [weak self] status in
@@ -1394,12 +1409,17 @@ final class VpnViewModel: ObservableObject {
         }
         guard isConnected, !isRebuildingLive, !isTearingDownForRedial else { return }
         let now = Date()
+        // MR-2524 review F1: the session's route first, as in `sendHeartbeat`.
+        // A rebuild or a move waits while a host started cold matches the
+        // route it kept, and without one it ends: never a guessed route.
+        let route = heartbeatRouteKnowledge(for: keyId)
+        guard let routed = HeartbeatRouting.carry(
+            handOff.verdict.hostOutcome(multiHop: activeMultiHop != nil), knowing: route) else { return }
         let tripped = TunnelCircuitBreaker.isTripped(store.record, now: now)
-        if tripped && !handOff.verdict.isLeftToHost { return }
+        if tripped, case .end = routed { return }
         store.clearHeartbeatHandOff(handOff)
         if tripped { clearCircuitBreaker() }
-        let outcome = heartbeatRebuildBudget.admit(
-            handOff.verdict.hostOutcome(multiHop: activeMultiHop != nil), now: now)
+        let outcome = heartbeatRebuildBudget.admit(routed, now: now)
         let step: String
         switch outcome {
         case .keep: step = "keep"
@@ -1536,6 +1556,7 @@ final class VpnViewModel: ObservableObject {
             // Multi-Hop session the node this device talks to is the ENTRY node,
             // never the unrelated `selectedServer` the user last browsed to.
             connectedServerId = activeMultiHop?.entry.id ?? selectedServer?.id
+            keepHeartbeatRoute()
             isSwitching = false
             // On-demand is armed only after a REAL handshake — see
             // armKillSwitchAfterHandshake(). NEVPNStatus.connected means the
@@ -2414,6 +2435,9 @@ final class VpnViewModel: ObservableObject {
         disconnect()
         // The next account must not inherit a trip recorded against this one.
         clearCircuitBreaker()
+        // MR-2524 review F3: nor this session's heartbeat records (the hand-off
+        // and the last good beat name its key, which D-13 scrubs too).
+        TunnelBreakerStore.shared.clearHeartbeatRecords()
         servers = []
         selectedServer = nil
         serversError = nil
@@ -2428,12 +2452,67 @@ final class VpnViewModel: ObservableObject {
 
     private func setActiveKeyId(_ keyId: String?) {
         activeKeyId = keyId
+        // MR-2524 review F1: a key set here is one this process dialled (or
+        // restored to), so the route in memory is that session's.
+        routeKeyId = keyId
+        keptRoute = nil
         let defaults = UserDefaults.standard
         if let keyId {
             defaults.set(keyId, forKey: Self.lastKeyIdDefaultsKey)
         } else {
             defaults.removeObject(forKey: Self.lastKeyIdDefaultsKey)
+            defaults.removeObject(forKey: Self.lastRouteDefaultsKey)
         }
+    }
+
+    /// MR-2524 review F1: keep the route of the session this process dialled,
+    /// next to `last_key_id`, at each `.connected`, so a host started cold can
+    /// carry out a heartbeat rebuild or move on it. Server ids, who picked the
+    /// server, and the pair: no secret, no address.
+    private func keepHeartbeatRoute() {
+        guard let keyId = activeKeyId, routeKeyId == keyId else { return }
+        let route = HeartbeatRoute(keyId: keyId,
+                                   serverId: activeMultiHop == nil ? (connectedServerId ?? selectedServer?.id) : nil,
+                                   automatic: selectionOrigin == .automatic,
+                                   entryId: activeMultiHop?.entry.id,
+                                   exitId: activeMultiHop?.exit.id,
+                                   pairRoute: activeMultiHop?.route)
+        guard let data = try? JSONEncoder().encode(route) else { return }
+        UserDefaults.standard.set(data, forKey: Self.lastRouteDefaultsKey)
+    }
+
+    /// MR-2524 review F1: what this process knows of the route of `keyId`'s
+    /// session, before a heartbeat rebuild or move is carried out
+    /// (`HeartbeatRouting.carry`). A route kept by the process that dialled
+    /// the session is matched against the server list once it has loaded and
+    /// put back into memory (the server, who picked it, the pair), exactly as
+    /// that process held it.
+    private func heartbeatRouteKnowledge(for keyId: String) -> HeartbeatRouteKnowledge {
+        if routeKeyId == keyId { return .known }
+        guard let route = keptRoute, route.keyId == keyId else { return .unknown }
+        guard !servers.isEmpty else { return .pending }
+        let origin: SelectionOrigin = route.automatic ? .automatic : .user
+        switch route.match(in: servers) {
+        case .single(let server):
+            activeMultiHop = nil
+            selectedServer = server
+            selectionOrigin = origin
+            connectedServerId = server.id
+        case .pair(let entry, let exit):
+            activeMultiHop = MultiHopSession(entry: entry, exit: exit, route: route.pairRoute ?? "")
+            connectedServerId = entry.id
+        case .unlisted:
+            // Gone from the list: a move starts from the kept server and pick
+            // (a user pick then stays in its country or stops), a rebuild ends.
+            connectedServerId = route.serverId ?? route.entryId
+            selectionOrigin = origin
+            return .unlisted(pair: route.isPair)
+        }
+        routeKeyId = keyId
+        keptRoute = nil
+        debugLog("[VpnViewModel] heartbeat: the session's route is back after a cold start (%@)",
+                 route.isPair ? "pair" : "single")
+        return .known
     }
 
     /// Fire-and-forget `DELETE /vpn/connections/{keyId}`. Best effort: if the
@@ -2460,7 +2539,12 @@ final class VpnViewModel: ObservableObject {
         stopHeartbeat()
         // MR-2343: the session's reap clock starts with its heartbeat. A
         // repeated `.connected` (a reassert) keeps the one already running.
-        if lastHeartbeatOkAt == nil { lastHeartbeatOkAt = Date() }
+        // MR-2524 review F2: a host started cold under a live session picks the
+        // clock up where the extension left it (its last good beat of this
+        // key), so an overnight reap is not read as an ending.
+        if lastHeartbeatOkAt == nil {
+            lastHeartbeatOkAt = activeKeyId.flatMap { TunnelBreakerStore.shared.heartbeatLastOk(for: $0) } ?? Date()
+        }
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: Self.heartbeatInterval,
                                               repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -2502,10 +2586,16 @@ final class VpnViewModel: ObservableObject {
         // server writes. This function only carries it out.
         let now = Date()
         let sinceLastOk = lastHeartbeatOkAt.map { now.timeIntervalSince($0) } ?? 0
-        let outcome = heartbeatRebuildBudget.admit(
+        // MR-2524 review F1: the session's route first (a host started cold
+        // matches the kept one), then a rebuild or a move only on that route:
+        // it waits while the route is being matched, and is never dialled on a
+        // guessed one. A keep or an ending is unaffected.
+        let route = heartbeatRouteKnowledge(for: keyId)
+        guard let routed = HeartbeatRouting.carry(
             HeartbeatPolicy.outcome(of: result, sinceLastOk: sinceLastOk,
                                     multiHop: activeMultiHop != nil, now: now),
-            now: now)
+            knowing: route) else { return }
+        let outcome = heartbeatRebuildBudget.admit(routed, now: now)
         switch outcome {
         case .keep(let nodeOffline, let grace):
             if result.valid { lastHeartbeatOkAt = now }

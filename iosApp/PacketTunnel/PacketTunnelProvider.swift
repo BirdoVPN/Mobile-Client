@@ -77,6 +77,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         get { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; return _heartbeatMultiHop }
         set { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; _heartbeatMultiHop = newValue }
     }
+    /// Review F5: the key the tunnel rides now (set at start and by a
+    /// successful reconfigure). A reply about any other key is a late one and
+    /// is dropped under the lock, so a swap that lands mid-beat is never torn
+    /// down for the key it replaced.
+    private var _heartbeatKeyIdInUse: String?
+    private var heartbeatKeyIdInUse: String? {
+        get { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; return _heartbeatKeyIdInUse }
+        set { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; _heartbeatKeyIdInUse = newValue }
+    }
 
     /// Identity the circuit breaker attributes failures to: the endpoint host
     /// this tunnel dials (`NEVPNProtocol.serverAddress` — the ENTRY node for a
@@ -212,6 +221,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         // ends a Multi-Hop session where it moves a single hop.
         heartbeatMultiHop = TunnelHeartbeatPolicy.multiHop(
             proto.providerConfiguration?[TunnelHeartbeatPolicy.multiHopKey])
+        heartbeatKeyIdInUse = heartbeatKeyId
 
         // Read secrets out of the shared keychain. The IDs are passed via
         // providerConfiguration; the actual material never appears there.
@@ -484,6 +494,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             self.tunnelStartedAt = Date()
             self.breakerNodeId = breakerNode
             self.heartbeatMultiHop = multiHop
+            self.heartbeatKeyIdInUse = keyId
             if !keyId.isEmpty, !token.isEmpty {
                 self.startHeartbeat(keyId: keyId, token: token, clientVersion: clientVersion)
             } else {
@@ -515,17 +526,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     ///   ending is handed over first, so the host says its sentence (and offers
     ///   the plans for the allowance) instead of the trip's generic one.
     ///
-    /// A reply that lands after its beat was cancelled (a reconfigure swapped
-    /// the peer, the tunnel is stopping) is about a key this tunnel no longer
-    /// rides, and is dropped, as the host drops a reply about a replaced key.
+    /// A reply that lands after its beat was cancelled, or about a key the
+    /// tunnel no longer rides (a reconfigure swapped the peer), is dropped
+    /// under the lock (review F5), as the host drops a reply about a replaced
+    /// key. The reap clock is the key's last good beat as ANY instance heard it
+    /// (the shared record, review F2), and an inferred ending never replaces a
+    /// rebuild or a move already handed over for the same key.
     /// Logs name the verdict only: no key, no server, no account.
     private func actOnHeartbeat(_ reply: HeartbeatResult, keyId: String) {
-        guard !Task.isCancelled else { return }
+        // Keychain reads outside the lock.
+        let store = TunnelBreakerStore.shared
+        let sharedLastOk = store.heartbeatLastOk(for: keyId)
+        let pending = store.heartbeatHandOff.flatMap { $0.keyId == keyId ? $0.verdict : nil }
         let now = Date()
         heartbeatLock.lock()
+        guard !Task.isCancelled, _heartbeatKeyIdInUse == keyId else {
+            heartbeatLock.unlock()
+            return
+        }
         let action = _heartbeatState.decide(reply, keyId: keyId, multiHop: _heartbeatMultiHop,
-                                            startedAt: _tunnelStartedAt ?? now, now: now)
+                                            startedAt: _tunnelStartedAt ?? now, now: now,
+                                            sharedLastOk: sharedLastOk, pending: pending)
+        let okToShare = _heartbeatState.okToShare
+        if let okToShare { _heartbeatState.markShared(okToShare) }
         heartbeatLock.unlock()
+        if let okToShare { store.setHeartbeatLastOk(okToShare, keyId: keyId) }
         // nil: the server already settled this key, and it was acted on then.
         guard let action else { return }
         switch action {
@@ -545,9 +570,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             // ended peer must stop routing so the device isn't left blackholing
             // traffic into a peer the server already deleted. Routed through the
             // breaker so it can never become an unbounded teardown ↔
-            // on-demand-re-dial loop — see `handleDataPlaneFailure`.
+            // on-demand-re-dial loop — see `handleDataPlaneFailure`. Checked
+            // once more right before (review F5): a swap since the decision
+            // put a new peer on this tunnel, and that one is not ended.
+            guard heartbeatStillBeats(keyId) else { return }
             handleDataPlaneFailure(.revoked, error: TunnelError.connectionRevoked)
         }
+    }
+
+    /// The beat for `keyId` is still the current one: not cancelled, and the
+    /// tunnel still rides that key (review F5).
+    private func heartbeatStillBeats(_ keyId: String) -> Bool {
+        heartbeatLock.lock()
+        defer { heartbeatLock.unlock() }
+        return !Task.isCancelled && _heartbeatKeyIdInUse == keyId
     }
 
     // MARK: - Heartbeat (finding #2)

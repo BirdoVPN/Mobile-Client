@@ -32,6 +32,7 @@ final class TunnelBreakerStore: @unchecked Sendable {
     private static let recordAccount = "breaker_record"
     private static let onDemandAccount = "on_demand_armed"
     private static let heartbeatHandOffAccount = "heartbeat_handoff"
+    private static let heartbeatLastOkAccount = "heartbeat_last_ok"
 
     /// Serialises the read-modify-write in `recordFailure`. The extension calls
     /// it from the heartbeat Task; the host reads from the main actor.
@@ -110,21 +111,59 @@ final class TunnelBreakerStore: @unchecked Sendable {
         return try? JSONDecoder().decode(HeartbeatHandOff.self, from: data)
     }
 
+    /// Review F4: written in ONE step (`replace`), so a reader never finds the
+    /// slot empty between a delete and an add, and labelled with the decision
+    /// so the host's clear can name exactly the one it dealt with.
     func setHeartbeatHandOff(_ handOff: HeartbeatHandOff) {
         lock.lock()
         defer { lock.unlock() }
         if let data = try? JSONEncoder().encode(handOff) {
-            write(account: Self.heartbeatHandOffAccount, data: data)
+            replace(account: Self.heartbeatHandOffAccount, data: data, label: Self.label(of: handOff))
         }
     }
 
     /// Delete `handOff` once the host has dealt with it, unless the extension
-    /// has written a newer one since it was read: that one is still owed.
+    /// has written a newer one since it was read: that one is still owed. The
+    /// keychain compares the label itself (review F4), so a newer decision the
+    /// extension writes between this read and this delete is never deleted,
+    /// even though the two processes share no lock.
     func clearHeartbeatHandOff(_ handOff: HeartbeatHandOff) {
         lock.lock()
         defer { lock.unlock() }
-        guard heartbeatHandOff == handOff else { return }
+        delete(account: Self.heartbeatHandOffAccount, label: Self.label(of: handOff))
+    }
+
+    private static func label(of handOff: HeartbeatHandOff) -> String {
+        "\(handOff.verdict.rawValue)@\(handOff.decidedAt)"
+    }
+
+    /// The last good beat of `keyId` (review F2): written by the extension at
+    /// most every `TunnelHeartbeatState.shareEvery`, read by every extension
+    /// instance and by a host started cold, so neither restarts the reap clock.
+    /// A record about another key reads as nil.
+    func heartbeatLastOk(for keyId: String) -> Date? {
+        guard let data = read(account: Self.heartbeatLastOkAccount),
+              let record = try? JSONDecoder().decode(HeartbeatLastOk.self, from: data),
+              record.keyId == keyId else { return nil }
+        return Date(timeIntervalSince1970: record.at)
+    }
+
+    func setHeartbeatLastOk(_ at: Date, keyId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let data = try? JSONEncoder().encode(HeartbeatLastOk(keyId: keyId, at: at.timeIntervalSince1970)) {
+            replace(account: Self.heartbeatLastOkAccount, data: data, label: "last_ok")
+        }
+    }
+
+    /// Review F3: both heartbeat records name this session's key (D-13 scrubs
+    /// it from the profile at sign-out too), so sign-out and account deletion
+    /// remove them (`VpnViewModel.resetForLogout`).
+    func clearHeartbeatRecords() {
+        lock.lock()
+        defer { lock.unlock() }
         delete(account: Self.heartbeatHandOffAccount)
+        delete(account: Self.heartbeatLastOkAccount)
     }
 
     // MARK: - Keychain primitives
@@ -166,6 +205,45 @@ final class TunnelBreakerStore: @unchecked Sendable {
             kSecAttrService as String: Self.service,
             kSecAttrAccount as String: account,
             kSecAttrAccessGroup as String: Self.accessGroup,
+            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
+    /// One-step write: update the item in place, and add it only when there is
+    /// none yet. Unlike `write` (delete, then add), no reader in either process
+    /// can find the slot empty, and no delete of the old value can land on the
+    /// new one.
+    private func replace(account: String, data: Data, label: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessGroup as String: Self.accessGroup,
+            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
+        ]
+        let changes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrLabel as String: label,
+        ]
+        guard SecItemUpdate(query as CFDictionary, changes as CFDictionary) == errSecItemNotFound else { return }
+        var add = query
+        add[kSecValueData as String] = data
+        add[kSecAttrLabel as String] = label
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        add[kSecAttrSynchronizable as String] = kCFBooleanFalse as Any
+        SecItemAdd(add as CFDictionary, nil)
+    }
+
+    /// Delete the item only while it still carries `label`: the keychain does
+    /// the comparison, across both processes.
+    private func delete(account: String, label: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessGroup as String: Self.accessGroup,
+            kSecAttrLabel as String: label,
             kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
         ]
         SecItemDelete(query as CFDictionary)

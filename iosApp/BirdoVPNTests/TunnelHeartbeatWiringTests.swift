@@ -142,7 +142,9 @@ final class TunnelHeartbeatWiringTests: XCTestCase {
         let vm = try source("iosApp/ViewModels/VpnViewModel.swift")
         XCTAssertTrue(vm.contains("keptRoute = UserDefaults.standard.data(forKey: Self.lastRouteDefaultsKey)"),
                       "a cold start does not load the kept route")
-        XCTAssertTrue(vm.contains(".flatMap { $0.keyId == activeKeyId ? $0 : nil }"), "another session's route is used")
+        XCTAssertTrue(vm.contains("let restoredKeyId = activeKeyId")
+                      && vm.contains(".flatMap { $0.keyId == restoredKeyId ? $0 : nil }"),
+                      "another session's route is used")
         let setKey = slice(vm, from: "private func setActiveKeyId(_ keyId: String?) {", to: "\n    }\n")
         XCTAssertTrue(setKey.contains("routeKeyId = keyId"))
         XCTAssertTrue(setKey.contains("defaults.removeObject(forKey: Self.lastRouteDefaultsKey)"))

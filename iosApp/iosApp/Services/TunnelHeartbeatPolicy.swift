@@ -83,27 +83,53 @@ struct TunnelHeartbeatState: Sendable {
     /// One quiet rebuild per window, as on the host. Kept across keys, so a
     /// session the host rebuilt that is reaped again inside the window ends.
     private var budget = HeartbeatRebuildBudget()
+    /// The last good beat this state wrote to the shared record (review F2).
+    private var lastSharedAt: Date?
+
+    /// How often the last good beat is written to the shared record: the reap
+    /// window is 5 min, so 2 min keeps the record well inside it for one
+    /// keychain write per four beats.
+    static let shareEvery: TimeInterval = 120
 
     init() {}
 
     /// What to do with `reply`, about `keyId`, decided exactly as the host's
-    /// `sendHeartbeat` decides it. `startedAt` is when this key's beats began
-    /// (the tunnel came up, or the peer was swapped in): the reap clock's start
-    /// until a `valid: true` is heard, as the host starts it with its heartbeat.
-    /// nil: the key is already settled, so there is nothing to do.
+    /// `sendHeartbeat` decides it. nil: the key is already settled, so there is
+    /// nothing to do.
+    ///
+    /// - Parameters:
+    ///   - startedAt: when this key's beats began (the tunnel came up, or the
+    ///     peer was swapped in): the reap clock's start until a good beat is
+    ///     known, as the host starts it with its heartbeat.
+    ///   - sharedLastOk: the last good beat of `keyId` in the shared record
+    ///     (review F2). Every on-demand re-dial is a NEW provider instance, so
+    ///     without it the clock restarted with each one, and the overnight
+    ///     reap (`not_found` once the server forgot why) read as an ending
+    ///     30 s after the re-dial.
+    ///   - pending: the verdict already handed over for `keyId`, if any. An
+    ///     ending only INFERRED from a missing record never replaces a rebuild
+    ///     or a move handed over before it: the key is the same, only the clock
+    ///     that inferred it is newer. The server's own words (revoked,
+    ///     evicted, the allowance, a second reap) still do.
     mutating func decide(_ reply: HeartbeatResult, keyId: String, multiHop: Bool,
-                         startedAt: Date, now: Date) -> TunnelHeartbeatAction? {
+                         startedAt: Date, now: Date, sharedLastOk: Date? = nil,
+                         pending: HeartbeatHandOff.Verdict? = nil) -> TunnelHeartbeatAction? {
         if keyId != self.keyId {
             self.keyId = keyId
             lastOkAt = nil
+            lastSharedAt = nil
             settled = false
         }
         guard !settled else { return nil }
-        let sinceLastOk = now.timeIntervalSince(lastOkAt ?? startedAt)
-        let outcome = budget.admit(
-            HeartbeatPolicy.outcome(of: reply, sinceLastOk: sinceLastOk, multiHop: multiHop, now: now),
-            now: now)
-        let action = TunnelHeartbeatPolicy.action(for: outcome)
+        let lastOk = [lastOkAt, sharedLastOk].compactMap { $0 }.max()
+        let sinceLastOk = now.timeIntervalSince(lastOk ?? startedAt)
+        let decided = HeartbeatPolicy.outcome(of: reply, sinceLastOk: sinceLastOk, multiHop: multiHop, now: now)
+        let action: TunnelHeartbeatAction
+        if case .end = decided, Self.isInferred(reply), let pending, pending.isLeftToHost {
+            action = .leaveToHost(pending)
+        } else {
+            action = TunnelHeartbeatPolicy.action(for: budget.admit(decided, now: now))
+        }
         if action == .keep {
             if reply.valid { lastOkAt = now }
         } else {
@@ -111,6 +137,33 @@ struct TunnelHeartbeatState: Sendable {
         }
         return action
     }
+
+    /// The good beat to write to the shared record now, if one is due
+    /// (`shareEvery`). Call `markShared` once it is written.
+    var okToShare: Date? {
+        guard let lastOkAt else { return nil }
+        if let lastSharedAt, lastOkAt.timeIntervalSince(lastSharedAt) < Self.shareEvery { return nil }
+        return lastOkAt
+    }
+
+    mutating func markShared(_ at: Date) {
+        lastSharedAt = at
+    }
+
+    /// A reply whose ending is only inferred: the key is gone and the server
+    /// no longer says why (`not_found`, or no reason this build knows).
+    static func isInferred(_ reply: HeartbeatResult) -> Bool {
+        !reply.valid && !reply.quotaExceeded && (reply.reason == nil || reply.reason == .notFound)
+    }
+}
+
+/// The last good beat of a key, shared across extension instances and with
+/// the host (review F2): a re-dial and a host started cold keep the reap clock
+/// instead of restarting it.
+struct HeartbeatLastOk: Codable, Equatable, Sendable {
+    let keyId: String
+    /// Unix seconds.
+    let at: TimeInterval
 }
 
 /// What the extension's heartbeat decided about `keyId` and left to the host,
