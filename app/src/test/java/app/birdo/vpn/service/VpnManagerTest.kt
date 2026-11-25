@@ -2718,6 +2718,71 @@ class VpnManagerTest {
         quiesce()
     }
 
+    // ── MR-2373: the session keeps the fleet gate its own dial read ────────
+    //
+    // Owner 2026-11-20: a BirdoShield gate the server flips while connected does
+    // NOT re-dial. The session keeps what it was dialled under, and the row
+    // compares that with the current gate to say "Applies when you next
+    // connect" (BirdoShieldAvailabilityTest pins the row).
+
+    @Test
+    fun `MR-2373 a connect keeps the fleet gate its dial read, a flip does not re-dial, a teardown clears it`() = runTest {
+        every { prefs.dnsFilteringGateOn } returns false
+        connectAndEstablish()
+        assertEquals(false, vpnManager.sessionShieldGate.value)
+
+        // The server turns BirdoShield on mid-session (VpnViewModel writes the pref).
+        every { prefs.dnsFilteringGateOn } returns true
+        runCurrent()
+        assertEquals("the live session is still the one dialled with the gate off", false, vpnManager.sessionShieldGate.value)
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+
+        vpnManager.disconnect()
+        assertEquals(null, vpnManager.sessionShieldGate.value)
+    }
+
+    @Test
+    fun `MR-2373 a connect under the gate on keeps it on`() = runTest {
+        every { prefs.dnsFilteringGateOn } returns true
+        connectAndEstablish()
+        assertEquals(true, vpnManager.sessionShieldGate.value)
+        vpnManager.disconnect()
+    }
+
+    @Test
+    fun `MR-2373 a Multi-Hop connect keeps the fleet gate its dial read`() = runTest {
+        every { prefs.dnsFilteringGateOn } returns false
+        every { prefs.lastKnownPlan } returns "SOVEREIGN"
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Success(makeMultiHopResponse())
+
+        assertTrue(vpnManager.connectMultiHop("de-1", "nl-1") is ApiResult.Success)
+
+        assertEquals(false, vpnManager.sessionShieldGate.value)
+        vpnManager.disconnect()
+        assertEquals(null, vpnManager.sessionShieldGate.value)
+    }
+
+    @Test
+    fun `MR-2373 a live rebuild commits the gate its own request read`() = runTest {
+        every { prefs.dnsFilteringGateOn } returns false
+        connectAndEstablish()
+        // The gate came on; the user's switch re-dials under it.
+        every { prefs.dnsFilteringGateOn } returns true
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        assertEquals("not before the new peer is committed", false, vpnManager.sessionShieldGate.value)
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+        runCurrent()
+
+        assertTrue(switch.await() is ApiResult.Success)
+        assertEquals(true, vpnManager.sessionShieldGate.value)
+        quiesce()
+    }
+
     @Test
     fun `the dialled node, not the selection, is what the Servers list marks connected`() = runTest {
         connectAndEstablish()

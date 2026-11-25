@@ -211,13 +211,28 @@ enum BirdoShieldGate {
     ///
     /// Owner decision 2026-11-13: while the FLEET gate is off the row is HIDDEN
     /// (`isVisible == false`), not shown with a "not available" reason. It
-    /// returns by itself if the gate is ever turned on.
+    /// returns by itself if the gate is ever turned on. One exception (MR-2373,
+    /// owner 2026-11-25): a gate turned off while a connected session dialled
+    /// under it still filters keeps the row, with the note, until that session
+    /// ends.
     struct Row: Equatable {
         let isOn: Bool
         let isEnabled: Bool
         /// False unless the fleet gate is known to be on: the row is not shown.
         let isVisible: Bool
+        /// MR-2373: the CONNECTED session does not match what the gate now
+        /// says, and the app does not re-dial for a gate flip (owner
+        /// 2026-11-20), so the row says `nextConnectNotice`. Either the gate
+        /// came ON after the session was dialled without it (the row reads the
+        /// user's ON; the session does not filter yet), or it went OFF while the
+        /// session, dialled under it, still filters (owner 2026-11-25: the row
+        /// stays, reading ON and not switchable, until that session ends).
+        var appliesWhenNextConnected: Bool = false
     }
+
+    /// The row's note while `Row.appliesWhenNextConnected` (owner 2026-11-20).
+    /// Android's twin is `vpn_settings_birdoshield_next_connect`.
+    static let nextConnectNotice = "Applies when you next connect"
 
     /// - Parameters:
     ///   - preference: the user's persisted per-device opt-in
@@ -235,12 +250,26 @@ enum BirdoShieldGate {
     /// Note what this does NOT do: it never writes. An unavailable gate makes
     /// the row read OFF, but `preference` is left untouched in UserDefaults, so
     /// the user's own choice comes back by itself when the gate does.
-    static func row(preference: Bool, available: Bool?) -> Row {
+    ///
+    /// - Parameter sessionGate: MR-2373: the fleet gate the CONNECTED session
+    ///   was dialled under (`VPNConnectionConfig.dialedShieldGate`), or `nil`
+    ///   with no connected session. A gate the server turns on mid-session does
+    ///   not re-dial (owner 2026-11-20), so a row that reads ON over a session
+    ///   dialled with the gate off says `nextConnectNotice`. A gate turned OFF
+    ///   mid-session (owner 2026-11-25) keeps the row while that session still
+    ///   filters: it reads ON, cannot be switched, and says the same note;
+    ///   after the next connect it is hidden, as the 2026-11-13 rule says.
+    static func row(preference: Bool, available: Bool?, sessionGate: Bool? = nil) -> Row {
         let unavailable = available != true
+        let isOn = preference && !unavailable
+        // MR-2373, owner 2026-11-25: the server turned the gate OFF, but the
+        // connected session was dialled under it and still filters.
+        let stillFiltering = available == false && sessionGate == true && preference
         return Row(
-            isOn: preference && !unavailable,
+            isOn: isOn || stillFiltering,
             isEnabled: !unavailable,
-            isVisible: !unavailable
+            isVisible: !unavailable || stillFiltering,
+            appliesWhenNextConnected: (isOn && sessionGate == false) || stillFiltering
         )
     }
 }

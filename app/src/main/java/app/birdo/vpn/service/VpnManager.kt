@@ -193,6 +193,19 @@ class VpnManager @Inject constructor(
     val stealthNotice: StateFlow<String?> = _stealthNotice.asStateFlow()
 
     /**
+     * MR-2373: the BirdoShield FLEET gate ([AppPreferences.dnsFilteringGateOn])
+     * as the dial of the session this class last committed read it, or null
+     * with no such session (none yet, torn down, or one this process did not
+     * dial). Owner 2026-11-20: a gate the server flips while connected does
+     * NOT re-dial; the session keeps what it was dialled with, and the
+     * BirdoShield row compares this with the current gate to say "Applies
+     * when you next connect" ([app.birdo.vpn.ui.screen.birdoShieldRowState]).
+     * Set with [connectedServerId], at each dial's and rebuild's commit.
+     */
+    private val _sessionShieldGate = MutableStateFlow<Boolean?>(null)
+    val sessionShieldGate: StateFlow<Boolean?> = _sessionShieldGate.asStateFlow()
+
+    /**
      * What a dial asks for: the stored setting. The server decides entitlement
      * and the service acts on its answer (StealthPolicy) — no client-side plan
      * gate, which a stale lastKnownPlan turned against a re-upgraded user.
@@ -1014,8 +1027,8 @@ class VpnManager @Inject constructor(
      * replaces the filtering resolver in the tunnel. The server used to be
      * told dnsFiltering = true for a tunnel that never asked its resolver.
      */
-    private fun shieldInEffect(): Boolean =
-        WireGuardConfigBuilder.shieldInEffect(prefs.dnsFilteringEnabled, prefs.customDnsEnabled, prefs.dnsFilteringGateOn)
+    private fun shieldInEffect(gateOn: Boolean): Boolean =
+        WireGuardConfigBuilder.shieldInEffect(prefs.dnsFilteringEnabled, prefs.customDnsEnabled, gateOn)
 
     /**
      * A1-033: attest only on a user-initiated fresh dial with nothing blocked.
@@ -1218,6 +1231,9 @@ class VpnManager @Inject constructor(
             if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
             // Asked once, and the same answer goes to the service with the config.
             val askedForStealth = stealthRequested()
+            // MR-2373: the fleet gate this dial is built under, read once and
+            // kept with the session it commits ([sessionShieldGate]).
+            val dialGate = prefs.dnsFilteringGateOn
             val result = requestOrReleaseOnCancel({ r -> (r as? ApiResult.Success)?.data?.takeIf { it.success }?.keyId }) {
                 repository.connectVpn(
                     serverNodeId = serverId,
@@ -1229,7 +1245,7 @@ class VpnManager @Inject constructor(
                     integrityToken = integrityToken,
                     // BirdoShield (D18): read at dial time like stealth, so a flip while
                     // connected reaches the server on the reapply reconnect, not before.
-                    dnsFiltering = shieldInEffect(),
+                    dnsFiltering = shieldInEffect(dialGate),
                 )
             }
 
@@ -1270,6 +1286,7 @@ class VpnManager @Inject constructor(
                     // WireGuard handshake is observed. We stay in Connecting.
                     _connectedServer.value = config.serverNode?.name ?: "Unknown Server"
                     _connectedServerId.value = serverId
+                    _sessionShieldGate.value = dialGate
                     // MR-2492: who chose it goes with it, in the same write, for
                     // the re-dials the tile, the widget and a system start make later.
                     prefs.rememberLastServer(serverId, autoPicked = pickedBy == SelectionOrigin.AUTOMATIC)
@@ -1344,6 +1361,8 @@ class VpnManager @Inject constructor(
             if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
             val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
             val askedForStealth = stealthRequested()
+            // MR-2373: as in the single hop, kept with the session it commits.
+            val dialGate = prefs.dnsFilteringGateOn
             val result = requestOrReleaseOnCancel({ r -> (r as? ApiResult.Success)?.data?.takeIf { it.success }?.keyId }) {
                 repository.connectMultiHop(
                     entryNodeId = entryNodeId,
@@ -1355,7 +1374,7 @@ class VpnManager @Inject constructor(
                     pqClientPublicKey = pqClientPublicKey,
                     integrityToken = integrityToken,
                     // BirdoShield (D18) — the multi-hop twin of the single hop's flag.
-                    dnsFiltering = shieldInEffect(),
+                    dnsFiltering = shieldInEffect(dialGate),
                 )
             }
 
@@ -1445,6 +1464,7 @@ class VpnManager @Inject constructor(
                     _stealthNotice.value = stealthNoticeFor(askedForStealth, config.toConnectResponse())
                     _connectedServer.value = "${mh.entryNode.name} → ${mh.exitNode.name}"
                     _connectedServerId.value = entryNodeId
+                    _sessionShieldGate.value = dialGate
                     return result
                 }
                 is ApiResult.Error -> {
@@ -2061,6 +2081,8 @@ class VpnManager @Inject constructor(
         // LIVE_REBUILD handed it to the service (which then consumes or drops it).
         var rebuildPq: String? = null
         var pqHandedOff = false
+        // MR-2373: the fleet gate this rebuild's request is built under.
+        val dialGate = prefs.dnsFilteringGateOn
         val (result, event) = try {
             val (pqKey, pqRefusal) = rebuildPqKey()
             rebuildPq = pqKey
@@ -2079,7 +2101,7 @@ class VpnManager @Inject constructor(
                         quantumProtection = prefs.quantumProtectionEnabled,
                         pqClientPublicKey = pqKey,
                         integrityToken = null,
-                        dnsFiltering = shieldInEffect(),
+                        dnsFiltering = shieldInEffect(dialGate),
                         rebuildOf = oldKey,
                     )
                 }
@@ -2127,6 +2149,7 @@ class VpnManager @Inject constructor(
             LiveRebuildPolicy.Directive.COMMIT_NEW -> {
                 _connectedServer.value = config!!.serverNode?.name ?: "Unknown Server"
                 _connectedServerId.value = serverId
+                _sessionShieldGate.value = dialGate
                 prefs.rememberLastServer(serverId, autoPicked = pickedBy == SelectionOrigin.AUTOMATIC)
                 ApiResult.Success(config)
             }
@@ -2148,6 +2171,8 @@ class VpnManager @Inject constructor(
         // LIVE_REBUILD handed it to the service (which then consumes or drops it).
         var rebuildPq: String? = null
         var pqHandedOff = false
+        // MR-2373: the fleet gate this rebuild's request is built under.
+        val dialGate = prefs.dnsFilteringGateOn
         val (result, event) = try {
             val (pqKey, pqRefusal) = rebuildPqKey()
             rebuildPq = pqKey
@@ -2164,7 +2189,7 @@ class VpnManager @Inject constructor(
                         quantumProtection = prefs.quantumProtectionEnabled,
                         pqClientPublicKey = pqKey,
                         integrityToken = null,
-                        dnsFiltering = shieldInEffect(),
+                        dnsFiltering = shieldInEffect(dialGate),
                         rebuildOf = oldKey,
                     )
                 }
@@ -2217,6 +2242,7 @@ class VpnManager @Inject constructor(
                 activeMultiHop = entryNodeId to exitNodeId
                 _connectedServer.value = "${mh!!.entryNode.name} → ${mh.exitNode.name}"
                 _connectedServerId.value = entryNodeId
+                _sessionShieldGate.value = dialGate
                 ApiResult.Success(config)
             }
             LiveRebuildPolicy.Directive.FAILED_CLOSED -> ApiResult.Error(SessionCopy.switchFailedClosed(prefs.killSwitchEnabled))
@@ -2472,6 +2498,7 @@ class VpnManager @Inject constructor(
         armDisconnectWatchdog(reason, reasonKind)
         activeMultiHop = null
         _connectedServerId.value = null
+        _sessionShieldGate.value = null
 
         val intent = Intent(context, BirdoVpnService::class.java).apply {
             action = BirdoVpnService.ACTION_STOP

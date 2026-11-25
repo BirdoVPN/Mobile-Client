@@ -19,6 +19,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.unmockkAll
+import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -46,6 +47,7 @@ class VpnViewModelTest {
     private val switching = MutableStateFlow(false)
     private val sessionExpired = MutableStateFlow(false)
     private val connectedId = MutableStateFlow<String?>(null)
+    private val sessionGate = MutableStateFlow<Boolean?>(null)
 
     private lateinit var vpnManager: VpnManager
     private lateinit var repository: BirdoRepository
@@ -69,6 +71,7 @@ class VpnViewModelTest {
         every { vpnManager.sessionExpired } returns sessionExpired
         every { vpnManager.connectedServer } returns MutableStateFlow(null)
         every { vpnManager.connectedServerId } returns connectedId
+        every { vpnManager.sessionShieldGate } returns sessionGate
         every { vpnManager.dialActive } returns MutableStateFlow(false)
         every { vpnManager.quotaGrace } returns MutableStateFlow(null)
         every { vpnManager.stealthNotice } returns MutableStateFlow(null)
@@ -150,6 +153,85 @@ class VpnViewModelTest {
         vm.connect()
 
         coVerify(exactly = 0) { vpnManager.connectMultiHop(any(), any()) }
+    }
+
+    // ── MR-2373: a BirdoShield gate flipped while connected ───────────────
+
+    /**
+     * Owner 2026-11-20: when the server turns the gate on during a CONNECTED
+     * session the app does not reconnect; the next dial reads the new gate, and
+     * the BirdoShield row says "Applies when you next connect".
+     */
+    @Test
+    fun `MR-2373 a gate the server turns on while connected never re-dials, and the row says it applies next time`() = runTest {
+        state.value = VpnState.Connected
+        sessionGate.value = false
+        coEvery { repository.getClientConfig() } returns ApiResult.Success(ClientConfigResponse(dnsFilteringAvailable = true))
+        val vm = viewModel()
+
+        vm.fetchClientConfig()
+
+        val ui = vm.uiState.value
+        assertEquals(true, ui.dnsFilteringAvailable)
+        assertEquals("the session's own gate reaches the UI", false, ui.sessionShieldGate)
+        verify { prefs.dnsFilteringGateOn = true }
+        verify(exactly = 0) { vpnManager.requestSettingsReapply() }
+        coVerify(exactly = 0) { vpnManager.connect(any()) }
+        coVerify(exactly = 0) { vpnManager.connectMultiHop(any(), any()) }
+        coVerify(exactly = 0) { vpnManager.disconnect() }
+        val row = app.birdo.vpn.ui.screen.birdoShieldRowState(
+            dnsFilteringEnabled = true,
+            dnsFilteringAvailable = ui.dnsFilteringAvailable,
+            sessionShieldGate = app.birdo.vpn.ui.screen.liveSessionShieldGate(ui.vpnState, ui.sessionShieldGate),
+        )
+        assertTrue(row.appliesWhenNextConnected)
+
+        // A dial under the new gate (the user's next connect): nothing left to apply.
+        sessionGate.value = true
+        assertFalse(
+            app.birdo.vpn.ui.screen.birdoShieldRowState(
+                true, vm.uiState.value.dnsFilteringAvailable, false,
+                app.birdo.vpn.ui.screen.liveSessionShieldGate(vm.uiState.value.vpnState, vm.uiState.value.sessionShieldGate),
+            ).appliesWhenNextConnected,
+        )
+        endSession()
+    }
+
+    /** Owner 2026-11-25: the other direction, while connected. */
+    @Test
+    fun `MR-2373 a gate the server turns off while connected never re-dials, and the row stays with the note until the session ends`() = runTest {
+        state.value = VpnState.Connected
+        sessionGate.value = true
+        every { prefs.dnsFilteringGateOn } returns true
+        coEvery { repository.getClientConfig() } returns ApiResult.Success(ClientConfigResponse(dnsFilteringAvailable = false))
+        val vm = viewModel()
+
+        vm.fetchClientConfig()
+
+        val ui = vm.uiState.value
+        assertEquals(false, ui.dnsFilteringAvailable)
+        verify { prefs.dnsFilteringGateOn = false }
+        verify(exactly = 0) { vpnManager.requestSettingsReapply() }
+        coVerify(exactly = 0) { vpnManager.connect(any()) }
+        coVerify(exactly = 0) { vpnManager.connectMultiHop(any(), any()) }
+        coVerify(exactly = 0) { vpnManager.disconnect() }
+        val row = app.birdo.vpn.ui.screen.birdoShieldRowState(
+            dnsFilteringEnabled = true,
+            dnsFilteringAvailable = ui.dnsFilteringAvailable,
+            sessionShieldGate = app.birdo.vpn.ui.screen.liveSessionShieldGate(ui.vpnState, ui.sessionShieldGate),
+        )
+        assertTrue(row.visible)
+        assertTrue(row.checked)
+        assertTrue(row.appliesWhenNextConnected)
+
+        // The session ends: the row goes, as the 2026-11-13 rule says.
+        endSession()
+        assertFalse(
+            app.birdo.vpn.ui.screen.birdoShieldRowState(
+                true, vm.uiState.value.dnsFilteringAvailable, false,
+                app.birdo.vpn.ui.screen.liveSessionShieldGate(vm.uiState.value.vpnState, vm.uiState.value.sessionShieldGate),
+            ).visible,
+        )
     }
 
     // ── A1-007: the permission grant replays the exact dial ───────────────

@@ -166,6 +166,14 @@ struct VPNConnectionConfig: Decodable {
     /// whose connect ends early is wiped then, not at the next upload.
     var pqUploadedKey: String? = nil
 
+    /// MR-2373: the BirdoShield FLEET gate THIS request's body was built under
+    /// (`dnsFilteringGateDefaultsKey` at dial time). Injected by
+    /// `getConnectConfig`/`getMultiHopConfig` like `pqUploadedKey`, never read
+    /// from the wire. A gate the server flips while connected does not re-dial
+    /// (owner 2026-11-20); the BirdoShield row compares the session's value
+    /// with the current gate (`BirdoShieldGate.row(preference:available:sessionGate:)`).
+    var dialedShieldGate: Bool? = nil
+
     /// The warn-only version floor advisory, when this build is below it.
     /// See [ClientUpdateAdvisory] — OPEN-WORK H3.
     let clientUpdate: ClientUpdateAdvisory?

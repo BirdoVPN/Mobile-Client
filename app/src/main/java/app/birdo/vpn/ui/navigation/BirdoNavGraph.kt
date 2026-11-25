@@ -888,6 +888,9 @@ fun BirdoNavGraph(
                         // the plan gate above — server-side state, resolved
                         // here, passed down. `null` = not known yet = available.
                         dnsFilteringAvailable = vpnState.dnsFilteringAvailable,
+                        // MR-2373: a gate flipped while connected does not re-dial;
+                        // the row says it applies when the user next connects.
+                        sessionShieldGate = liveSessionShieldGate(vpnState.vpnState, vpnState.sessionShieldGate),
                         onUpgradeRequired = {
                             vpnViewModel.fetchSubscription()
                             navController.navigate(Screen.Subscription.route)
