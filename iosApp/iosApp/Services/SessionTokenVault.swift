@@ -44,9 +44,6 @@ final class SessionTokenVault: @unchecked Sendable {
         /// working on it (`pending`), and it is stored as soon as the keychain
         /// takes it (`persistPending`).
         case keptInMemory
-        /// The refresh token the rotation presented is no longer the current
-        /// one (a sign-out, a sign-in, another rotation): nothing is written.
-        case superseded
         /// #671 review P2: a session other than the one the rotation renewed
         /// is stored (a sign-in, another rotation). Nothing is written, and the
         /// rotated pair is never revoked: the server would end that device's
@@ -139,12 +136,22 @@ final class SessionTokenVault: @unchecked Sendable {
     func saveRotation(accessToken: Data, refreshToken: Data, expectingRefreshToken presented: Data,
                       sessionEnded: Bool = false, in store: any TokenPairStore) -> RotationSave {
         lock.withLock {
-            switch currentRefresh(in: store) {
-            case .found(let current) where current != presented:
-                return .superseded
+            let current = currentRefresh(in: store)
+            // P2: decided here, under the lock, never before it.
+            if case .found(let stored) = current, stored != presented { return .replaced }
+            if sessionEnded {
+                // A sign-out landed while the refresh was on the wire. A
+                // keychain that cannot be read may hold a new session: never
+                // revoke on a guess. Otherwise the renewed session has ended,
+                // even if the wipe could not delete its token.
+                if case .failed = current { return .replaced }
+                return .ended
+            }
+            switch current {
             case .notFound:
-                // Signed out, or the fence says the stored token is spent.
-                return .superseded
+                // Signed out (the wipe ran, the generation bump has not yet),
+                // or the fence says the stored token is spent.
+                return .ended
             case .found, .failed:
                 // The presented token, or a keychain that cannot be read: the
                 // presented token was spent either way, so the new pair is kept.

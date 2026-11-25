@@ -1072,35 +1072,48 @@ final class APIClient: @unchecked Sendable {
         //     (generation unchanged), and
         // (2) the refresh token on file is still the SAME one we presented (a
         //     concurrent clear() removed it; a sign-in or another rotation
-        //     replaced it). #671 review (MR-2580): this half is checked INSIDE
-        //     the keychain's session lock, with the write, so a sign-out or a
-        //     sign-in can no longer land between the check and the write
-        //     (`KeychainService.saveRotation`, Android's `sessionLock`).
-        // If either fails, drop the rotated pair silently — the caller's retry
-        // will use whatever token is now current (or fail as .unauthorized).
+        //     replaced it).
+        // #671 review (MR-2580; P1, P2): both are decided INSIDE the keychain's
+        // session lock, with the write (`KeychainService.saveRotation`,
+        // Android's `sessionLock`): a sign-out or a sign-in can no longer land
+        // between the check and the write, and what to do with a rotated pair
+        // nobody will hold is decided there too, never by an early return.
         let generationNow = await sessionGeneration.current
-        guard generationNow == generationAtStart else {
-            return
-        }
         // The rotated refresh token replaces the old one; if the server omits
         // it, the presented token remains current. Answering with this pair
         // spent `refresh` on the server, so it is never stored again.
         switch keychain.saveRotation(accessToken: tokens.accessToken,
                                      refreshToken: tokens.refreshToken ?? refresh,
                                      expectingRefreshToken: refresh,
-                                     sessionEnded: false) {
-        case .stored, .keptInMemory, .superseded, .replaced, .ended:
+                                     sessionEnded: generationNow != generationAtStart) {
+        case .stored, .keptInMemory:
             // `.keptInMemory`: the keychain refused the pair. This process
             // works on it in memory (so its requests do not 401 into another
             // rotation), the spent token is fenced and never presented, and the
             // pair is stored as soon as the keychain takes it.
             return
+        case .replaced:
+            // P2: a session other than the one this refresh renewed is stored
+            // (a sign-in since). Nothing was written, and the rotated pair is
+            // never revoked: the server would end the device's whole lineage,
+            // the stored session with it. The caller's retry uses that session.
+            return
+        case .ended:
+            // P2, P3: the session this refresh renewed has ended (a sign-out
+            // landed while it was on the wire). Nothing was written. The
+            // rotated pair is a live session nobody holds: #666 (MR-2532)
+            // revokes it here, bearer-free, as
+            //     signOut(SignOutTokens(accessToken: nil, refreshToken: tokens.refreshToken ?? refresh))
+            // That API is not on main yet; until it lands the pair is dropped,
+            // as it always was.
+            return
         case .signedOut:
-            // Nothing durable could fence the spent token, so the session ends
-            // now rather than risk presenting it after a relaunch. The dropped
-            // pair is revoked with ITS OWN access token, never the stored one
-            // (#666's Android M1), through the raw logout: no 401 or refresh
-            // handling.
+            // P4: nothing durable could fence the spent token, so the session
+            // ends now rather than risk presenting it after a relaunch. The
+            // dropped pair is revoked with ITS OWN token, never the stored one
+            // (#666's Android M1), with no 401 or refresh handling. With #666
+            // this call becomes
+            //     signOut(SignOutTokens(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken ?? refresh))
             let dropped = tokens.accessToken
             Task.detached { [weak self] in await self?.logout(bearerToken: dropped) }
             throw APIError.unauthorized
