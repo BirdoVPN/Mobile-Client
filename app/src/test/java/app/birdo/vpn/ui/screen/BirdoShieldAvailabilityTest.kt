@@ -243,10 +243,30 @@ class BirdoShieldAvailabilityTest {
         val overridden = birdoShieldRowState(true, true, customDnsEnabled = true, sessionShieldGate = false)
         assertFalse(overridden.appliesWhenNextConnected)
         assertTrue(overridden.overriddenByCustomDns)
-        // A gate turned OFF mid-session hides the row as before (owner 2026-11-13).
-        val off = birdoShieldRowState(true, false, sessionShieldGate = true)
-        assertFalse(off.visible)
-        assertFalse(off.appliesWhenNextConnected)
+        // Gate off and the session dialled with it off: nothing filters, the row stays hidden (11-13).
+        assertFalse(birdoShieldRowState(true, false, sessionShieldGate = false).visible)
+        // Gate off and no connected session: hidden (11-13).
+        assertFalse(birdoShieldRowState(true, false, sessionShieldGate = null).visible)
+        // Gate UNKNOWN (no fetch has answered) is not a flip: hidden, no note.
+        assertFalse(birdoShieldRowState(true, null, sessionShieldGate = true).visible)
+    }
+
+    @Test
+    fun `MR-2373 a gate turned OFF while connected keeps the row, reading ON with the note, until that session ends`() {
+        // Owner 2026-11-25: the session was dialled under the gate and still filters.
+        val row = birdoShieldRowState(dnsFilteringEnabled = true, dnsFilteringAvailable = false, sessionShieldGate = true)
+        assertTrue("shown while that session still filters", row.visible)
+        assertTrue("reads what the session does", row.checked)
+        assertFalse("not switchable: the fleet does not offer it now", row.enabled)
+        assertTrue(row.appliesWhenNextConnected)
+        // The session never filtered (preference off, or Custom DNS replaced the resolver): hidden.
+        assertFalse(birdoShieldRowState(false, false, sessionShieldGate = true).visible)
+        assertFalse(birdoShieldRowState(true, false, customDnsEnabled = true, sessionShieldGate = true).visible)
+        // After the next connect (dialled with the gate off), or once disconnected: hidden, as 11-13 says.
+        assertFalse(birdoShieldRowState(true, false, sessionShieldGate = false).visible)
+        assertFalse(
+            birdoShieldRowState(true, false, sessionShieldGate = liveSessionShieldGate(VpnState.Disconnected, true)).visible,
+        )
     }
 
     @Test

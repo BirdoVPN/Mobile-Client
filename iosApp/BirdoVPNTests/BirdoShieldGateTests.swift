@@ -120,15 +120,32 @@ final class BirdoShieldGateTests: XCTestCase {
         XCTAssertFalse(BirdoShieldGate.row(preference: true, available: true, sessionGate: nil).appliesWhenNextConnected)
         // The preference is off: the gate changes nothing for this session.
         XCTAssertFalse(BirdoShieldGate.row(preference: false, available: true, sessionGate: false).appliesWhenNextConnected)
-        // A gate turned OFF mid-session hides the row as before (owner 2026-11-13).
-        let off = BirdoShieldGate.row(preference: true, available: false, sessionGate: true)
-        XCTAssertFalse(off.isVisible)
-        XCTAssertFalse(off.appliesWhenNextConnected)
+        // Gate off and the session dialled with it off, or no session: hidden (11-13).
+        XCTAssertFalse(BirdoShieldGate.row(preference: true, available: false, sessionGate: false).isVisible)
+        XCTAssertFalse(BirdoShieldGate.row(preference: true, available: false, sessionGate: nil).isVisible)
+        // Gate UNKNOWN (no fetch has answered) is not a flip: hidden, no note.
+        XCTAssertFalse(BirdoShieldGate.row(preference: true, available: nil, sessionGate: true).isVisible)
         // With no session the row is what it always was.
         XCTAssertEqual(
             BirdoShieldGate.row(preference: true, available: true),
             BirdoShieldGate.Row(isOn: true, isEnabled: true, isVisible: true)
         )
+    }
+
+    /// Owner 2026-11-25: the gate turned OFF while connected. The session was
+    /// dialled under it and still filters, so the row stays, reading ON, not
+    /// switchable, with the note, until that session ends.
+    func testAGateTurnedOffWhileConnectedKeepsTheRowWithTheNoteUntilTheSessionEnds() {
+        let row = BirdoShieldGate.row(preference: true, available: false, sessionGate: true)
+        XCTAssertTrue(row.isVisible, "shown while that session still filters")
+        XCTAssertTrue(row.isOn, "reads what the session does")
+        XCTAssertFalse(row.isEnabled, "not switchable: the fleet does not offer it now")
+        XCTAssertTrue(row.appliesWhenNextConnected)
+        // The session never filtered (preference off): hidden.
+        XCTAssertFalse(BirdoShieldGate.row(preference: false, available: false, sessionGate: true).isVisible)
+        // After the next connect (dialled with the gate off), or disconnected (no session gate): hidden.
+        XCTAssertFalse(BirdoShieldGate.row(preference: true, available: false, sessionGate: false).isVisible)
+        XCTAssertFalse(BirdoShieldGate.row(preference: true, available: false, sessionGate: nil).isVisible)
     }
 
     func testTheNoteIsTheOwnersWords() {

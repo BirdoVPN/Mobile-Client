@@ -211,17 +211,22 @@ enum BirdoShieldGate {
     ///
     /// Owner decision 2026-11-13: while the FLEET gate is off the row is HIDDEN
     /// (`isVisible == false`), not shown with a "not available" reason. It
-    /// returns by itself if the gate is ever turned on.
+    /// returns by itself if the gate is ever turned on. One exception (MR-2373,
+    /// owner 2026-11-25): a gate turned off while a connected session dialled
+    /// under it still filters keeps the row, with the note, until that session
+    /// ends.
     struct Row: Equatable {
         let isOn: Bool
         let isEnabled: Bool
         /// False unless the fleet gate is known to be on: the row is not shown.
         let isVisible: Bool
-        /// MR-2373, owner 2026-11-20: the row reads ON but the CONNECTED session
-        /// was dialled while the fleet gate was off (the server switched it on
-        /// since, or the dial ran before a fetch said so), so that session does
-        /// not filter yet. The app does not re-dial for a gate flip; the row
-        /// says `nextConnectNotice` instead.
+        /// MR-2373: the CONNECTED session does not match what the gate now
+        /// says, and the app does not re-dial for a gate flip (owner
+        /// 2026-11-20), so the row says `nextConnectNotice`. Either the gate
+        /// came ON after the session was dialled without it (the row reads the
+        /// user's ON; the session does not filter yet), or it went OFF while the
+        /// session, dialled under it, still filters (owner 2026-11-25: the row
+        /// stays, reading ON and not switchable, until that session ends).
         var appliesWhenNextConnected: Bool = false
     }
 
@@ -251,16 +256,20 @@ enum BirdoShieldGate {
     ///   with no connected session. A gate the server turns on mid-session does
     ///   not re-dial (owner 2026-11-20), so a row that reads ON over a session
     ///   dialled with the gate off says `nextConnectNotice`. A gate turned OFF
-    ///   mid-session hides the row as before (owner 2026-11-13); that session
-    ///   keeps filtering until it ends.
+    ///   mid-session (owner 2026-11-25) keeps the row while that session still
+    ///   filters: it reads ON, cannot be switched, and says the same note;
+    ///   after the next connect it is hidden, as the 2026-11-13 rule says.
     static func row(preference: Bool, available: Bool?, sessionGate: Bool? = nil) -> Row {
         let unavailable = available != true
         let isOn = preference && !unavailable
+        // MR-2373, owner 2026-11-25: the server turned the gate OFF, but the
+        // connected session was dialled under it and still filters.
+        let stillFiltering = available == false && sessionGate == true && preference
         return Row(
-            isOn: isOn,
+            isOn: isOn || stillFiltering,
             isEnabled: !unavailable,
-            isVisible: !unavailable,
-            appliesWhenNextConnected: isOn && sessionGate == false
+            isVisible: !unavailable || stillFiltering,
+            appliesWhenNextConnected: (isOn && sessionGate == false) || stillFiltering
         )
     }
 }

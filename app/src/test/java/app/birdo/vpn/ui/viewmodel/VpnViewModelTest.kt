@@ -197,6 +197,43 @@ class VpnViewModelTest {
         endSession()
     }
 
+    /** Owner 2026-11-25: the other direction, while connected. */
+    @Test
+    fun `MR-2373 a gate the server turns off while connected never re-dials, and the row stays with the note until the session ends`() = runTest {
+        state.value = VpnState.Connected
+        sessionGate.value = true
+        every { prefs.dnsFilteringGateOn } returns true
+        coEvery { repository.getClientConfig() } returns ApiResult.Success(ClientConfigResponse(dnsFilteringAvailable = false))
+        val vm = viewModel()
+
+        vm.fetchClientConfig()
+
+        val ui = vm.uiState.value
+        assertEquals(false, ui.dnsFilteringAvailable)
+        verify { prefs.dnsFilteringGateOn = false }
+        verify(exactly = 0) { vpnManager.requestSettingsReapply() }
+        coVerify(exactly = 0) { vpnManager.connect(any()) }
+        coVerify(exactly = 0) { vpnManager.connectMultiHop(any(), any()) }
+        coVerify(exactly = 0) { vpnManager.disconnect() }
+        val row = app.birdo.vpn.ui.screen.birdoShieldRowState(
+            dnsFilteringEnabled = true,
+            dnsFilteringAvailable = ui.dnsFilteringAvailable,
+            sessionShieldGate = app.birdo.vpn.ui.screen.liveSessionShieldGate(ui.vpnState, ui.sessionShieldGate),
+        )
+        assertTrue(row.visible)
+        assertTrue(row.checked)
+        assertTrue(row.appliesWhenNextConnected)
+
+        // The session ends: the row goes, as the 2026-11-13 rule says.
+        endSession()
+        assertFalse(
+            app.birdo.vpn.ui.screen.birdoShieldRowState(
+                true, vm.uiState.value.dnsFilteringAvailable, false,
+                app.birdo.vpn.ui.screen.liveSessionShieldGate(vm.uiState.value.vpnState, vm.uiState.value.sessionShieldGate),
+            ).visible,
+        )
+    }
+
     // ── A1-007: the permission grant replays the exact dial ───────────────
 
     @Test

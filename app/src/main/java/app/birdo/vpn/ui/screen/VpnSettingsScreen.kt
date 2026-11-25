@@ -50,17 +50,22 @@ internal data class BirdoShieldRowState(
      * Whether the row is composed at all. Owner decision 2026-11-13: while the
      * FLEET gate is off the row is HIDDEN, not shown with a "not available"
      * reason, so a feature the account cannot use is not advertised. It comes
-     * back by itself if the gate is ever turned on.
+     * back by itself if the gate is ever turned on. One exception (MR-2373,
+     * owner 2026-11-25): a gate turned off while a connected session dialled
+     * under it still filters keeps the row, with the note, until that session
+     * ends.
      */
     val visible: Boolean = !unavailable,
     /** Custom DNS replaces the filtering resolver, so the switch would do nothing (A1-024). */
     val overriddenByCustomDns: Boolean = false,
     /**
-     * MR-2373, owner 2026-11-20: the row reads ON but the connected session was
-     * dialled while the fleet gate was off (the server switched it on since, or
-     * the dial ran before the first fetch said so), so the session does not
-     * filter yet. The app does not re-dial for a gate flip; the row says
-     * "Applies when you next connect" instead.
+     * MR-2373: the connected session does not match what the gate now says,
+     * and the app does not re-dial for a gate flip (owner 2026-11-20), so the
+     * row says "Applies when you next connect". Either the gate came ON after
+     * the session was dialled without it (the row reads the user's ON; the
+     * session does not filter yet), or it went OFF while the session, dialled
+     * under it, still filters (owner 2026-11-25: the row stays, reading ON and
+     * not switchable, until that session ends).
      */
     val appliesWhenNextConnected: Boolean = false,
 )
@@ -86,8 +91,9 @@ internal data class BirdoShieldRowState(
  *   session. A gate the server turns on mid-session does not re-dial (owner
  *   2026-11-20), so a row that reads ON over a session dialled with the gate
  *   off says "Applies when you next connect". A gate turned OFF mid-session
- *   hides the row as before (owner 2026-11-13); that session keeps filtering
- *   until it ends.
+ *   (owner 2026-11-25) keeps the row while that session still filters: it
+ *   reads ON, cannot be switched, and says the same note; after the next
+ *   connect it is hidden, as the 2026-11-13 rule says.
  */
 internal fun birdoShieldRowState(
     dnsFilteringEnabled: Boolean,
@@ -101,13 +107,17 @@ internal fun birdoShieldRowState(
     // says why. The stored preference is kept for when Custom DNS goes off.
     val overridden = !unavailable && customDnsEnabled
     val checked = dnsFilteringEnabled && !unavailable && !overridden
+    // MR-2373, owner 2026-11-25: the server turned the gate OFF, but the
+    // connected session was dialled under it and still filters.
+    val stillFiltering = dnsFilteringAvailable == false && sessionShieldGate == true &&
+        dnsFilteringEnabled && !customDnsEnabled
     return BirdoShieldRowState(
-        checked = checked,
+        checked = checked || stillFiltering,
         enabled = !unavailable && !overridden,
         unavailable = unavailable,
-        visible = !unavailable,
+        visible = !unavailable || stillFiltering,
         overriddenByCustomDns = overridden,
-        appliesWhenNextConnected = checked && sessionShieldGate == false,
+        appliesWhenNextConnected = (checked && sessionShieldGate == false) || stillFiltering,
     )
 }
 
