@@ -66,7 +66,9 @@ enum TunnelFailureKind: String, Codable, Equatable, Sendable {
     case diedAfterHandshake
 
     /// The backend answered the liveness heartbeat with `{valid:false}`: the
-    /// peer has been revoked or evicted server-side.
+    /// peer has been revoked or evicted server-side. Since MR-2524 only a reply
+    /// the host's policy reads as an ENDING is charged here; a reaped key or a
+    /// drained server is left to the host (`TunnelHeartbeatPolicy`).
     ///
     /// Recovery: a raw re-dial can NEVER work — there is nothing to hand shake
     /// with, and every retry re-dials a peer the server has already deleted.

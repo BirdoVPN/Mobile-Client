@@ -273,6 +273,15 @@ targets:
       # ConnectContractTests decodes one body per HeartbeatReason with the REAL
       # HeartbeatResult. Foundation-only, moved out of APIClient.swift.
       - path: iosApp/Services/HeartbeatWire.swift
+      # MR-2524: what the PacketTunnel extension does with each outcome of that
+      # same policy, its memory of the key it beats for, and the hand-off to
+      # the host. Foundation-only, pinned by TunnelHeartbeatPolicyTests; the
+      # provider itself (NetworkExtension) cannot be compiled into this bundle.
+      - path: iosApp/Services/TunnelHeartbeatPolicy.swift
+      # MR-2524 review F1: the route a session was dialled on, kept for a host
+      # started cold, and when a rebuild or a move may use it. Foundation-only,
+      # pinned by HeartbeatRouteTests; VpnViewModel cannot be compiled here.
+      - path: iosApp/Services/HeartbeatRoute.swift
       # D18 BirdoShield, response side. Foundation-only by design: the
       # predicates that decide which resolver the wg-quick config carries —
       # and in particular that the node's own 10.13.13.1 filtering resolver
@@ -522,6 +531,18 @@ targets:
       # X-Desktop-Client as the host APIClient, so a Mac names itself macOS on
       # both. Foundation-only, so it adds nothing to the extension's footprint.
       - path: iosApp/Services/ClientIdentity.swift
+      # MR-2524: the extension's own heartbeat decides with the HOST's policy,
+      # the same file, not a copy (HeartbeatPolicy in HeartbeatWire.swift, and
+      # the Foundation-only files it reads: RelayRetry, QuickSelect,
+      # ConnectionPhase, TunnelProof), and TunnelHeartbeatPolicy says what the
+      # extension does with each outcome. All Foundation-only: no KMP runtime,
+      # no new dependency, only code pages against the NEProvider ceiling below.
+      - path: iosApp/Services/HeartbeatWire.swift
+      - path: iosApp/Services/TunnelHeartbeatPolicy.swift
+      - path: iosApp/Services/RelayRetry.swift
+      - path: iosApp/Services/QuickSelect.swift
+      - path: iosApp/Services/ConnectionPhase.swift
+      - path: iosApp/Services/TunnelProof.swift
       # LIVE-PORT53: a tunnel profile saved by a build up to 1.4.32 can carry
       # the retired "53" or a custom port in its Endpoint, and iOS starts that
       # profile without the host app. The extension pins such a profile to the

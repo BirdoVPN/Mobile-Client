@@ -66,6 +66,27 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         set { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; _tunnelStartedAt = newValue }
     }
 
+    /// MR-2524: the heartbeat's memory of the key it beats for (the reap clock,
+    /// the rebuild budget, whether the server has settled the key), and whether
+    /// the session is a Multi-Hop pair (`TunnelHeartbeatPolicy.multiHopKey`).
+    /// Written on the NetworkExtension callback context and from the heartbeat
+    /// Task: same lock as `tunnelStartedAt`.
+    private var _heartbeatState = TunnelHeartbeatState()
+    private var _heartbeatMultiHop = false
+    private var heartbeatMultiHop: Bool {
+        get { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; return _heartbeatMultiHop }
+        set { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; _heartbeatMultiHop = newValue }
+    }
+    /// Review F5: the key the tunnel rides now (set at start and by a
+    /// successful reconfigure). A reply about any other key is a late one and
+    /// is dropped under the lock, so a swap that lands mid-beat is never torn
+    /// down for the key it replaced.
+    private var _heartbeatKeyIdInUse: String?
+    private var heartbeatKeyIdInUse: String? {
+        get { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; return _heartbeatKeyIdInUse }
+        set { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; _heartbeatKeyIdInUse = newValue }
+    }
+
     /// Identity the circuit breaker attributes failures to: the endpoint host
     /// this tunnel dials (`NEVPNProtocol.serverAddress` — the ENTRY node for a
     /// Multi-Hop session, the only peer this device handshakes with). Keying by
@@ -196,6 +217,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         // the breaker wants: failures are per-node, so picking another location
         // starts with a clean budget.
         let breakerNode = (proto.serverAddress?.isEmpty == false) ? proto.serverAddress! : "unknown"
+        // MR-2524: the heartbeat decides as the host does, and a drained server
+        // ends a Multi-Hop session where it moves a single hop.
+        heartbeatMultiHop = TunnelHeartbeatPolicy.multiHop(
+            proto.providerConfiguration?[TunnelHeartbeatPolicy.multiHopKey])
+        heartbeatKeyIdInUse = heartbeatKeyId
 
         // Read secrets out of the shared keychain. The IDs are passed via
         // providerConfiguration; the actual material never appears there.
@@ -448,6 +474,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         let clientVersion = (rawVersion?.isEmpty == false) ? rawVersion! : "0.0.0-unknown"
         let rawServer = message["server"] as? String
         let breakerNode = (rawServer?.isEmpty == false) ? rawServer! : "unknown"
+        let multiHop = TunnelHeartbeatPolicy.multiHop(message[TunnelHeartbeatPolicy.multiHopKey])
 
         os_log("Reconfiguring tunnel in place", log: log, type: .info)
         adapter.update(tunnelConfiguration: tunnelConfiguration) { [weak self] error in
@@ -466,6 +493,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             self.stopHeartbeat()
             self.tunnelStartedAt = Date()
             self.breakerNodeId = breakerNode
+            self.heartbeatMultiHop = multiHop
+            self.heartbeatKeyIdInUse = keyId
             if !keyId.isEmpty, !token.isEmpty {
                 self.startHeartbeat(keyId: keyId, token: token, clientVersion: clientVersion)
             } else {
@@ -477,13 +506,94 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         }
     }
 
+    // MARK: - Heartbeat policy (MR-2524)
+
+    /// What one heartbeat reply about `keyId` does: the HOST's decision
+    /// (`HeartbeatPolicy`, HeartbeatWire.swift, compiled into this target as it
+    /// is), carried out as far as an extension can (`TunnelHeartbeatPolicy`).
+    ///
+    /// - keep (a live key, the Free grace window): nothing changes.
+    /// - a rebuild (reaped) or a move (a drained or deleted server): only the
+    ///   host can mint the new key. The tunnel is left exactly as it is and the
+    ///   verdict is handed to the host (`HeartbeatHandOff`), which carries it
+    ///   out on its next run as its own beat would have, the move under the
+    ///   owner's rule for the pick. Nothing is cancelled, so with the kill
+    ///   switch on nothing leaves outside the tunnel meanwhile, and the
+    ///   data-plane check stays the backstop for a key the node has dropped.
+    /// - an ending (revoked, evicted, the Free allowance, a Multi-Hop node gone,
+    ///   a second reap inside the rebuild window): stop as before, through the
+    ///   breaker's `revoked` budget, so it can never become a re-dial loop. The
+    ///   ending is handed over first, so the host says its sentence (and offers
+    ///   the plans for the allowance) instead of the trip's generic one.
+    ///
+    /// A reply that lands after its beat was cancelled, or about a key the
+    /// tunnel no longer rides (a reconfigure swapped the peer), is dropped
+    /// under the lock (review F5), as the host drops a reply about a replaced
+    /// key. The reap clock is the key's last good beat as ANY instance heard it
+    /// (the shared record, review F2), and an inferred ending never replaces a
+    /// rebuild or a move already handed over for the same key.
+    /// Logs name the verdict only: no key, no server, no account.
+    private func actOnHeartbeat(_ reply: HeartbeatResult, keyId: String) {
+        // Keychain reads outside the lock.
+        let store = TunnelBreakerStore.shared
+        let sharedLastOk = store.heartbeatLastOk(for: keyId)
+        let pending = store.heartbeatHandOff.flatMap { $0.keyId == keyId ? $0.verdict : nil }
+        let now = Date()
+        heartbeatLock.lock()
+        guard !Task.isCancelled, _heartbeatKeyIdInUse == keyId else {
+            heartbeatLock.unlock()
+            return
+        }
+        let action = _heartbeatState.decide(reply, keyId: keyId, multiHop: _heartbeatMultiHop,
+                                            startedAt: _tunnelStartedAt ?? now, now: now,
+                                            sharedLastOk: sharedLastOk, pending: pending)
+        let okToShare = _heartbeatState.okToShare
+        if let okToShare { _heartbeatState.markShared(okToShare) }
+        heartbeatLock.unlock()
+        if let okToShare { store.setHeartbeatLastOk(okToShare, keyId: keyId) }
+        // nil: the server already settled this key, and it was acted on then.
+        guard let action else { return }
+        switch action {
+        case .keep:
+            return
+        case .leaveToHost(let verdict):
+            TunnelBreakerStore.shared.setHeartbeatHandOff(
+                HeartbeatHandOff(keyId: keyId, verdict: verdict, decidedAt: now.timeIntervalSince1970))
+            os_log("Heartbeat: %{public}@ left to the app, the tunnel stays up",
+                   log: log, type: .info, verdict.rawValue)
+        case .stop(let verdict):
+            TunnelBreakerStore.shared.setHeartbeatHandOff(
+                HeartbeatHandOff(keyId: keyId, verdict: verdict, decidedAt: now.timeIntervalSince1970))
+            os_log("Heartbeat: the server ended this session (%{public}@)",
+                   log: log, type: .info, verdict.rawValue)
+            // Tearing down here (rather than silently) is the whole point: an
+            // ended peer must stop routing so the device isn't left blackholing
+            // traffic into a peer the server already deleted. Routed through the
+            // breaker so it can never become an unbounded teardown ↔
+            // on-demand-re-dial loop — see `handleDataPlaneFailure`. Checked
+            // once more right before (review F5): a swap since the decision
+            // put a new peer on this tunnel, and that one is not ended.
+            guard heartbeatStillBeats(keyId) else { return }
+            handleDataPlaneFailure(.revoked, error: TunnelError.connectionRevoked)
+        }
+    }
+
+    /// The beat for `keyId` is still the current one: not cancelled, and the
+    /// tunnel still rides that key (review F5).
+    private func heartbeatStillBeats(_ keyId: String) -> Bool {
+        heartbeatLock.lock()
+        defer { heartbeatLock.unlock() }
+        return !Task.isCancelled && _heartbeatKeyIdInUse == keyId
+    }
+
     // MARK: - Heartbeat (finding #2)
 
     /// Start the 30 s liveness loop. Mirrors the host `APIClient.heartbeat`
     /// request exactly: `POST https://api.birdo.app/vpn/heartbeat/{keyId}` with
     /// `Authorization: Bearer <token>` + `X-Desktop-Client` (`ClientIdentity`). The
-    /// backend answers `{ valid, serverOnline, message? }`. On `valid == false`
-    /// (revoked / evicted) we tear the tunnel down with `cancelTunnelWithError`
+    /// backend answers `{ valid, serverOnline, reason?, ... }`, judged by the
+    /// host's own policy (`actOnHeartbeat`, MR-2524): a rebuild or a move is
+    /// left to the host with the tunnel untouched, and an ending tears it down
     /// so a dead peer stops blackholing traffic even while the host app is
     /// suspended. Transport failures and a stale-token 401 are IGNORED — a
     /// missed heartbeat or an expired token must never kill a live tunnel.
@@ -514,7 +624,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         heartbeatLock.unlock()
     }
 
-    /// One heartbeat round-trip. `valid == false` → cancel the tunnel. Anything
+    /// One heartbeat round-trip, its reply judged by `actOnHeartbeat`. Anything
     /// else (network error, 401 from a stale token, 5xx, decode surprise) is
     /// logged and swallowed so the tunnel survives.
     private func sendHeartbeat(keyId: String, token: String, clientVersion: String) async {
@@ -545,26 +655,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         // refresh tokens — it has no refresh token). Do NOT tear down: the host
         // app passes a fresh token on the next connect, and the kernel tunnel's
         // PersistentKeepalive keeps handshaking so the backend's handshake-age
-        // check keeps the peer alive. Only an explicit {valid:false} tears down.
+        // check keeps the peer alive. Only a reply that ENDS the session tears down.
         guard (200...299).contains(http.statusCode) else {
             os_log("Heartbeat HTTP %{public}ld (ignored)", log: log, type: .info, http.statusCode)
             return
         }
         // Fail OPEN on any decode surprise: an absent/garbled `valid` must never
         // kill a live tunnel (matches the host HeartbeatResult default).
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        // MR-2524: it IS the host's HeartbeatResult and decoder now, so the two
+        // read every reply alike: an absent `valid` is valid, and a surprise in
+        // an additive field never fails the reply.
+        guard let reply = try? JSONDecoder().decode(HeartbeatResult.self, from: data) else {
             return
         }
-        let valid = (json["valid"] as? Bool) ?? true
-        if !valid {
-            os_log("Heartbeat reports connection revoked", log: log, type: .info)
-            // Tearing down here (rather than silently) is the whole point: a
-            // revoked/evicted peer must stop routing so the device isn't left
-            // blackholing traffic into a peer the server already deleted.
-            // Routed through the breaker so it can never become an unbounded
-            // teardown ↔ on-demand-re-dial loop — see `handleDataPlaneFailure`.
-            handleDataPlaneFailure(.revoked, error: TunnelError.connectionRevoked)
-        }
+        actOnHeartbeat(reply, keyId: keyId)
     }
 
     // MARK: - Circuit breaker (P1-ios-redial-loop-blackhole)

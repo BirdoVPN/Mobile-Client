@@ -625,9 +625,9 @@ final class ConnectContractTests: XCTestCase {
     /// checks the app's own code, not a copy of it (MR-2343; until then this
     /// was a mirror of VpnViewModel, which this bundle cannot compile).
     ///
-    /// The extension's own beat (`PacketTunnelProvider.sendHeartbeat`) is not
-    /// this decision: it acts on `valid` alone, tearing the tunnel down
-    /// through the breaker's `revoked` budget.
+    /// Since MR-2524 the extension's own beat (`PacketTunnelProvider`) takes
+    /// this decision too: HeartbeatWire.swift is compiled into the extension,
+    /// and TunnelHeartbeatPolicyTests checks what it does with each outcome.
     private static func outcome(of reply: HeartbeatResult, sinceLastOk: TimeInterval = 0,
                                 multiHop: Bool = false) -> HeartbeatOutcome {
         HeartbeatPolicy.outcome(of: reply, sinceLastOk: sinceLastOk, multiHop: multiHop, now: judgedAt)
