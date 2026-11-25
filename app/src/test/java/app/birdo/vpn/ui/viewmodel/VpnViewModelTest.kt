@@ -194,6 +194,7 @@ class VpnViewModelTest {
                 app.birdo.vpn.ui.screen.liveSessionShieldGate(vm.uiState.value.vpnState, vm.uiState.value.sessionShieldGate),
             ).appliesWhenNextConnected,
         )
+        endSession()
     }
 
     // ── A1-007: the permission grant replays the exact dial ───────────────

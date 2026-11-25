@@ -169,9 +169,8 @@ final class BirdoShieldGateTests: XCTestCase {
     }
 
     private func source(_ path: String) throws -> String {
-        // .../iosApp/BirdoVPNTests/BirdoShieldGateTests.swift -> .../iosApp/iosApp
+        // .../iosApp/BirdoVPNTests/BirdoShieldGateTests.swift -> .../iosApp
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("iosApp")
         let url = root.appendingPathComponent(path)
         guard FileManager.default.fileExists(atPath: url.path) else {
             XCTFail("\(path) not found under \(root.path): this pin would be vacuous")
