@@ -42,10 +42,34 @@ final class KeychainService: @unchecked Sendable {
     private let placementLock = NSLock()
     private var resolvedPlacement: HostKeychainPlacement?
 
+    /// #671 review (MR-2580): the token pair as this process sees it, and the
+    /// lock every pair write takes (`SessionTokenVault`).
+    private let session = SessionTokenVault(fence: FileSpentRefreshFence.standard())
+
+    /// `UIApplication.protectedDataDidBecomeAvailableNotification`, by name, so
+    /// this file needs no UIKit (macOS never posts it).
+    private static let protectedDataDidBecomeAvailable =
+        Notification.Name("UIApplicationProtectedDataDidBecomeAvailable")
+
+    init() {
+        // #671 review (MR-2580): the first unlock after a boot opens the
+        // keychain; a pair a refresh rotation could only keep in memory goes
+        // in then (also before each refresh and on foreground, APIClient).
+        _ = NotificationCenter.default.addObserver(forName: Self.protectedDataDidBecomeAvailable,
+                                                   object: nil, queue: nil) { [weak self] _ in
+            self?.persistPendingSession()
+        }
+    }
+
     // MARK: - Public Accessors (host app only)
 
-    var accessToken: String? { read(.accessToken) }
-    var refreshToken: String? { read(.refreshToken) }
+    var accessToken: String? { session.accessToken(in: self).flatMap { String(data: $0, encoding: .utf8) } }
+    /// The refresh token a refresh may present: never one the fence marks
+    /// spent (`SessionTokenVault`).
+    var refreshToken: String? { session.refreshToken(in: self).flatMap { String(data: $0, encoding: .utf8) } }
+    /// A relaunch found the stored refresh token spent, with no newer pair: the
+    /// session is signed out locally, and the token is never presented.
+    var storedRefreshTokenIsSpent: Bool { session.storedRefreshTokenIsSpent }
     var userEmail: String? { read(.userEmail) }
     /// SSOT device identity ("ios_" + a random v4 UUID, minted by APIClient).
     /// PER INSTALL (MR-1726, Android parity): it survives `clear()`, so
@@ -76,38 +100,53 @@ final class KeychainService: @unchecked Sendable {
 
     // MARK: - Save / Clear (host app only)
 
-    /// Persist the auth credentials atomically. Returns `false` if either
-    /// required item (access or refresh token) failed to write, so callers can
-    /// surface a real error instead of hitting a silent auth failure on the
-    /// next launch.
+    /// Persist a NEW session's credentials: a sign-in, a number rotation.
+    /// Returns `false` if either required item (access or refresh token) failed
+    /// to write, so callers can surface a real error instead of hitting a
+    /// silent auth failure on the next launch. A refresh rotation stores its
+    /// pair with `saveRotation`.
     ///
-    /// A HALF-written pair is the dangerous case (finding #60): if the access
-    /// token wrote but the refresh token failed, a later cold start would route
-    /// to Home on a session whose refresh token is stale/missing — a token
-    /// rotation the client can never complete (finding #433). So on a refresh
-    /// write failure we roll the access token back to its PREVIOUS value (or
-    /// delete it if there was none) and report failure — the keychain is left
-    /// in the same consistent state it had before the call.
+    /// A HALF-written pair is the dangerous case (findings #60, #433). The two
+    /// tokens are two keychain items, so `TokenPairWrite` writes the REFRESH
+    /// token first, each in one step (MR-2580): neither a failed write nor a
+    /// kill between the two ever leaves the new access token with an older
+    /// refresh token, which after a refresh rotation is already spent, and
+    /// which the server treats as theft when it is presented again. A sign-in
+    /// removes the prior session's access token, e-mail, sign-in method and
+    /// anonymous number first, so no kill point mixes two accounts, and puts
+    /// them back on a failure, next to the prior refresh token only
+    /// (`SessionTokenVault.save`, under its lock).
     @discardableResult
     func save(accessToken: String, refreshToken: String, email: String?) -> Bool {
-        let priorAccess = read(.accessToken)
-        guard write(.accessToken, value: accessToken) else { return false }
-        guard write(.refreshToken, value: refreshToken) else {
-            // Refresh write failed — undo the access write so no half-session
-            // survives. Restore the prior access token if there was one.
-            if let priorAccess {
-                write(.accessToken, value: priorAccess)
-            } else {
-                delete(.accessToken)
-            }
-            return false
-        }
-        if let email {
-            write(.userEmail, value: email)
-        } else {
-            delete(.userEmail)
-        }
-        return true
+        session.save(accessToken: Data(accessToken.utf8),
+                     refreshToken: Data(refreshToken.utf8),
+                     email: email.map { Data($0.utf8) },
+                     in: self)
+    }
+
+    /// A refresh rotation's pair, for the refresh token it presented
+    /// (`APIClient.refreshTokens`). The server spent that token when it
+    /// answered, so it is never stored again (`SessionTokenVault`).
+    /// `sessionEnded`: the session generation moved while the refresh was on
+    /// the wire (a sign-out); the vault decides under its lock what that means
+    /// (#671 review P2).
+    func saveRotation(accessToken: String,
+                      refreshToken: String,
+                      expectingRefreshToken presented: String,
+                      sessionEnded: Bool) -> SessionTokenVault.RotationSave {
+        session.saveRotation(accessToken: Data(accessToken.utf8),
+                             refreshToken: Data(refreshToken.utf8),
+                             expectingRefreshToken: Data(presented.utf8),
+                             sessionEnded: sessionEnded,
+                             in: self)
+    }
+
+    /// Store a pair a refresh rotation could only keep in memory, now that the
+    /// keychain may take it (foreground, unlock, before a refresh). True when
+    /// none is left to store.
+    @discardableResult
+    func persistPendingSession() -> Bool {
+        session.persistPending(in: self)
     }
 
     @discardableResult
@@ -137,8 +176,7 @@ final class KeychainService: @unchecked Sendable {
     /// doc; a sign-out drops `anonymous_id` separately (`LocalSignOut.wipe`)
     /// and a reinstall is handled by `InstallIdentity`.
     func clear() {
-        delete(.accessToken)
-        delete(.refreshToken)
+        session.clear(in: self)
         delete(.userEmail)
         delete(.signInMethod)
         // Also wipe any tunnel secrets that may have been left behind.
@@ -219,6 +257,20 @@ final class KeychainService: @unchecked Sendable {
     @discardableResult
     func setHostData(_ data: Data, for item: HostKeychainItem) -> Bool {
         HostOnlyKeychain.write(data, item, placement: hostPlacement, store: self)
+    }
+
+    /// MR-2580: `setHostData` in one step (`HostOnlyKeychain.replace`): a failed
+    /// write leaves the item as it was. Only the session tokens are written
+    /// this way (`TokenPairWrite`).
+    @discardableResult
+    func replaceHostData(_ data: Data, for item: HostKeychainItem) -> Bool {
+        HostOnlyKeychain.replace(data, item, placement: hostPlacement, store: self)
+    }
+
+    /// MR-2580: `hostData`, telling an item that is not there from one that
+    /// could not be read.
+    func hostLookup(_ item: HostKeychainItem) -> KeychainLookup {
+        HostOnlyKeychain.lookup(item, placement: hostPlacement, store: self)
     }
 
     /// Delete a host-only item, every copy of it.
@@ -412,29 +464,20 @@ extension KeychainService: KeychainGroupStore {
         }
     }
 
+    /// The queries and their attributes are `KeychainItemQuery`'s (MR-2580),
+    /// pinned by TokenPairWriteTests.
     func store(_ data: Data, service: String, account: String, group: String?) -> Bool {
-        remove(service: service, account: account, group: group)
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
-            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
-        ]
-        if let group { query[kSecAttrAccessGroup as String] = group }
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        KeychainItemQuery.store(data, service: service, account: account, group: group)
+    }
+
+    func replace(_ data: Data, service: String, account: String, group: String?) -> Bool {
+        KeychainItemQuery.replace(data, service: service, account: account, group: group)
     }
 
     func remove(service: String, account: String, group: String?) {
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
-        ]
-        if let group { query[kSecAttrAccessGroup as String] = group }
-        SecItemDelete(query as CFDictionary)
+        KeychainItemQuery.remove(service: service, account: account, group: group)
     }
 }
+
+/// MR-2580: the store `TokenPairWrite` writes the session's pair through.
+extension KeychainService: TokenPairStore {}
