@@ -2171,6 +2171,46 @@ class VpnManagerTest {
         }
     }
 
+    /**
+     * The connect is not over while its retry decides: no surface (Home, the
+     * widget, the notification's alert, all of which follow this state) may
+     * hear that it failed, only to see it connect a moment later. With nothing
+     * that qualifies, the original Error is published, once.
+     */
+    @Test
+    fun `MR-2595 no surface hears the connect failed while its retry decides`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        keepLastServer()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        serversAre(
+            listOf(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20)),
+            listOf(relay("fra", "DE", "Frankfurt", 10), relay("sto", "SE", "Stockholm", 20)),
+            // The second connect's fresh list has nothing else open to the plan.
+            listOf(relay("fra", "DE", "Frankfurt", 10), relayOutOfPlan("sto", "SE", "Stockholm")),
+        )
+        val errors = mutableListOf<VpnState.Error>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            vpnManager.state.collect { if (it is VpnState.Error) errors += it }
+        }
+        try {
+            vpnManager.quickConnect()
+            serverNeverAnswers()
+
+            coVerify(exactly = 1) { repository.connectVpn("sto", any()) }
+            assertEquals(emptyList<VpnState.Error>(), errors)
+
+            // A new connect, whose fresh list has nothing left to retry on.
+            vpnManager.quickConnect()
+            serverNeverAnswers()
+            advanceTimeBy(30 * 60_000L)
+
+            assertEquals(listOf(SessionCopy.NO_TUNNEL), errors.map { it.message })
+            assertFalse("the error the user sees spends nothing more", errors.single().unanswered)
+        } finally {
+            quiesce()
+        }
+    }
+
     @Test
     fun `MR-2595 a server the client chose with nothing else in its city is retried on the best server anywhere`() = runTest {
         vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)

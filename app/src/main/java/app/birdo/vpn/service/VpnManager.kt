@@ -1762,14 +1762,18 @@ class VpnManager @Inject constructor(
      *    mark (BirdoVpnService), so it spends nothing;
      *  - the move keeps who chose it, and the log says counts only.
      *
-     * @return true when the retry took the failure over. The supervisor then
-     *   does not judge it now: when nothing qualifies, the retry publishes the
-     *   same Error again, unmarked, and the supervisor judges that as before.
+     * Called for the service's Error BEFORE it is published
+     * ([applyStateWithGuards]).
+     *
+     * @return true when the retry took the failure over: the Error is not
+     *   published, and the manager says Connecting instead. When nothing
+     *   qualifies, the retry publishes the same Error, unmarked, and the
+     *   supervisor judges it exactly as before.
      */
     private fun retryAfterNoAnswer(error: VpnState.Error): Boolean {
         if (!error.unanswered) return false
         if (!session.wantUp || session.established) return false
-        if (activeMultiHop != null) return false
+        if (activeMultiHop != null || rebuildHold != null) return false
         if (relayRetryBudget.spent || dialJob?.isActive == true) return false
         val failedId = _connectedServerId.value ?: return false
         // Who chose it, as the dial that reached it recorded (MR-2492); the
@@ -2845,10 +2849,10 @@ class VpnManager @Inject constructor(
                 if (vpnState.kind == FailureKind.DIED_AFTER_HANDSHAKE && session.established) {
                     deadSessionKey = sessionKeyId
                 }
-                // MR-2595: a connect whose server never answered gets its one
-                // retry on another relay before anything gives up.
-                if (retryAfterNoAnswer(vpnState)) return
-                // The retry's own connect failed: so did the retry.
+                // MR-2595: the retry on another relay took its connect's
+                // unanswered handshake over before it was published
+                // (applyStateWithGuards). An Error now, with a retry landing
+                // pending, is the retry's own connect failing: so did the retry.
                 if (relayRetryLanding != null) settleRelayRetry(connected = false)
                 onFailure(vpnState.kind)
             }
@@ -3104,6 +3108,12 @@ class VpnManager @Inject constructor(
 
         // Always propagate Error states from the service immediately
         if (serviceState is VpnState.Error) {
+            // MR-2595: except a connect's unanswered first handshake that its
+            // one retry on another relay takes over. The connect is not over,
+            // so no surface (Home, the widget, the alert) may say it failed
+            // before the retry decides; when nothing qualifies, the retry
+            // publishes this Error itself and the supervisor judges it.
+            if (retryAfterNoAnswer(serviceState)) return
             _state.value = serviceState
             _connectedServer.value = BirdoVpnService.connectedServer
             _connectedSince.value = BirdoVpnService.connectedSince
