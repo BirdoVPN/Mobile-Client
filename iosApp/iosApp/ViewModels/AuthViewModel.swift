@@ -582,7 +582,11 @@ final class AuthViewModel: ObservableObject {
         // Cold-start routing from local tokens only: logged in iff either
         // stored JWT is unexpired. Unparseable = expired (fail-safe). Never on
         // a previous install's session that a failed clean-up left behind.
+        // #671 review (MR-2580): nor on a refresh token a rotation spent and
+        // could not replace (`SessionTokenVault`): it is never presented, and
+        // the session is signed out here, locally, with no request.
         let sessionLive = !install.storedSessionUnusable
+            && !keychain.storedRefreshTokenIsSpent
             && (Self.isTokenLive(keychain.accessToken) || Self.isTokenLive(keychain.refreshToken))
         // A signed-in session is no longer grandfathered into consent: it
         // used to set `gdpr_consented` here, which made a signed-in user
@@ -611,7 +615,7 @@ final class AuthViewModel: ObservableObject {
             // account number included (#485 review): `clear()` alone kept
             // `anonymous_id`, a signed-out device's copy of a previous
             // account's number.
-            if keychain.accessToken != nil || keychain.refreshToken != nil {
+            if keychain.accessToken != nil || keychain.refreshToken != nil || keychain.storedRefreshTokenIsSpent {
                 LocalSignOut.wipe(keychain)
             }
         }
@@ -1151,6 +1155,7 @@ final class AuthViewModel: ObservableObject {
                 error = "Your account was created, but this device could not store the session. Sign in with the account number you just saved."
                 return
             }
+            sessionEpoch &+= 1
             AnonymousNumberRecord.recordSignIn(anonymous: true, number: minted, in: keychain)
             keychain.setSignedInWithApple(false)
             isLoggedIn = true
@@ -1317,13 +1322,26 @@ final class AuthViewModel: ObservableObject {
     @discardableResult
     func logoutIfUnauthorized(_ error: Error) -> Bool {
         guard case APIError.unauthorized = error else { return false }
+        // MR-2581 (I5 of the #653 review): only the session that died is
+        // signed out. A pair stored after its 401 (a number rotation's
+        // commit, a sign-in) is a session that 401 said nothing about.
+        guard api.mayEndStoredSession(storedRefreshToken: keychain.refreshToken) else { return true }
         if isLoggedIn || createdAnonymousId != nil {
             completeLocalLogout()
         }
         return true
     }
 
+    /// MR-2581: which session this app is in, counted on the main actor. A
+    /// sign-out and every sign-in start a new one, synchronously, before
+    /// anything else. A number rotation stores its pair only if the session it
+    /// sent its confirm from is still the current one
+    /// (`AnonNumberRotationCommit`). APIClient's own generation cannot fence
+    /// that: a sign-out bumps it later, from a Task.
+    private(set) var sessionEpoch: UInt64 = 0
+
     private func completeLocalLogout() {
+        sessionEpoch &+= 1
         // Keychain keeps `device_id` (stable device identity) — everything else
         // goes, the anonymous account number too, as on Android
         // (`TokenManager.clearAll()`): no signed-out screen reads it, and a
@@ -1675,6 +1693,8 @@ final class AuthViewModel: ObservableObject {
             error = "Could not securely store your session. Please try again."
             return false
         }
+        // MR-2581: a new session, synchronously, before the await below.
+        sessionEpoch &+= 1
         // L1 (review of #653): a refresh wait, backoff or retry the previous
         // session earned is not this one's, with or without a sign-out first.
         await api.beginSession()

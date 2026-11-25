@@ -51,20 +51,22 @@ enum HostOnlyKeychain {
     static func read(_ item: HostKeychainItem,
                      placement: HostKeychainPlacement,
                      store: any KeychainGroupStore) -> Data? {
+        lookup(item, placement: placement, store: store).data
+    }
+
+    /// `read`, telling an item that is not there from one that could not be
+    /// read (MR-2580: `TokenPairWrite` puts back only what it read).
+    static func lookup(_ item: HostKeychainItem,
+                       placement: HostKeychainPlacement,
+                       store: any KeychainGroupStore) -> KeychainLookup {
         guard case .hostOnly(let host, _) = placement else {
-            return store.lookup(service: item.service, account: item.account, group: nil).data
+            return store.lookup(service: item.service, account: item.account, group: nil)
         }
-        switch store.lookup(service: item.service, account: item.account, group: host) {
-        case .found(let data):
-            return data
-        case .failed:
-            return nil
-        case .notFound:
-            // Not moved yet: the copy an older build wrote, wherever its
-            // default group put it. No group, because the host group was just
-            // found empty.
-            return store.lookup(service: item.service, account: item.account, group: nil).data
-        }
+        let inHost = store.lookup(service: item.service, account: item.account, group: host)
+        guard inHost == .notFound else { return inHost }
+        // Not moved yet: the copy an older build wrote, wherever its default
+        // group put it. No group, because the host group was just found empty.
+        return store.lookup(service: item.service, account: item.account, group: nil)
     }
 
     /// Replace the item. False when the write failed. A copy an older build
@@ -75,12 +77,33 @@ enum HostOnlyKeychain {
                       _ item: HostKeychainItem,
                       placement: HostKeychainPlacement,
                       store: any KeychainGroupStore) -> Bool {
+        put(item, placement: placement, store: store) { group in
+            store.store(data, service: item.service, account: item.account, group: group)
+        }
+    }
+
+    /// MR-2580: `write`, with the value replaced in ONE step
+    /// (`KeychainGroupStore.replace`): a failed write leaves the item as it
+    /// was, and a kill cannot catch it deleted. Used for the session tokens
+    /// (`TokenPairWrite`), whose pair a failure must never split.
+    @discardableResult
+    static func replace(_ data: Data,
+                        _ item: HostKeychainItem,
+                        placement: HostKeychainPlacement,
+                        store: any KeychainGroupStore) -> Bool {
+        put(item, placement: placement, store: store) { group in
+            store.replace(data, service: item.service, account: item.account, group: group)
+        }
+    }
+
+    private static func put(_ item: HostKeychainItem,
+                            placement: HostKeychainPlacement,
+                            store: any KeychainGroupStore,
+                            _ write: (_ group: String?) -> Bool) -> Bool {
         guard case .hostOnly(let host, let shared) = placement else {
-            return store.store(data, service: item.service, account: item.account, group: nil)
+            return write(nil)
         }
-        guard store.store(data, service: item.service, account: item.account, group: host) else {
-            return false
-        }
+        guard write(host) else { return false }
         // Superseded: the copy the PacketTunnel extension could read.
         store.remove(service: item.service, account: item.account, group: shared)
         return true
@@ -217,12 +240,17 @@ enum KeychainLookup: Equatable, Sendable {
 
 /// The keychain, one access group at a time. `group == nil` is a query with no
 /// `kSecAttrAccessGroup`, as every pre-MR-1729 query was: an add lands in the
-/// default (first) group, and a lookup or a delete covers every group the
-/// process is entitled to.
+/// default (first) group, and a lookup, an update or a delete covers every
+/// group the process is entitled to.
 protocol KeychainGroupStore: AnyObject {
     func lookup(service: String, account: String, group: String?) -> KeychainLookup
     /// Replace the item in `group`: delete it there, then add it. False when
-    /// the add failed.
+    /// the add failed, and then NO item is left (`InstallIdentity` relies on
+    /// that for `device_id`).
     func store(_ data: Data, service: String, account: String, group: String?) -> Bool
+    /// MR-2580: replace the item in `group` in one step: its value is updated
+    /// where it exists, and it is added where it does not. False when it was
+    /// not written, and then it is left as it was.
+    func replace(_ data: Data, service: String, account: String, group: String?) -> Bool
     func remove(service: String, account: String, group: String?)
 }

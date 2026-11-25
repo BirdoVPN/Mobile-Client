@@ -193,6 +193,54 @@ final class HostOnlyKeychainTests: XCTestCase {
         XCTAssertEqual(appRead(f, .refreshToken), old[.refreshToken])
     }
 
+    /// MR-2580: the session tokens are replaced in one step, and land where
+    /// `write` puts them: only the app can read them, and an older build's
+    /// shared copy goes once the new one is in.
+    func testAReplacedTokenLandsWhereOnlyTheAppCanReadIt() {
+        let token = Data("v2-refresh".utf8)
+        for seeded in [false, true] {
+            let f = fixture()
+            if seeded { seedOlderBuild(f.app) }
+            XCTAssertTrue(HostOnlyKeychain.replace(token, .refreshToken, placement: f.placement, store: f.app))
+            XCTAssertEqual(appRead(f, .refreshToken), token)
+            XCTAssertEqual(HostOnlyKeychain.lookup(.refreshToken, placement: f.placement, store: f.app), .found(token))
+            XCTAssertNil(tunnelRead(f, .refreshToken), "seeded: \(seeded)")
+        }
+        // Over its own earlier copy: replaced, never doubled.
+        let f = fixture()
+        XCTAssertTrue(HostOnlyKeychain.replace(Data("v1".utf8), .refreshToken, placement: f.placement, store: f.app))
+        XCTAssertTrue(HostOnlyKeychain.replace(token, .refreshToken, placement: f.placement, store: f.app))
+        XCTAssertEqual(appRead(f, .refreshToken), token)
+        XCTAssertEqual(f.device.count(in: host), 1)
+    }
+
+    /// MR-2580: a replace that fails leaves the item exactly as it was, in the
+    /// host group as in an older build's shared copy.
+    func testAFailedReplaceLeavesTheItemAsItWas() {
+        let moved = fixture()
+        let v1 = Data("v1".utf8)
+        XCTAssertTrue(HostOnlyKeychain.replace(v1, .refreshToken, placement: moved.placement, store: moved.app))
+        moved.app.failAdds = [host]
+        XCTAssertFalse(HostOnlyKeychain.replace(Data("v2".utf8), .refreshToken, placement: moved.placement, store: moved.app))
+        XCTAssertEqual(appRead(moved, .refreshToken), v1)
+
+        let older = fixture()
+        let old = seedOlderBuild(older.app)
+        older.app.failAdds = [host]
+        XCTAssertFalse(HostOnlyKeychain.replace(Data("v2".utf8), .refreshToken, placement: older.placement, store: older.app))
+        XCTAssertEqual(appRead(older, .refreshToken), old[.refreshToken])
+    }
+
+    /// `lookup` tells "not there" from "could not be read"; `read` cannot.
+    func testALookupTellsAMissingItemFromAnUnreadableOne() {
+        let f = fixture()
+        XCTAssertEqual(HostOnlyKeychain.lookup(.refreshToken, placement: f.placement, store: f.app), .notFound)
+        f.app.locked = true
+        XCTAssertEqual(HostOnlyKeychain.lookup(.refreshToken, placement: f.placement, store: f.app),
+                       .failed(errSecInteractionNotAllowedStatus))
+        XCTAssertNil(appRead(f, .refreshToken))
+    }
+
     /// Items not moved yet (the move is deferred) still read.
     func testAnItemNotMovedYetStillReads() {
         let f = fixture()
@@ -294,9 +342,9 @@ private final class DeviceKeychain {
 private final class ProcessKeychain: KeychainGroupStore {
     let device: DeviceKeychain
     let groups: [String]
-    /// Adds into these groups fail.
+    /// Writes into these groups fail.
     var failAdds: Set<String> = []
-    /// Adds into these groups report success and store nothing.
+    /// Writes into these groups report success and store nothing.
     var dropAdds: Set<String> = []
     /// Before the first unlock: nothing reads, adds or deletes.
     var locked = false
@@ -329,6 +377,25 @@ private final class ProcessKeychain: KeychainGroupStore {
         if failAdds.contains(target) { return false }
         if !dropAdds.contains(target) {
             device.items[DeviceKeychain.Key(group: target, service: service, account: account)] = data
+        }
+        return true
+    }
+
+    /// One step, as `KeychainItemQuery.replace` is: the value changes where the
+    /// item is (in every group a query with no group covers), the item is
+    /// added where it is not, and a failed write changes nothing.
+    func replace(_ data: Data, service: String, account: String, group: String?) -> Bool {
+        if locked { return false }
+        guard let target = group ?? groups.first, groups.contains(target) else { return false }
+        if failAdds.contains(target) { return false }
+        if dropAdds.contains(target) { return true }
+        let present = searched(group)
+            .map { DeviceKeychain.Key(group: $0, service: service, account: account) }
+            .filter { device.items[$0] != nil }
+        if present.isEmpty {
+            device.items[DeviceKeychain.Key(group: target, service: service, account: account)] = data
+        } else {
+            for key in present { device.items[key] = data }
         }
         return true
     }

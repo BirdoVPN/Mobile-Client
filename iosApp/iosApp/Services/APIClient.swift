@@ -72,6 +72,10 @@ final class APIClient: @unchecked Sendable {
     /// lands AFTER sign-out can never resurrect the wiped session (finding #1).
     private let sessionGeneration = SessionGeneration()
 
+    /// MR-2581: the refresh token the server last answered 401 to while it was
+    /// the stored one, so a sign-out for that 401 spares a pair stored after it.
+    private let deadRefreshToken = DeadRefreshToken()
+
     /// Memoised device identity — see `deviceContext()`. Idempotent, so a
     /// concurrent double-COMPUTE simply recomputes the same value — but the
     /// read/write themselves cross concurrency domains, so they go through
@@ -975,6 +979,10 @@ final class APIClient: @unchecked Sendable {
     /// sent when no retry is owed. Throws what the refresh throws
     /// (`.unauthorized` only for a 401).
     func retryHeldRefresh() async throws {
+        // #671 review (MR-2580): coming to the foreground, a pair a refresh
+        // rotation could only keep in memory goes to the keychain, if it will
+        // take it now.
+        keychain.persistPendingSession()
         guard await refreshActor.retryIsDue() else { return }
         try await refreshActor.refresh { [weak self] in
             try await self?.refreshTokens()
@@ -982,6 +990,12 @@ final class APIClient: @unchecked Sendable {
     }
 
     private func refreshTokens() async throws {
+        // #671 review (MR-2580): a pair kept in memory goes in first, if the
+        // keychain takes it now. Then the token to present: the pair kept in
+        // memory, or the stored one, never one the fence marks spent
+        // (`SessionTokenVault`). A fenced token with nothing newer reads as
+        // none, so this throws before any request and the caller signs out.
+        keychain.persistPendingSession()
         guard let refresh = keychain.refreshToken else {
             throw APIError.unauthorized
         }
@@ -1031,6 +1045,20 @@ final class APIClient: @unchecked Sendable {
             await refreshActor.reset()
         case .dead:
             await refreshActor.reset()
+            // MR-2581 (I5 of the #653 review): a 401 ends only the session it
+            // answered, as on Android. A sign-out may have landed while this
+            // refresh was on the wire, or a newer pair been stored (a sign-in,
+            // a number rotation's commit): then the token that died is not the
+            // stored one, nothing stored has ended, and the caller's retry
+            // uses whatever is stored now. Otherwise the dead token is recorded
+            // so the sign-out this 401 asks for (`logoutIfUnauthorized`) still
+            // spares a pair stored before it runs.
+            let generationAtAnswer = await sessionGeneration.current
+            guard generationAtAnswer == generationAtStart,
+                  keychain.refreshToken == refresh else {
+                return
+            }
+            deadRefreshToken.record(refresh)
             throw APIError.unauthorized
         case .refused:
             // MR-1771: a 403 is not a verdict on the token (an infrastructure
@@ -1060,27 +1088,63 @@ final class APIClient: @unchecked Sendable {
         // refresh belongs to still exists. Two things must hold —
         // (1) no logout invalidated the session while we were in flight
         //     (generation unchanged), and
-        // (2) the refresh token still on file is the SAME one we presented
-        //     (a concurrent clear() nils it; a concurrent successful refresh
-        //     would have rotated it).
-        // If either fails, drop the rotated pair silently — the caller's retry
-        // will use whatever token is now current (or fail as .unauthorized).
+        // (2) the refresh token on file is still the SAME one we presented (a
+        //     concurrent clear() removed it; a sign-in or another rotation
+        //     replaced it).
+        // #671 review (MR-2580; P1, P2): both are decided INSIDE the keychain's
+        // session lock, with the write (`KeychainService.saveRotation`,
+        // Android's `sessionLock`): a sign-out or a sign-in can no longer land
+        // between the check and the write, and what to do with a rotated pair
+        // nobody will hold is decided there too, never by an early return.
         let generationNow = await sessionGeneration.current
-        guard generationNow == generationAtStart,
-              keychain.refreshToken == refresh else {
-            return
-        }
         // The rotated refresh token replaces the old one; if the server omits
-        // it, the presented token remains current. A failed keychain write is a
-        // HARD failure (findings #433/#60): the server has already rotated the
-        // token, so proceeding on a half-written/unwritten pair would strand the
-        // client on a token it can never replay. Surface it so the retry does
-        // NOT run against a stale/blank Authorization header.
-        guard keychain.save(accessToken: tokens.accessToken,
-                            refreshToken: tokens.refreshToken ?? refresh,
-                            email: keychain.userEmail) else {
-            throw APIError.invalidResponse
+        // it, the presented token remains current. Answering with this pair
+        // spent `refresh` on the server, so it is never stored again.
+        switch keychain.saveRotation(accessToken: tokens.accessToken,
+                                     refreshToken: tokens.refreshToken ?? refresh,
+                                     expectingRefreshToken: refresh,
+                                     sessionEnded: generationNow != generationAtStart) {
+        case .stored, .keptInMemory:
+            // `.keptInMemory`: the keychain refused the pair. This process
+            // works on it in memory (so its requests do not 401 into another
+            // rotation), the spent token is fenced and never presented, and the
+            // pair is stored as soon as the keychain takes it.
+            // MR-2581: either way the session on file is alive.
+            deadRefreshToken.forget()
+            return
+        case .replaced:
+            // P2: a session other than the one this refresh renewed is stored
+            // (a sign-in since). Nothing was written, and the rotated pair is
+            // never revoked: the server would end the device's whole lineage,
+            // the stored session with it. The caller's retry uses that session.
+            return
+        case .ended:
+            // P2, P3: the session this refresh renewed has ended (a sign-out
+            // landed while it was on the wire). Nothing was written. The
+            // rotated pair is a live session nobody holds: #666 (MR-2532)
+            // revokes it here, bearer-free, as
+            //     signOut(SignOutTokens(accessToken: nil, refreshToken: tokens.refreshToken ?? refresh))
+            // That API is not on main yet; until it lands the pair is dropped,
+            // as it always was.
+            return
+        case .signedOut:
+            // P4: nothing durable could fence the spent token, so the session
+            // ends now rather than risk presenting it after a relaunch. The
+            // dropped pair is revoked with ITS OWN token, never the stored one
+            // (#666's Android M1), with no 401 or refresh handling. With #666
+            // this call becomes
+            //     signOut(SignOutTokens(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken ?? refresh))
+            let dropped = tokens.accessToken
+            Task.detached { [weak self] in await self?.logout(bearerToken: dropped) }
+            throw APIError.unauthorized
         }
+    }
+
+    /// MR-2581: whether a sign-out for `.unauthorized` may wipe the session now
+    /// on file (`storedRefreshToken`): not when a newer pair was stored after
+    /// the refresh token that got the 401 (`DeadRefreshToken`).
+    func mayEndStoredSession(storedRefreshToken: String?) -> Bool {
+        deadRefreshToken.mayEndSession(stored: storedRefreshToken)
     }
 
     /// Fire `POST /auth/refresh` and return the raw body + response WITHOUT the
