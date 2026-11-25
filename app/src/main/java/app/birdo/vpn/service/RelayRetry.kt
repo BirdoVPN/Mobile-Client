@@ -29,6 +29,11 @@ import app.birdo.vpn.data.model.VpnServer
  * SERVER_GONE). It used to be a quick connect that skipped that server: the
  * best relay in any country, whoever had chosen the location.
  *
+ * MR-2595: the same table chooses the ONE retry of a connect whose server
+ * never answered its first handshake (VpnManager.retryAfterNoAnswer), as on
+ * Desktop (#470, after_no_handshake is next) and iOS (#645,
+ * retryOnAnotherRelay); [noAnswerLine] is its log line.
+ *
  * Pure (no Android, no I/O), so RelayRetryTest pins the table on the JVM.
  */
 
@@ -195,16 +200,31 @@ object RelayRetry {
     }
 
     /**
-     * MR-2595: the log line for the retry decision after a server never
-     * answered its first handshake. TODO(MR-2595): spec stub, today's line.
+     * MR-2595: the log line for the retry decision after a connect's server
+     * never answered its first handshake: who chose the server, the count and
+     * how far the retry goes. Like [logLine], it takes the whole choice and
+     * never names a server (Desktop #470's no_handshake_line).
+     *
+     * @param listed false when no fresh /vpn/servers came in time: then
+     *   nothing is chosen, from a cached list or otherwise.
      */
-    @Suppress("UNUSED_PARAMETER")
-    fun noAnswerLine(choice: Choice?, origin: SelectionOrigin, listed: Boolean = true): String =
-        logLine(choice, alreadySpent = false)
+    fun noAnswerLine(choice: Choice?, origin: SelectionOrigin, listed: Boolean = true): String {
+        val pick = "${origin.name.lowercase()} pick"
+        return when {
+            choice != null -> "[RelayRetry] no handshake: automatic retry 1 of 1 on another server ($pick, ${choice.reach.label})"
+            !listed -> "[RelayRetry] no handshake: no server list in time, so no retry ($pick, 0 of 1)"
+            else -> "[RelayRetry] no handshake: no server qualifies for a retry ($pick, 0 of 1)"
+        }
+    }
 
-    /** MR-2595: how the one retry ended, with this run's counts. TODO(MR-2595): spec stub. */
-    @Suppress("UNUSED_PARAMETER")
-    fun noAnswerOutcomeLine(connected: Boolean, attempted: Int, connectedCount: Int): String = ""
+    /**
+     * MR-2595: how the one retry ended, with this process's counts of retries
+     * made and connected (counts only; Desktop #470's retry_outcome_line).
+     */
+    fun noAnswerOutcomeLine(connected: Boolean, attempted: Int, connectedCount: Int): String {
+        val outcome = if (connected) "connected" else "failed too, and is not retried again"
+        return "[RelayRetry] the retry after no handshake $outcome (this run: $attempted attempted, $connectedCount connected)"
+    }
 
     private fun reach(failed: VpnServer, target: VpnServer): Reach {
         val country = normalized(failed.countryCode)

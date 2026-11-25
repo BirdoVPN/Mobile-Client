@@ -167,9 +167,17 @@ internal fun ctaModel(c: HomeConnection, multiHopArmed: Boolean, multiHopReady: 
     else -> CtaModel(R.string.connect, CtaAction.CONNECT, busy = false, showCancel = false)
 }
 
-/** MR-2595: Home's info notice for the one retry on another server. TODO(MR-2595): spec stub. */
-@Suppress("UNUSED_PARAMETER")
-internal fun relayRetryBanner(state: VpnUiState): String? = null
+/**
+ * MR-2595: Home's info notice while the one retry on another server runs,
+ * through its teardown and its dial (VpnManager clears it when the retry
+ * ends). Never over the session it led to, nor over the error that ended it:
+ * that Error is Home's one message banner then.
+ */
+internal fun relayRetryBanner(state: VpnUiState): String? {
+    val s = state.vpnState
+    if (s is VpnState.Connected || s is VpnState.Error) return null
+    return state.relayRetryNotice
+}
 
 /** What fixes a session Error, offered on its banner (P1-parity-040). */
 internal enum class Remedy(@param:StringRes val label: Int) {

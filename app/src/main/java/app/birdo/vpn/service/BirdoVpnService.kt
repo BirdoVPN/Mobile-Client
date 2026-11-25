@@ -561,6 +561,16 @@ class BirdoVpnService : VpnService() {
     private val transportProbe = AtomicReference<Thread?>(null)
 
     /**
+     * MR-2595: the setup (its transition generation) whose direct handshake
+     * the transport probe found unanswered. When VpnManager makes no Stealth
+     * fallback for it, [connectTimeoutRunnable] ends that setup, and its Error
+     * then says the server never answered, which is what may spend the retry
+     * on another relay. Any newer transition has its own generation, so an
+     * old verdict never marks a later setup. Tunnel executor only.
+     */
+    @Volatile private var unansweredGen = -1L
+
+    /**
      * Watches the PHYSICAL networks under the tunnel (NOT_VPN + INTERNET; see
      * [NetworkMonitor.underlyingNetworkRequest]). Not the default-network
      * callback any more: since D-6 the app rides its own tunnel, so its
@@ -799,7 +809,17 @@ class BirdoVpnService : VpnService() {
             //
             // BLOCK FIRST, THEN PUBLISH Error — see the ordering contract on
             // [activateKillSwitch].
-            blockThenPublish(gen, VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED)) {
+            //
+            // MR-2595: when the probe already found this setup's server silent
+            // and no fallback replaced it, that is what ended it, and the Error
+            // says so. Any other timeout (a wedged setup, a PQ exchange in a
+            // dead zone) says nothing about the server.
+            val error = VpnState.Error(
+                SessionCopy.NO_TUNNEL,
+                FailureKind.NEVER_ESTABLISHED,
+                unanswered = unansweredGen == gen,
+            )
+            blockThenPublish(gen, error) {
                 cleanupStealthAndQuantum()
             }
         }
@@ -2800,11 +2820,15 @@ class BirdoVpnService : VpnService() {
 
             TransportProbe.Result.BLOCKED -> if (!onStealthTransport) {
                 Log.w(TAG, "Transport probe: no handshake — requesting stealth fallback")
+                // MR-2595: the server did not answer this setup. If no
+                // fallback replaces it, the watchdog below ends it saying so.
+                unansweredGen = gen
                 // tryEmit, not emit: this is a non-suspending context and the
                 // buffer is sized for it. A dropped emission would only mean a
                 // missed fallback, never a blocked tunnel thread. If VpnManager
-                // declines the fallback (cooldown, multi-hop, no server) the
-                // connect watchdog re-armed by startTunnel resolves the state.
+                // declines the fallback (cooldown, multi-hop, no server, the
+                // relay retry's own dial) the connect watchdog re-armed by
+                // startTunnel resolves the state.
                 _transportBlockedFlow.tryEmit(Unit)
             } else {
                 Log.w(TAG, "Transport probe: no handshake over stealth — failing the connect")
@@ -2814,7 +2838,12 @@ class BirdoVpnService : VpnService() {
                 // tun fd, so activateKillSwitch() must do its own ordered
                 // establish-then-teardown — a teardown here first would
                 // revert routing to the physical network before the block.
-                blockThenPublish(gen, VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED)) {
+                // MR-2595: no transport is left, so the server never answered:
+                // VpnManager may spend its one retry on another relay. A block
+                // that cannot be armed publishes its own Error instead, which
+                // spends nothing (blockThenPublish).
+                val noAnswer = VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED, unanswered = true)
+                blockThenPublish(gen, noAnswer) {
                     cleanupStealthAndQuantum()
                     mainHandler.removeCallbacks(connectTimeoutRunnable)
                 }

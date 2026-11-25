@@ -759,9 +759,20 @@ internal object SessionCopy {
     const val RELAY_RETRY_ANYWHERE =
         "That server didn't answer, so BirdoVPN is trying the best other server, which may be in another country."
 
-    /** MR-2595: Home's notice while the retry runs. TODO(MR-2595): spec stub. */
-    @Suppress("UNUSED_PARAMETER")
-    fun relayRetry(origin: SelectionOrigin, reach: RelayRetry.Reach): String = RELAY_RETRY_ANYWHERE
+    /**
+     * MR-2595: Home's notice while the one retry runs, from who chose the
+     * server that did not answer and how far the retry goes (classes, never a
+     * server). A location the user picked only ever moves inside its country,
+     * and so does a retry that stays in its city or country; only the client's
+     * pick that goes abroad hears that it MAY be another country. Desktop's
+     * relayRetryCopy, decision for decision.
+     */
+    fun relayRetry(origin: SelectionOrigin, reach: RelayRetry.Reach): String =
+        if (origin == SelectionOrigin.USER || reach != RelayRetry.Reach.OTHER_COUNTRY) {
+            RELAY_RETRY_SAME_COUNTRY
+        } else {
+            RELAY_RETRY_ANYWHERE
+        }
     const val REAPED = "The server dropped this connection while the device was idle. Reconnecting…"
     const val NO_TUNNEL = "Couldn't establish a secure tunnel to this server. Try another location."
     const val QUANTUM_FAILED =

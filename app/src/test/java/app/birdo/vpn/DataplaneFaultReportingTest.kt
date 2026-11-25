@@ -122,7 +122,8 @@ class DataplaneFaultReportingTest {
             "(live_rebuild_* codes)",
         "RelayRetry.kt" to
             "MR-2492's retry rule (which relay a session moves to when its server went offline, " +
-            "and whether it may move) as pure functions: no Android, no I/O, nothing to catch. " +
+            "and whether it may move), also MR-2595's retry after no first handshake, as pure " +
+            "functions and their counts-only log lines: no Android, no I/O, nothing to catch. " +
             "VpnManager carries the choice out and publishes the outcome",
         "TunnelRouting.kt" to
             "D-6's routing rules (who is excluded from the tunnel, the Xray carve-out, which API " +

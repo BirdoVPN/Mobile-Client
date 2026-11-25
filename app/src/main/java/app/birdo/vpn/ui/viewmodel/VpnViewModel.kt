@@ -336,6 +336,7 @@ class VpnViewModel @Inject constructor(
         startStateSync()
         startPrivateDnsSync()
         startQuotaSync()
+        startRelayRetrySync()
         // Pre-publish any cached subscription so Profile tab is never empty on first paint.
         repository.cachedSubscriptionOrNull()?.let {
             _uiState.value = _uiState.value.copy(subscription = it)
@@ -515,6 +516,31 @@ class VpnViewModel @Inject constructor(
         viewModelScope.launch {
             vpnManager.deviceNotice.collect { notice ->
                 _uiState.value = _uiState.value.copy(deviceNotice = notice)
+            }
+        }
+    }
+
+    /**
+     * MR-2595: the one retry on another server after no first handshake.
+     * Home says it is running, and once it lands the card names where the
+     * tunnel is, while who chose the location it replaced stays as it was:
+     * the client's pick stays the client's ([automaticPickId]), a location the
+     * user picked stays theirs. Desktop #470's M1 was a moved user pick
+     * relabelled as the client's, which a later retry could take abroad.
+     */
+    private fun startRelayRetrySync() {
+        viewModelScope.launch {
+            vpnManager.relayRetryNotice.collect { notice ->
+                _uiState.value = _uiState.value.copy(relayRetryNotice = notice)
+            }
+        }
+        viewModelScope.launch {
+            vpnManager.relayRetryLanded.collect { landing ->
+                automaticPickId = landing.server.id.takeIf { landing.origin == SelectionOrigin.AUTOMATIC }
+                // The listed entry when the screen has it, else the retry's own
+                // (from the fresh list), so the card never names the server that failed.
+                val server = _uiState.value.servers.firstOrNull { it.id == landing.server.id } ?: landing.server
+                _uiState.value = _uiState.value.copy(selectedServer = server, pendingSwitchServerId = null)
             }
         }
     }
