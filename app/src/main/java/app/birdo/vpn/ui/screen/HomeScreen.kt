@@ -437,6 +437,19 @@ fun HomeScreen(
                         )
                     }
 
+                    // MR-2595: the server did not answer, and the app is trying
+                    // another one, once: in the same country for a location the
+                    // user picked. Information, never the red error style; the
+                    // card follows where the tunnel lands.
+                    val relayRetry = relayRetryBanner(state)
+                    AnimatedVisibility(visible = relayRetry != null) {
+                        HomeBanner(
+                            icon = Icons.Default.Sync,
+                            message = relayRetry.orEmpty(),
+                            tone = BannerTone.Info,
+                        )
+                    }
+
                     // MR-2220: the server says other devices kept taking this free
                     // connection. The tunnel is already up; this only tells.
                     val deviceNotice = state.deviceNotice

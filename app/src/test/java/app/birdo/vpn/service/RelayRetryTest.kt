@@ -401,4 +401,92 @@ class RelayRetryTest {
             }
         }
     }
+
+    // ── MR-2595: the one retry after no first handshake ───────────────────
+    //
+    // The same table as the move above (Desktop #470's after_no_handshake is
+    // #466's next, iOS #645's retryOnAnotherRelay is RelayRetry.next), so the
+    // choice itself is pinned by the cases above. What is new: its log lines
+    // and Home's words.
+
+    @Test
+    fun `MR-2595 on today's fleet a user's pick is retried only where its country has a second relay`() {
+        // The owner device check (S25): a two-relay country moves within it, a
+        // one-relay country keeps its error.
+        assertEquals(RelayRetry.Reach.SAME_COUNTRY, RelayRetry.next("nyc", fleet, user)?.reach)
+        assertNull(RelayRetry.next("fra", fleet, user))
+        // An automatic pick always has somewhere to go.
+        assertEquals(RelayRetry.Reach.OTHER_COUNTRY, RelayRetry.next("fra", fleet, automatic)?.reach)
+    }
+
+    @Test
+    fun `MR-2595 the no-answer log lines give the origin, the count and the reach, never a relay`() {
+        val failed = node("id-marker-failed", countryCode = "QX", city = "Failedcityx", load = 1)
+        val near = node("id-marker-near", countryCode = "QX", city = "Nearcityx", load = 2)
+        val far = node("id-marker-far", countryCode = "QZ", city = "Farcityx", load = 0)
+        val list = listOf(failed, near, far)
+        val lines = listOf(
+            RelayRetry.noAnswerLine(RelayRetry.next(failed.id, list, automatic), automatic),
+            RelayRetry.noAnswerLine(RelayRetry.next(failed.id, list, user), user),
+            RelayRetry.noAnswerLine(RelayRetry.next(failed.id, listOf(failed, far), user), user),
+            RelayRetry.noAnswerLine(null, automatic, listed = false),
+            RelayRetry.noAnswerOutcomeLine(connected = true, attempted = 1, connectedCount = 1),
+            RelayRetry.noAnswerOutcomeLine(connected = false, attempted = 2, connectedCount = 1),
+        )
+        assertEquals(
+            listOf(
+                "[RelayRetry] no handshake: automatic retry 1 of 1 on another server (automatic pick, other-country)",
+                "[RelayRetry] no handshake: automatic retry 1 of 1 on another server (user pick, same-country)",
+                "[RelayRetry] no handshake: no server qualifies for a retry (user pick, 0 of 1)",
+                "[RelayRetry] no handshake: no server list in time, so no retry (automatic pick, 0 of 1)",
+                "[RelayRetry] the retry after no handshake connected (this run: 1 attempted, 1 connected)",
+                "[RelayRetry] the retry after no handshake failed too, and is not retried again " +
+                    "(this run: 2 attempted, 1 connected)",
+            ),
+            lines,
+        )
+        for (line in lines) {
+            for (n in list) {
+                for (field in listOf(n.id, n.name, n.city, n.countryCode, n.country)) {
+                    assertFalse("$line leaks $field", line.lowercase().contains(field.lowercase()))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `MR-2595 a user's pick is never logged as going abroad`() {
+        for (n in fleet) {
+            val line = RelayRetry.noAnswerLine(RelayRetry.next(n.id, fleet, user), user)
+            assertFalse(line, line.contains(RelayRetry.Reach.OTHER_COUNTRY.label))
+        }
+    }
+
+    @Test
+    fun `MR-2595 Home says the same country for a user's pick, and may be abroad only for the client's`() {
+        for (reach in RelayRetry.Reach.entries) {
+            assertEquals(reach.name, SessionCopy.RELAY_RETRY_SAME_COUNTRY, SessionCopy.relayRetry(user, reach))
+        }
+        assertEquals(
+            SessionCopy.RELAY_RETRY_ANYWHERE,
+            SessionCopy.relayRetry(automatic, RelayRetry.Reach.OTHER_COUNTRY),
+        )
+        // The client's pick that stays at home is told so.
+        assertEquals(
+            SessionCopy.RELAY_RETRY_SAME_COUNTRY,
+            SessionCopy.relayRetry(automatic, RelayRetry.Reach.SAME_CITY),
+        )
+        assertEquals(
+            SessionCopy.RELAY_RETRY_SAME_COUNTRY,
+            SessionCopy.relayRetry(automatic, RelayRetry.Reach.SAME_COUNTRY),
+        )
+        assertEquals(
+            "That server didn't answer, so BirdoVPN is trying another server in the same country.",
+            SessionCopy.RELAY_RETRY_SAME_COUNTRY,
+        )
+        assertEquals(
+            "That server didn't answer, so BirdoVPN is trying the best other server, which may be in another country.",
+            SessionCopy.RELAY_RETRY_ANYWHERE,
+        )
+    }
 }

@@ -42,7 +42,9 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -193,6 +195,23 @@ class VpnManager @Inject constructor(
     val stealthNotice: StateFlow<String?> = _stealthNotice.asStateFlow()
 
     /**
+     * MR-2595: Home's info notice while the one retry after an unanswered
+     * first handshake runs (SessionCopy.relayRetry), or null.
+     */
+    private val _relayRetryNotice = MutableStateFlow<String?>(null)
+    val relayRetryNotice: StateFlow<String?> = _relayRetryNotice.asStateFlow()
+
+    /**
+     * MR-2595: an EVENT, once per retry that connected: where it landed and
+     * who chose the location it replaced, so Home's card follows the tunnel
+     * without relabelling who chose it. No replay: a screen that opens later
+     * reads the last server and who chose it from AppPreferences, written at
+     * the same moment.
+     */
+    private val _relayRetryLanded = MutableSharedFlow<RelayRetryLanding>(replay = 0, extraBufferCapacity = 1)
+    val relayRetryLanded: SharedFlow<RelayRetryLanding> = _relayRetryLanded.asSharedFlow()
+
+    /**
      * What a dial asks for: the stored setting. The server decides entitlement
      * and the service acts on its answer (StealthPolicy) — no client-side plan
      * gate, which a stale lastKnownPlan turned against a re-upgraded user.
@@ -266,7 +285,8 @@ class VpnManager @Inject constructor(
      * MR-2492: the one automatic move off a server that went offline
      * ([RelayRetry.plan], iOS's RelayRetryBudget). Refilled where
      * [avoidServerId] is cleared: a session that came up, and every user or
-     * system dial.
+     * system dial. MR-2595: the same one move is the retry of a connect whose
+     * server never answered ([retryAfterNoAnswer]), as iOS shares its budget.
      */
     private val relayRetryBudget = RelayRetryBudget()
 
@@ -276,6 +296,24 @@ class VpnManager @Inject constructor(
      * re-dials go back to it: never a second move.
      */
     private var relayRetryTarget: String? = null
+
+    /**
+     * MR-2595: the one retry after an unanswered first handshake is choosing
+     * or dialling its relay ([retryOnAnotherRelay]). Like [fallbackInFlight],
+     * it forces the block across its teardown and keeps attestation out.
+     */
+    private var relayRetryInFlight = false
+
+    /**
+     * MR-2595: the relay the retry dialled and who chose the location it
+     * replaced, until that connect ends. Saved as the last server only once
+     * it answers ([onStateChanged]), never before (Desktop #470, L1).
+     */
+    private var relayRetryLanding: RelayRetryLanding? = null
+
+    /** MR-2595: this process's retries after no handshake, made and connected. Counts for the log only. */
+    private var relayRetriesMade = 0
+    private var relayRetriesConnected = 0
 
     /** The dial in flight, owned by [scope] so a caller's cancellation cannot strand it (A1-011). */
     private var dialJob: Job? = null
@@ -508,6 +546,13 @@ class VpnManager @Inject constructor(
          * changed networks) is still allowed promptly.
          */
         private const val FALLBACK_COOLDOWN_MS = 60_000L
+
+        /**
+         * MR-2595: how long the retry after an unanswered first handshake
+         * waits for a fresh /vpn/servers. No list in time, no retry: a cached
+         * list is never a candidate (Desktop #470 waits 15 s, iOS 5 s).
+         */
+        private const val RELAY_RETRY_LIST_TIMEOUT_MS = 10_000L
 
         /** What a superseded dial returns; no state is published for it. */
         internal const val SUPERSEDED = "Connection superseded by a newer action"
@@ -989,6 +1034,8 @@ class VpnManager @Inject constructor(
                 // MR-2492: a new start gets its one move back.
                 relayRetryBudget.refill()
                 relayRetryTarget = null
+                // MR-2595: and ends the retry an older start was making.
+                endRelayRetry()
                 deadSessionKey = null
                 resumeTap.set(null)
                 session = if (origin == DialOrigin.USER) {
@@ -1025,7 +1072,7 @@ class VpnManager @Inject constructor(
     private fun mayAttest(prior: VpnState): Boolean = AttestationPolicy.mayAttest(
         priorWasLive = prior is VpnState.Connected || prior is VpnState.Reconnecting,
         blockActive = isKillSwitchActive,
-        automatic = fallbackInFlight || reapplyInProgress,
+        automatic = fallbackInFlight || reapplyInProgress || relayRetryInFlight,
     )
 
     /**
@@ -1117,13 +1164,17 @@ class VpnManager @Inject constructor(
      * physical interface in cleartext, in one burst, for a user who believes
      * they are protected and did not ask for any of it.
      *
+     * relayRetryInFlight forces it for the same reason (MR-2595): the retry
+     * on another relay is the app's own decision too, over a tunnel that never
+     * answered, and nothing goes out in the clear between it and the next.
+     *
      * @return false when a newer action superseded the dial during the wait.
      */
     private suspend fun teardownLiveSession(prior: VpnState, gen: Long): Boolean {
         if (prior !is VpnState.Connected && !prior.isConnectingPhase && prior !is VpnState.Reconnecting) {
             return true
         }
-        switchTeardown(forceBlock = reapplyInProgress || fallbackInFlight)
+        switchTeardown(forceBlock = reapplyInProgress || fallbackInFlight || relayRetryInFlight)
         // Wait (bounded) for the service to confirm the old tunnel is down so
         // wg-go is torn down before we register + bring up the new one. The
         // blocking interface stays up throughout this wait (and the /connect
@@ -1158,6 +1209,8 @@ class VpnManager @Inject constructor(
      * @param pickedBy MR-2492: who chose [serverId], stored with it as the
      *   last server when the dial lands. A re-dial of the last server passes
      *   [lastServerOrigin].
+     * @param rememberAsLast false for the relay retry's dial (MR-2595), whose
+     *   server is saved only once it answers ([onStateChanged]).
      */
     private suspend fun dialSingle(
         serverId: String,
@@ -1166,6 +1219,7 @@ class VpnManager @Inject constructor(
         prior: VpnState,
         pickedBy: SelectionOrigin,
         allowLiveRebuild: Boolean = true,
+        rememberAsLast: Boolean = true,
     ): ApiResult<ConnectResponse> {
         // A1-034: a switch or a settings reapply on a live single-hop session
         // rebuilds it in place instead of tearing it down to the block.
@@ -1272,7 +1326,9 @@ class VpnManager @Inject constructor(
                     _connectedServerId.value = serverId
                     // MR-2492: who chose it goes with it, in the same write, for
                     // the re-dials the tile, the widget and a system start make later.
-                    prefs.rememberLastServer(serverId, autoPicked = pickedBy == SelectionOrigin.AUTOMATIC)
+                    if (rememberAsLast) {
+                        prefs.rememberLastServer(serverId, autoPicked = pickedBy == SelectionOrigin.AUTOMATIC)
+                    }
                     return result
                 }
                 is ApiResult.Error -> {
@@ -1680,6 +1736,125 @@ class VpnManager @Inject constructor(
         }
     }
 
+    /**
+     * MR-2595 [ANDROID-FIRST-HANDSHAKE-RETRY]: the ONE automatic retry, on
+     * another relay, of a connect whose server never answered its first
+     * handshake: [VpnState.Error.unanswered], the transport probe's verdict on
+     * the last transport the setup had (direct, then Stealth where the Adaptive
+     * Transport tried it). Android stopped there; Desktop (#470) and iOS
+     * (#549, #645, #648) retried.
+     *
+     * The owner's rule (2026-11-19, MR-2212 Q2; 2026-11-20 "Same country, like
+     * iPhone"), the same on every client:
+     *  - a server the CLIENT chose: the same city first, then the best server
+     *    in any country;
+     *  - a location the USER picked: the same city, then the same country,
+     *    never abroad; with nothing there, its own error stands;
+     *  - only relays a FRESH /vpn/servers lists online and open to this plan
+     *    ([RelayRetry.next], #652's table), never the server that failed;
+     *  - ONE retry ([relayRetryBudget], shared with #652's move): its own
+     *    failure ends the connect, and it gets no Stealth fallback of its own;
+     *  - a Multi-Hop route, the user's own pair, never moves; nor does a
+     *    session that was up (the supervisor's re-dials and #652's move own
+     *    those);
+     *  - only a true no-answer: a failure of this device's own (the adapter,
+     *    the kill switch, a rate limit, the Stealth helper) never carries the
+     *    mark (BirdoVpnService), so it spends nothing;
+     *  - the move keeps who chose it, and the log says counts only.
+     *
+     * Called for the service's Error BEFORE it is published
+     * ([applyStateWithGuards]).
+     *
+     * @return true when the retry took the failure over: the Error is not
+     *   published, and the manager says Connecting instead. When nothing
+     *   qualifies, the retry publishes the same Error, unmarked, and the
+     *   supervisor judges it exactly as before.
+     */
+    private fun retryAfterNoAnswer(error: VpnState.Error): Boolean {
+        if (!error.unanswered) return false
+        if (!session.wantUp || session.established) return false
+        if (activeMultiHop != null || rebuildHold != null) return false
+        if (relayRetryBudget.spent || dialJob?.isActive == true) return false
+        val failedId = _connectedServerId.value ?: return false
+        // Who chose it, as the dial that reached it recorded (MR-2492); the
+        // safe side if the record names another server.
+        val origin = if (prefs.lastServerId == failedId) lastServerOrigin() else SelectionOrigin.USER
+        relayRetryBudget.take()
+        val gen = intentGeneration
+        // The connect is not over: Connecting while a fresh list is fetched,
+        // not the Error the retry may yet replace.
+        enterConnecting(gen)
+        scope.launch {
+            runDial { retryOnAnotherRelay(gen, error, failedId, origin) }
+        }
+        return true
+    }
+
+    /**
+     * MR-2595: choose the relay from a fresh list and dial it, once, under the
+     * rule of the pick it replaces ([retryAfterNoAnswer]). The block is held
+     * from the verdict to the next tunnel: the service armed it with the
+     * kill switch on, and the retry's teardown forces it up either way
+     * ([teardownLiveSession]), as for the Stealth fallback.
+     */
+    private suspend fun retryOnAnotherRelay(
+        gen: Long,
+        error: VpnState.Error,
+        failedId: String,
+        origin: SelectionOrigin,
+    ): ApiResult<ConnectResponse> {
+        // Where the failed server was, should the fresh list not have it any
+        // more (deleted meanwhile): read before the refresh replaces the cache.
+        val lastKnown = repository.lastKnownServer(failedId)
+        val listed = withTimeoutOrNull(RELAY_RETRY_LIST_TIMEOUT_MS) { repository.getServers(forceRefresh = true) }
+        // A Disconnect, a sign-out or a newer dial owns the state now.
+        if (superseded(gen) || !session.wantUp) return ApiResult.Error(SUPERSEDED)
+        val servers = (listed as? ApiResult.Success)?.data
+        val choice = servers?.let { RelayRetry.next(failedId, it, origin, lastKnown) }
+        // Counts only: who chose, whether it retries and how far, never which relay.
+        android.util.Log.i("VpnManager", RelayRetry.noAnswerLine(choice, origin, listed = servers != null))
+        if (choice == null) {
+            // Nothing qualifies, or no list in time: the original error stands.
+            publishError(error.message, error.kind)
+            return ApiResult.Error(error.message)
+        }
+        relayRetriesMade++
+        relayRetryLanding = RelayRetryLanding(choice.server, origin)
+        _relayRetryNotice.value = SessionCopy.relayRetry(origin, choice.reach)
+        relayRetryInFlight = true
+        // One fresh connect, direct (or over Stealth Mode when the user turned
+        // it on), never a live rebuild, saved only once it answers.
+        return try {
+            dialSingle(
+                choice.server.id,
+                null,
+                gen,
+                VpnState.Connecting,
+                origin,
+                allowLiveRebuild = false,
+                rememberAsLast = false,
+            )
+        } finally {
+            relayRetryInFlight = false
+        }
+    }
+
+    /** MR-2595: the retry's own connect ended, in a session or in its error: say how, in counts. */
+    private fun settleRelayRetry(connected: Boolean) {
+        endRelayRetry()
+        if (connected) relayRetriesConnected++
+        android.util.Log.i(
+            "VpnManager",
+            RelayRetry.noAnswerOutcomeLine(connected, relayRetriesMade, relayRetriesConnected),
+        )
+    }
+
+    /** MR-2595: no retry is under way any more (it ended, or a Disconnect or a newer start ended it). */
+    private fun endRelayRetry() {
+        relayRetryLanding = null
+        _relayRetryNotice.value = null
+    }
+
     private suspend fun preferredDial(
         origin: DialOrigin,
         multiHopEntitled: Boolean?,
@@ -1794,6 +1969,13 @@ class VpnManager @Inject constructor(
      * setup to race, and all four brakes above apply identically.
      */
     private suspend fun onTransportBlocked() {
+        // MR-2595: the retry on another relay is ONE attempt (Desktop #470,
+        // I1). Its own blocked handshake gets no fallback; the service's
+        // watchdog ends it, saying the server never answered.
+        if (relayRetryLanding != null) {
+            android.util.Log.i("VpnManager", "Transport blocked on the relay retry's own dial — no fallback for it")
+            return
+        }
         val serverId = prefs.lastServerId
         val multiHop = activeMultiHop
         if (serverId == null && multiHop == null) {
@@ -2402,6 +2584,8 @@ class VpnManager @Inject constructor(
         prefs.sessionShouldBeUp = false
         _stealthNotice.value = null
         _deviceNotice.value = null
+        // MR-2595: a retry under way is the Disconnect's now; counted as nothing.
+        endRelayRetry()
         // The not-armed warning describes the session the user just ended.
         // Cleared here, not only when the service's stop lands: Home must not
         // keep saying it over the user's own Disconnect.
@@ -2445,6 +2629,7 @@ class VpnManager @Inject constructor(
         sessionKeyId = null
         // MR-2380: so is the deleted account's restriction notice.
         _accountRestriction.value = null
+        endRelayRetry()
         scope.launch { tearDownTunnel(userInitiated = true, releasePeer = false) }
     }
 
@@ -2664,11 +2849,24 @@ class VpnManager @Inject constructor(
                 if (vpnState.kind == FailureKind.DIED_AFTER_HANDSHAKE && session.established) {
                     deadSessionKey = sessionKeyId
                 }
+                // MR-2595: the retry on another relay took its connect's
+                // unanswered handshake over before it was published
+                // (applyStateWithGuards). An Error now, with a retry landing
+                // pending, is the retry's own connect failing: so did the retry.
+                if (relayRetryLanding != null) settleRelayRetry(connected = false)
                 onFailure(vpnState.kind)
             }
             is VpnState.Connected -> {
                 session = session.connected()
                 avoidServerId = null
+                // MR-2595: the retry answered. The last server is where it
+                // landed, saved now and not before, under the rule of whoever
+                // chose the location it replaced; Home follows it.
+                relayRetryLanding?.let { landing ->
+                    prefs.rememberLastServer(landing.server.id, autoPicked = landing.origin == SelectionOrigin.AUTOMATIC)
+                    _relayRetryLanded.tryEmit(landing)
+                    settleRelayRetry(connected = true)
+                }
                 // MR-2492: a relay answered; the next server that goes away gets its one move.
                 relayRetryBudget.refill()
                 relayRetryTarget = null
@@ -2910,6 +3108,12 @@ class VpnManager @Inject constructor(
 
         // Always propagate Error states from the service immediately
         if (serviceState is VpnState.Error) {
+            // MR-2595: except a connect's unanswered first handshake that its
+            // one retry on another relay takes over. The connect is not over,
+            // so no surface (Home, the widget, the alert) may say it failed
+            // before the retry decides; when nothing qualifies, the retry
+            // publishes this Error itself and the supervisor judges it.
+            if (retryAfterNoAnswer(serviceState)) return
             _state.value = serviceState
             _connectedServer.value = BirdoVpnService.connectedServer
             _connectedSince.value = BirdoVpnService.connectedSince

@@ -71,6 +71,8 @@ class VpnViewModelAccountStateTest {
         every { vpnManager.dialActive } returns MutableStateFlow(false)
         every { vpnManager.quotaGrace } returns MutableStateFlow(null)
         every { vpnManager.stealthNotice } returns MutableStateFlow(null)
+        every { vpnManager.relayRetryNotice } returns MutableStateFlow(null)
+        every { vpnManager.relayRetryLanded } returns kotlinx.coroutines.flow.MutableSharedFlow()
         every { vpnManager.accountRestriction } returns MutableStateFlow(null)
         every { vpnManager.deviceNotice } returns MutableStateFlow(null)
         every { vpnManager.connectedSince } returns MutableStateFlow(0L)

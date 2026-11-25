@@ -745,6 +745,34 @@ internal object SessionCopy {
      * Owner wording sign-off pending; this is the one place the sentence lives.
      */
     const val SERVER_UNREACHABLE = "This server isn't reachable right now. Choose a server to connect."
+
+    /**
+     * MR-2595: the one retry after a server never answered its first
+     * handshake stays in the country: always so for a location the user
+     * picked, and for a server the client chose whose retry found one there.
+     * Desktop #470's sentence, word for word.
+     */
+    const val RELAY_RETRY_SAME_COUNTRY =
+        "That server didn't answer, so BirdoVPN is trying another server in the same country."
+
+    /** MR-2595: the same, for a server the client chose whose retry goes abroad (Desktop #470). */
+    const val RELAY_RETRY_ANYWHERE =
+        "That server didn't answer, so BirdoVPN is trying the best other server, which may be in another country."
+
+    /**
+     * MR-2595: Home's notice while the one retry runs, from who chose the
+     * server that did not answer and how far the retry goes (classes, never a
+     * server). A location the user picked only ever moves inside its country,
+     * and so does a retry that stays in its city or country; only the client's
+     * pick that goes abroad hears that it MAY be another country. Desktop's
+     * relayRetryCopy, decision for decision.
+     */
+    fun relayRetry(origin: SelectionOrigin, reach: RelayRetry.Reach): String =
+        if (origin == SelectionOrigin.USER || reach != RelayRetry.Reach.OTHER_COUNTRY) {
+            RELAY_RETRY_SAME_COUNTRY
+        } else {
+            RELAY_RETRY_ANYWHERE
+        }
     const val REAPED = "The server dropped this connection while the device was idle. Reconnecting…"
     const val NO_TUNNEL = "Couldn't establish a secure tunnel to this server. Try another location."
     const val QUANTUM_FAILED =
