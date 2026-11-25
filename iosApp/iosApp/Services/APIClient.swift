@@ -704,8 +704,8 @@ final class APIClient: @unchecked Sendable {
         var config = try decodeConnectResult(data)
         // The private key never came from the server — use the on-device one.
         config.privateKey = wg.privateKey
-        config.pqUploadedKey = pqPk
         config.dialedShieldGate = shieldGateOn
+        config.pqUploadedKey = pqPk
         pairHandedToConfig = true
         return config
     }
@@ -769,8 +769,8 @@ final class APIClient: @unchecked Sendable {
         var config = try decodeConnectResult(data)
         // The private key never came from the server — use the on-device one.
         config.privateKey = wg.privateKey
-        config.pqUploadedKey = pqPk
         config.dialedShieldGate = shieldGateOn
+        config.pqUploadedKey = pqPk
         pairHandedToConfig = true
         return config
     }
