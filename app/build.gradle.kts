@@ -1203,7 +1203,7 @@ dependencies {
     // the JVM so PR CI runs it (androidTest does not run there): a Compose
     // dialog opened under the cover must not exist while it is up. Test-only.
     // Its tests pin @Config(sdk = 34): newer SDK jars need Java 21, and CI runs 17.
-    testImplementation("org.robolectric:robolectric:4.17")
+    testImplementation("org.robolectric:robolectric:4.18")
     // MR-2490: the SDK 34 jar Robolectric 4.17 runs those tests on, resolved
     // and verified by Gradle instead of downloaded by Robolectric (see
     // robolectricAndroidAll). It moves with a Robolectric bump.
